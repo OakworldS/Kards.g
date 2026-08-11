@@ -1,0 +1,16 @@
+{
+    "type": "condition",
+    "color": [60, 179, 113],
+    "hasInput": true,
+    "hasOutput": true,
+    "hasSecondOutput": true,
+    "names": {
+        "zh-CN": "判断数量",
+        "en": "Count Check"
+    },
+    "configs": {
+        "zh-CN": "e{判断数量、关键字检查}if 判断数量 then\n'当' {敌方、友方} [lib+不同国籍单位数、最大攻击力单位、最小攻击力单位、最大防御力单位、最小防御力单位] {=、>、<、>=、<=} [lib]\nend\nif 关键字检查 then\n'检查' {$} {@combat_keywords}\nend\n(n比较结果、p布尔值、p是否有关键字)",
+        "en": "e{Count Check、Keyword Check}\nif Count Check then\n'When' {Enemy、Friendly} [lib+UnitCount、HQHealth、DifferentNationCount、MaxAttackUnit、MinAttackUnit、MaxDefenseUnit、MinDefenseUnit] {=、>、<、>=、<=} [lib]\nend\nif Keyword Check then\n'Check' {$} {@combat_keywords}\nend\n(nResult、pBoolean、pHasKeyword)"
+    },
+    "base": "e{2} if 1 then {2}[lib+5]{5}[lib] end if 2 then {1}{1} end(n比较结果、p布尔值、p是否有关键字)"
+}

@@ -1,0 +1,16 @@
+{
+    "type": "loop",
+    "color": [255, 215, 0],
+    "hasInput": true,
+    "hasOutput": true,
+    "hasSecondOutput": true,
+    "names": {
+        "zh-CN": "循环",
+        "en": "Loop"
+    },
+    "configs": {
+        "zh-CN": "'重复信号' [] '次' (n循环次数)",
+        "en": "'Repeat Signal' [] 'Times' (nLoopCount)"
+    },
+    "base": "[0](n循环次数)"
+}

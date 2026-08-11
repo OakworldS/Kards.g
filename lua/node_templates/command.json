@@ -1,0 +1,15 @@
+{
+    "type": "command",
+    "color": [100, 200, 200],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "指挥",
+        "en": "Command"
+    },
+    "configs": {
+        "zh-CN": "{友方、敌方、双方}{指挥点、指挥点槽}{增加、减少、设为}[lib] (n结果)",
+        "en": "{Friendly、Enemy、Both}{CommandPoints、CommandSlots}{Increase、Decrease、Set}[lib] (nResult)"
+    },
+    "base": "{3}{2}{3}[lib](n结果)"
+}

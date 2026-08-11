@@ -1,0 +1,15 @@
+{
+    "type": "headquarter",
+    "color": [200, 100, 100],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "总部",
+        "en": "Headquarter"
+    },
+    "configs": {
+        "zh-CN": "{友方、敌方、双方} '总部防御力' {增加、减少、设为}[lib](n总部防御力)",
+        "en": "{Friendly、Enemy、Both} 'HQ Defense' {Increase、Decrease、Set}[lib](nHQDefense)"
+    },
+    "base": "{3}{3}[lib](n总部防御力)"
+}

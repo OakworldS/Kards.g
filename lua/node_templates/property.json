@@ -1,0 +1,15 @@
+{
+    "type": "property",
+    "color": [148, 0, 211],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "特殊执行操作",
+        "en": "Special Action"
+    },
+    "configs": {
+        "zh-CN": "e{随机排列所有、战斗}\nif 随机排列所有 then\n{单位、友方单位、敌方单位}\nend\nif 战斗 then\n{$} '与' {$} '战斗'\nend",
+        "en": "e{RandomizeAll、Fight}\nif RandomizeAll then\n{Units、FriendlyUnits、EnemyUnits}\nend\nif Fight then\n{$} 'Fight With' {$}\nend"
+    },
+    "base": "e{2} if 1 then {3} end if 2 then {1} {1} end"
+}

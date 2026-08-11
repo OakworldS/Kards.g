@@ -1,0 +1,15 @@
+{
+    "type": "extract",
+    "color": [180, 150, 60],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "提取",
+        "en": "Extract"
+    },
+    "configs": {
+        "zh-CN": "'提取'{友方、敌方、双方}\n{单位、指令、反制、总部}\nif 单位 then\n{攻击力、防御力、卡牌花费、行动花费}=[]'的卡牌对象组'\nelseif 指令 or 反制 then\n'卡牌花费'=[]'的卡牌对象组'\nelseif 总部 then\nend\n(e提取的卡牌对象组)",
+        "en": "'Extract'{Friendly、Enemy、Both}\n{Unit、Order、Counter、Headquarter}\nif Unit then\n{Attack、Defense、CardCost、ActionCost}=[]'Card Object Group'\nelseif Order or Counter then\n'Card Cost'=[]'Card Object Group'\nelseif Headquarter then\nend\n(eExtractedCardGroup)"
+    },
+    "base": "{3}{4} if 1 then {4}[0] elseif 2 or 3 then [0] elseif 4 then end(e提取的卡牌对象组)"
+}

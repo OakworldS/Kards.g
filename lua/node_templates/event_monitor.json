@@ -1,0 +1,16 @@
+{
+    "type": "event_monitor",
+    "color": [180, 100, 180],
+    "hasInput": true,
+    "hasOutput": true,
+    "hasSecondOutput": true,
+    "names": {
+        "zh-CN": "事件监测",
+        "en": "Event Monitor"
+    },
+    "configs": {
+        "zh-CN": "'当' {友方、敌方}{目标、单位、总部、打出指令、触发反制、加入、玩家、回合}if 总部 then'防御' '=' []elseif 目标 or 单位 then{有变化的、触发}if 有变化的 then\n{属性、攻防、攻击、防御、行动花费}\n{的值、增加了、减少了、为}\nif 为 then\n[]\nelse\n'=' []\nend\nelse\n{@effect_abilities、@combat_keywords、部署}\nend\nelseif 加入 then\n'时'\nelseif 打出指令 or 触发反制 then\n{时、的花费、时：触发情报}\nif 的花费 or 时：触发情报 then\n'=' []\nend\nelseif 玩家 then\n{@player_actions} '=' [] '张时'\nelseif 回合 then\n{开始、结束} '时'\nend\n(t事件类型、e事件目标、p触发事件)",
+        "en": "'When' {Friendly、Enemy}\n{Target、Unit、Headquarter、PlayOrder、TriggerCounter、Join、Player、Turn}if Headquarter then'Defense' '=' []elseif Target or Unit then\n{Changed、Triggers}\nif Changed then\n{Attribute、AttackDefense、Attack、Defense、ActionCost}\n{Value、Increased、Decreased、Is}\nif Is then\n[]\nelse\n'=' []\nend\nelse\n{@effect_abilities、@combat_keywords、Deploy}\nend\nelseif Join then\n'Joins'\nelseif PlayOrder or TriggerCounter then\n{When、Cost、TriggerIntelligence}\nif Cost or TriggerIntelligence then\n'=' []\nend\nelseif Player then\n{@player_actions} '=' [] 'Cards'\nelseif Turn then\n{Begin、End} 'When'\nend\n(tEventType、eEventTarget、pTrigger)"
+    },
+    "base": "{2}{8} if 1 then [0] elseif 2 then {2} if 3 then {5}{4} if 4 then [0] else [0] end else {1} end elseif 7 then elseif 8 then {3} if 9 then [0] end elseif 10 then {1}[0] elseif 11 then {2} end(t事件类型、e事件目标、p触发事件)"
+}

@@ -1,0 +1,15 @@
+{
+    "type": "target_selector",
+    "color": [20, 90, 50],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "选择卡牌单位目标",
+        "en": "Select Target"
+    },
+    "configs": {
+        "zh-CN": "e{指向一个、随机、所有、属性最高、属性最低} \nif 属性最高 or 属性最低 then \n{@card_stats} \n[] '名' \nend \nif 随机 then \n[] \nend \n{友方、敌方、场上} \n{单位、目标、总部} \nif 单位 then \n':' {任意、战斗机、坦克、轰炸机、炮兵、步兵} \nend \n(e选中的卡牌)",
+        "en": "e{TargetOne、Random、All、HighestStat、LowestStat} \nif HighestStat or LowestStat then \n{@card_stats} \n[] 'Rank' \nend \nif Random then \n[] \nend \n{Friendly、Enemy、Field} \n{Unit、Target、Headquarter} \nif Unit then \n':' {Any、Fighter、Tank、Bomber、Artillery、Infantry} \nend \n(eSelectedCard)"
+    },
+    "base": "e{5} if 1 then {1}[0] end if 2 then [0] end {3}{3} if 3 then {6} end(e选中的卡牌)"
+}

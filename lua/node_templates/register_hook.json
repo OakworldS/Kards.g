@@ -1,0 +1,15 @@
+{
+    "type": "register_hook",
+    "color": [200, 90, 160],
+    "hasInput": true,
+    "hasOutput": false,
+    "names": {
+        "zh-CN": "注册钩子",
+        "en": "Register Hook"
+    },
+    "configs": {
+        "zh-CN": "'注册'{通用效果、一般属性修饰}'钩子：'if 一般属性修饰 then'修改'{敌方、友方、所有}'卡牌'的{造成的伤害、攻击力、防御力}{增加、减少、设为}[]，'作用域'{存活在场、永久} else '效果：'{总是触发、条件触发：}if 条件触发 then'当'{敌方、友方}{回合开始、回合结束、部署单位、打出指令、触发反制}end # end(p钩子ID)",
+        "en": "'Register'{General Effect、Stat Modifier}'Hook: 'if Stat Modifier then'Modify'{Enemy、Friendly、All}'Cards' s {Dealt Damage、Attack、Defense}{Increase、Decrease、Set}[]，'Scope '{While On Field、Permanent} else 'Effect: '{Always、On Event: }if On Event then'When'{Enemy、Friendly}{Turn Start、Turn End、Deploy Unit、Play Command、Trigger Counter}end # end(pHookID)"
+    },
+    "base": "{2}if 1 then {3}{3}{3}[0]{2} else {2}if 2 then {2}{5} end # end(p钩子ID)"
+}

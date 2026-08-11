@@ -1,0 +1,15 @@
+{
+    "type": "turn",
+    "color": [80, 80, 200],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "回合",
+        "en": "Turn"
+    },
+    "configs": {
+        "zh-CN": "'回合'\n{等待、使}\nif 等待 then\n{友方、敌方、任意} '回合' {开始、结束} [] '次'\nelseif 使 then\n{回合结束、跳过回合}\nend",
+        "en": "'Turn'\n{Wait、Make}\nif Wait then\n{Friendly、Enemy、Any} 'Turn' {Begin、End} [] 'Times'\nelseif Make then\n{EndTurn、SkipTurn}\nend"
+    },
+    "base": "{2} if 1 then {3}{2}[0] elseif 2 then {2} end"
+}
