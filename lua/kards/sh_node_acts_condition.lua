@@ -78,7 +78,10 @@ local ConditionActs = {
         local function unitStat(u, stat)
             return (u.GetStat and u:GetStat(stat)) or 0
         end
-        if countType == "maxAttack" then
+        if type(rawType) == "string" and rawType:match("^var:") then
+            -- 变量库变量模式（2026-10-04）：数值源为变量库变量，直接读其当前值（如「剩余指挥点」）
+            actualValue = KARDS.NodeParser.ResolveNumberValue(ctx, rawType)
+        elseif countType == "maxAttack" then
             actualValue = 0
             for _, u in ipairs(units) do
                 actualValue = math.max(actualValue, unitStat(u, "attack"))
@@ -114,8 +117,8 @@ local ConditionActs = {
             -- direct：直接统计单位数量
             actualValue = #units
         end
-        -- 解析比较值（number_2，[lib]）
-        local compareValue = tonumber(ReadSlot(node, "number_2")) or 0
+        -- 解析比较值（number_2，[lib]；数字字面量或 "var:" 变量引用，2026-10-04）
+        local compareValue = KARDS.NodeParser.ResolveNumberValue(ctx, ReadSlot(node, "number_2"))
         -- 解析运算符（select_3：1= 2> 3< 4>= 5<=）
         local opIdx = ReadSlot(node, "select_3") or 1
         local ops = { [1] = "==", [2] = ">", [3] = "<", [4] = ">=", [5] = "<=" }
@@ -150,6 +153,27 @@ local ConditionActs = {
         node.data["p是否有关键字"] = hasKeyword
         return hasKeyword
     end,
+    -- 前线归属：判定前线当前归属方（友方/敌方/无主），结果存 node.data
+    -- 数据源 KARDS.Battlefield:GetFrontlineOwner（sh_battlefield.lua:290-292），
+    -- 前线为空时归属值为 nil（无主）。side：1 友方 / 2 敌方 / 3 无主
+    frontlineOwnerCheck = function(ctx, card, targets, item, node)
+        local tableID = ctx.tableID or ctx.table_id
+        local owner = KARDS.Battlefield:GetFrontlineOwner(tableID)
+        local mine = card and card.GetOwner and card:GetOwner() or nil
+        local sel = tonumber(ReadSlot(node, item.side)) or 1
+        local result
+        if sel == 1 then
+            result = (owner ~= nil and owner == mine)
+        elseif sel == 2 then
+            result = (owner ~= nil and owner ~= mine)
+        else
+            result = (owner == nil)
+        end
+        node.data["n比较结果"] = result and 1 or 0
+        node.data["p布尔值"] = result
+        node.data["p是否有关键字"] = false
+        return result
+    end,
 }
 
 -- ====================================================================
@@ -166,7 +190,8 @@ local ConditionActs = {
 --   目标/单位：属性变化（stat_change）与触发（trigger/deathrattle/convert 等，按 select_3 分支区分，
 --     「有变化的」仅 stat_change + select_4 属性过滤；「触发」按 select_6 能力/词条筛选，M2/M3）
 --   总部：HQ 受伤（take_damage/deal_damage）或属性变化（stat_change）
---   打出指令：play_command（发起者为指令卡）；触发反制：counter（拦截时 play_command+counter 刻，M4b/M6）
+--   打出指令：play_command（发起者为指令卡）；触发反制：counter（任一操作被拦截时，
+--     拦截收尾 KARDS.Battle:InterceptOperation 推 {操作类型, "counter"} 刻，M1.4）
 --   加入：deploy/join_battlefield/join_frontline/summon；玩家：draw/extra_draw/discard/burn（对齐 @player_actions）
 --   回合：turn_begin / turn_end（按 select_9 开始/结束阶段过滤，M4a）
 local EVENT_MONITOR_INFO = {
@@ -257,8 +282,11 @@ local EventMonitorActs = {
         -- 目标/单位分支（M2/M3）：select_3「有变化的/触发」区分操作范围；
         -- 「有变化的」仅 stat_change 刻 + select_4 属性过滤；「触发」按 select_6 能力/词条筛选
         local branch3 = nil
+        local selfOnly = false
         if item.event == "target" or item.event == "unit" then
-            branch3 = ReadSlot(node, "select_3") or 1 -- 1 有变化的 / 2 触发
+            -- 1 有变化的 / 2 触发 / 3 自身有变化的 / 4 自身触发（2026-10-04：自身变体限定受影响卡为发起者）
+            branch3 = ReadSlot(node, "select_3") or 1
+            selfOnly = (branch3 == 3 or branch3 == 4)
         end
         local triggered = false
         local eventTarget = nil
@@ -279,7 +307,7 @@ local EventMonitorActs = {
                         and ((ReadSlot(node, "select_7") or 1) == 3)
                     local opMatched = false
                     if branch3 then
-                        if branch3 == 1 then
+                        if branch3 == 1 or branch3 == 3 then
                             -- 有变化的：仅 stat_change 刻，且按 select_4 属性过滤（M2）
                             for _, op in ipairs(initiator[2] or {}) do
                                 if op == "stat_change" and StatChangeMatchesAttr(node, item, tick) then
@@ -300,6 +328,12 @@ local EventMonitorActs = {
                         for _, op in ipairs(initiator[2] or {}) do
                             if info.ops[op] or (wantIntel and op == "intelligence") then opMatched = true break end
                         end
+                    end
+                    -- 自身变体（branch3 3/4）：该刻受影响卡须为发起者自身（2026-10-04，柴郡团「该单位受到伤害」）
+                    if opMatched and selfOnly then
+                        local aff = (tick[2] or {})[1]
+                        local affCard = aff and aff[1]
+                        if affCard ~= card then opMatched = false end
                     end
                     if opMatched then
                         -- 附加约束（三类约束互斥，按事件类型只启用其一；未配置或值 ≤ 0 视为不约束）
@@ -501,13 +535,31 @@ local TargetSelectorActs = {
             local rank = math.max(1, tonumber(ReadSlot(node, "number_1")) or 1)
             local sorted = {}
             for _, g in ipairs(group) do table.insert(sorted, g) end
+            -- 同排名随机择一（2026-10-04）：先以 Fisher-Yates 洗牌打散，使排序后等值元素顺序随机
+            for i = #sorted, 2, -1 do
+                local j = math.random(i)
+                sorted[i], sorted[j] = sorted[j], sorted[i]
+            end
             local descending = (mode == "highest")
             table.sort(sorted, function(a, b)
                 local va, vb = TSGetAttr(a, attr), TSGetAttr(b, attr)
                 if va == vb then return false end
-                return descending and (va > vb) or (va < vb)
+                -- 不可写成 `descending and (va > vb) or (va < vb)`：降序时若 va <= vb，
+                -- `and` 的结果为 false 会继续走 `or (va < vb)`，把降序比较退化成升序（Lua and/or 陷阱）
+                if descending then return va > vb end
+                return va < vb
             end)
-            result = (sorted[rank] and { sorted[rank] }) or {}
+            -- 取第 rank 名后，在同值的并列项中随机择一（属性最高/最低 同排名随机）
+            if sorted[rank] then
+                local rankVal = TSGetAttr(sorted[rank], attr)
+                local ties = {}
+                for _, g in ipairs(sorted) do
+                    if TSGetAttr(g, attr) == rankVal then table.insert(ties, g) end
+                end
+                result = { ties[math.random(#ties)] }
+            else
+                result = {}
+            end
         end
         -- 输出端口名（e选中的卡牌）：base 输出类型首项
         local outName = "选中的卡牌"

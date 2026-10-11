@@ -20,8 +20,7 @@
 -- 高级文本绘制函数：支持多字体、换行、关键词高亮
 local keywordsForHighlight = KARDS.CardEditor.Data.KeywordsForHighlight
 
--- 引用全局词条映射表
-local KeywordDisplayNames = KARDS.CardEditor.Data.KeywordDisplayNames
+-- 引用全局词条枚举表（BuildKeywordsList 委托前重排为固定枚举顺序）
 local booleanKeywordKeys = KARDS.CardEditor.Data.BooleanKeywordKeys
 local numericKeywordKeys = KARDS.CardEditor.Data.NumericKeywordKeys
 
@@ -29,6 +28,12 @@ local numericKeywordKeys = KARDS.CardEditor.Data.NumericKeywordKeys
 -- 卡牌花费/行动花费/攻击/防御等所有白色数值文字统一使用
 -- 与 3D2D 文字叠加层（cl_card_text_overlay.lua 的 COLOR_NUMBER）保持同色
 local VALUE_TEXT_COLOR = Color(201, 195, 169)
+
+-- 闪卡模式判定（2026-10-04）：闪卡模板下卡面文字配色反转，
+-- 花费与行动花费用纯白，名称与攻防等其余文字用纯黑（词条与描述本就为纯黑）。
+local function IsFlashTemplate(appearance)
+    return appearance ~= nil and appearance.cardTemplate == "flash"
+end
 
 -- 注册斜体字体用于 HTML <i> 标签
 surface.CreateFont("Calibri_Italic_20", {
@@ -39,109 +44,46 @@ surface.CreateFont("Calibri_Italic_20", {
     antialias = true,
 })
 
+-- 卡牌模板键（外貌数据 → ImagePaths.template 的键）：统一取值并容错。
+-- 旧存档与卡牌对象变量里的外貌数据可能没有 cardTemplate（该字段是后加的），直接拼接会
+-- 报 attempt to concatenate field 'cardTemplate'（a nil value）；缺失时回退 "custom"，
+-- 与各调用点查不到键时回退 ImagePaths.template["custom"] 同一口径。
+local function TemplateKeyOf(appearance)
+    local app = appearance or {}
+    return (app.cardTemplate or "custom") .. "_" .. (app.cardType or "unit")
+end
+
+-- 外貌数据规范化（2026-10-02）：节点编辑器的悬停预览传入的是缓存的 cardAppearance，可能来自
+-- 旧存档或卡牌对象变量，字段不全。缺 cardTemplate 会在拼接模板键时报错，缺 imageScale 会在
+-- 插图缩放的乘法上报错，缺 nameFontSize 会在字体名拼接时报错。绘制入口统一以本表为底补默认值，
+-- 传入表覆盖其上，缺失字段一律取中性的默认值（不用编辑器当前卡牌的数据，避免串值）。
+local PREVIEW_APPEARANCE_DEFAULTS = {
+    name = "", cost = 0, actionCost = 0, country = "", cardType = "infantry",
+    attack = 0, defense = 0, quality = "normal",
+    keywords = {}, keywordValues = {}, pincerValue = "",
+    specialEffect = "", imagePath = "",
+    cardTemplate = "custom", customTemplatePath = "",
+    nameIsBlack = false, nameIsEnglish = false, nameFontSize = 36, descFontSize = 20,
+    imageOffsetX = 0, imageOffsetY = 0, imageScale = 1, effectPath = "",
+}
+
+local function NormalizeAppearance(appearance)
+    local out = {}
+    for k, v in pairs(PREVIEW_APPEARANCE_DEFAULTS) do out[k] = v end
+    for k, v in pairs(appearance or {}) do
+        if v ~= nil then out[k] = v end
+    end
+    return out
+end
+
 -- 根据外貌数据获取卡牌模板材质路径
 local function GetTemplatePath(appearance)
-    local templateKey = appearance.cardTemplate .. "_" .. appearance.cardType
+    local templateKey = TemplateKeyOf(appearance)
     local templatePath = KARDS.CardEditor.Canvas.ImagePaths.template[templateKey]
     if not templatePath then
         templatePath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
     end
     return templatePath
-end
-
-local function GetTextSizeForFont(text, font)
-    surface.SetFont(font)
-    return surface.GetTextSize(text)
-end
-
-local function DrawRichText(text, x, y, defaultFont, defaultColor, xAlign, yAlign, maxWidth)
-    if not text then return end
-    defaultFont = defaultFont or "Calibri_20"
-    defaultColor = defaultColor or Color(0, 0, 0)
-
-    local segments = {}
-    local currentPos = 1
-    local textLength = #text
-
-    while currentPos <= textLength do
-        local foundKeyword = false
-        local bestMatch = nil
-        local bestMatchEnd = 0
-
-        for _, keyword in ipairs(keywordsForHighlight) do
-            local keywordStart, keywordEnd = string.find(text, keyword, currentPos, true)
-            if keywordStart == currentPos then
-                if (not bestMatch) or (keywordEnd > bestMatchEnd) then
-                    bestMatch = keyword
-                    bestMatchEnd = keywordEnd
-                end
-                foundKeyword = true
-            end
-        end
-
-        if foundKeyword and bestMatch then
-            local hasColon = false
-            if (bestMatch == "部署" or bestMatch == "抉择") and bestMatchEnd + 1 <= textLength then
-                if text:sub(bestMatchEnd + 1, bestMatchEnd + 1) == "：" then
-                    bestMatchEnd = bestMatchEnd + 1
-                    hasColon = true
-                end
-            end
-
-            table.insert(segments, {
-                text = text:sub(currentPos, bestMatchEnd),
-                font = "SourceHan_Heavy_20",
-                color = Color(0, 0, 0)
-            })
-            currentPos = bestMatchEnd + 1
-        else
-            local nextKeywordPos = textLength + 1
-            for _, keyword in ipairs(keywordsForHighlight) do
-                local keywordStart = string.find(text, keyword, currentPos, true)
-                if keywordStart and keywordStart < nextKeywordPos then
-                    nextKeywordPos = keywordStart
-                end
-            end
-
-            local endPos = nextKeywordPos - 1
-            if endPos >= currentPos then
-                table.insert(segments, {
-                    text = text:sub(currentPos, endPos),
-                    font = defaultFont,
-                    color = defaultColor
-                })
-            end
-            currentPos = endPos + 1
-        end
-    end
-
-    if maxWidth and maxWidth > 0 then
-        local lineHeight = select(2, GetTextSizeForFont("测试", defaultFont))
-        local currentX = x
-        local currentY = y
-        local startX = x
-
-        for _, segment in ipairs(segments) do
-            local segW, segH = GetTextSizeForFont(segment.text, segment.font)
-
-            for char in string.gmatch(segment.text, "[%z\1-\127\194-\244][\128-\191]*") do
-                local charW = GetTextSizeForFont(char, segment.font)
-                if currentX + charW > startX + maxWidth and currentX > startX then
-                    currentX = startX
-                    currentY = currentY + lineHeight
-                end
-                draw.SimpleText(char, segment.font, currentX, currentY, segment.color, TEXT_ALIGN_LEFT, yAlign)
-                currentX = currentX + charW
-            end
-        end
-    else
-        local currentX = x
-        for _, segment in ipairs(segments) do
-            draw.SimpleText(segment.text, segment.font, currentX, y, segment.color, xAlign, yAlign)
-            local w = GetTextSizeForFont(segment.text, segment.font)
-            currentX = currentX + w
-        end
-    end
 end
 
 -- 解析 HTML 加粗/斜体标签为格式化片段
@@ -345,57 +287,90 @@ local function DrawSpecialEffectRichText(text, x, y, xAlign, yAlign, fontSize)
     end
 end
 
--- ===================== DrawCardPreview 子函数（预览器版本） =====================
--- 说明：预览器与渲染器使用各自独立的位置数值。
--- 以下无后缀函数为预览器版本，使用未调整±5 的原始位置数值；
--- 渲染器版本见同名函数加 _Render 后缀（用于离屏渲染，数值不同）。
+-- ===== 双版本布局配置（2026-08-15 编辑器重构 7.5-5 收敛） =====
+-- preview：编辑器屏幕预览（DrawCardPreview）位置数值
+-- render ：离屏渲染纹理（DrawCardPreviewRender）位置数值
+-- 数值均为多年视觉调校结果、与模板像素级耦合，禁止改动；
+-- 计算方式与重构前逐字等价（previewX/previewY ± 数值 * scaleFactor）
+local LAYOUT = {
+    preview = {
+        nameTop = 35,                       -- 普通卡名称：距顶部
+        nameCommand = 100,                  -- 指令卡名称：距底部
+        nameHQ = 87.5,                      -- 总部名称：距底部
+        costX = 35, costY = 35,             -- 花费（左上角）
+        actionCostX = 51, actionCostY = 45, -- 行动花费（花费右侧）
+        countryRight = 60, countryTop = 20, -- 国旗（右上角）
+        attackLeft = 79.5, attackBottom = 109.5,  -- 攻击（左下）
+        defenseRight = 88, defenseBottom = 109.5, -- 防御（右下）
+        typeIconCenterX = 0, typeIconBottom = 125, -- 类型图标（攻防之间）
+        hqDefenseRight = 150, hqDefenseBottom = 155, -- 总部防御（右下）
+        keywordsBottom = 78,                -- 词条：距底部
+        descAfterKeywords = 20,             -- 描述：有词条时紧贴词条下方
+        descAfterName = 27,                 -- 描述：指令卡无词条时紧贴标题下方
+        qualityBottom = 23,                 -- 品质图标：距底部
+    },
+    render = {
+        nameTop = 25,
+        nameCommand = 95,
+        nameHQ = 82.5,
+        costX = 25, costY = 25,
+        actionCostX = 41, actionCostY = 35,
+        countryRight = 50, countryTop = 15,
+        attackLeft = 70.5, attackBottom = 105.5,
+        defenseRight = 73, defenseBottom = 105.5,
+        typeIconCenterX = 2, typeIconBottom = 119,
+        hqDefenseRight = 150, hqDefenseBottom = 155,
+        keywordsBottom = 75,
+        descAfterKeywords = 20,
+        descAfterName = 35,
+        qualityBottom = 20,
+    },
+}
+
+-- ===================== DrawCardPreview 子函数（双版本布局参数化） =====================
+-- 说明：预览器与渲染器的 7 对同构子函数已收敛为单一函数，
+-- 位置数值由调用方传入的 LAYOUT.preview / LAYOUT.render 决定（2026-08-15 编辑器重构 7.5-5）。
 
 -- 构建词条列表并返回 keywordsText 和 hasKeywords
+-- 拼接规则统一委托 BuildKeywordsText（sh_card_data.lua，战斗系统共用）；
+-- 此处仅保留「固定枚举顺序」差异（appearance.keywords 为用户点击顺序，
+-- 委托前重排为枚举顺序，保持与原 BuildKeywordsList 输出顺序一致）
 local function BuildKeywordsList(appearance)
-    local keywordsList = {}
-
-    -- 普通词条（无数值）
+    local ordered = {}
     for _, key in ipairs(booleanKeywordKeys) do
         if table.HasValue(appearance.keywords, key) then
-            if key == "pincer" and appearance.pincerValue and appearance.pincerValue ~= "" then
-                table.insert(keywordsList, "钳击：" .. appearance.pincerValue)
-            else
-                table.insert(keywordsList, KeywordDisplayNames[key])
-            end
+            table.insert(ordered, key)
         end
     end
-
-    -- 带数值的词条（排除"倒计时"，不在预览图上显示）
     for _, key in ipairs(numericKeywordKeys) do
-        if key ~= "countdown" and table.HasValue(appearance.keywords, key) and appearance.keywordValues and appearance.keywordValues[key] > 0 then
-            table.insert(keywordsList, KeywordDisplayNames[key] .. appearance.keywordValues[key])
+        if table.HasValue(appearance.keywords, key) then
+            table.insert(ordered, key)
         end
     end
-
-    -- 老兵词条：放在最前面
+    -- veteran 不属布尔/数值枚举表，单独加入（BuildKeywordsText 内部置顶）
     if table.HasValue(appearance.keywords, "veteran") then
-        table.insert(keywordsList, 1, KeywordDisplayNames.veteran)
+        table.insert(ordered, "veteran")
     end
 
-    local keywordsText = table.concat(keywordsList, "，")
+    local keywordsText = KARDS.CardEditor.Data.BuildKeywordsText(ordered, appearance.keywordValues, appearance.pincerValue)
     return keywordsText, keywordsText ~= ""
 end
 
--- 绘制卡牌名称
--- 名称位置说明：普通卡位于预览图顶部向下35像素，指令卡位于预览图底部向上100像素
+-- 绘制卡牌名称（预览器/渲染器共用，位置数值取 layout）
+-- 普通卡名称位于预览图顶部向下，指令卡位于预览图底部向上（距底数值见 LAYOUT）
 -- 返回 nameY 供 DrawCardDescription 使用
-local function DrawCardName(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard)
+local function DrawCardName(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, layout)
     -- 名称位置计算独立于名称内容：指令/总部卡无名称（name 为空）时也返回位置，
     -- 供 DrawCardDescription（指令卡无词条时紧贴标题下方锚定）使用，避免 nameY=nil 算术崩溃
     local nameY
     if isCommandCard then
         -- 总部名称下移（下移量减半：原 25 降为 12.5）
-        nameY = (appearance.cardType == "headquarter") and (previewY + previewH - 87.5 * scaleFactor) or (previewY + previewH - 100 * scaleFactor)
+        nameY = (appearance.cardType == "headquarter") and (previewY + previewH - layout.nameHQ * scaleFactor) or (previewY + previewH - layout.nameCommand * scaleFactor)
     else
-        nameY = previewY + 35 * scaleFactor
+        nameY = previewY + layout.nameTop * scaleFactor
     end
     if not (appearance.name and appearance.name ~= "") then return nameY end
-    local nameColor = (appearance.nameIsBlack or isCommandCard) and Color(0, 0, 0) or Color(255, 255, 255)
+    local nameColor = (IsFlashTemplate(appearance) or appearance.nameIsBlack or isCommandCard) and Color(0, 0, 0) or Color(255, 255, 255)
 
     local nameFont = "SourceHan_Heavy_" .. appearance.nameFontSize
     local useEnglishFont = false
@@ -421,28 +396,30 @@ local function DrawCardName(appearance, previewX, previewY, previewW, previewH, 
     return nameY
 end
 
--- 绘制卡牌花费（如果hideNumbers为false）
--- 花费位置说明：位于预览图左上角(35, 35)，居中对齐
-local function DrawCardCost(appearance, previewX, previewY, scaleFactor, isCommandCard, hideNumbers)
+-- 绘制卡牌花费（如果hideNumbers为false；预览器/渲染器共用，位置数值取 layout）
+-- 花费位置说明：位于预览图左上角，居中对齐
+local function DrawCardCost(appearance, previewX, previewY, scaleFactor, isCommandCard, hideNumbers, layout)
     if hideNumbers or appearance.cardType == "headquarter" then return end
 
     local costText = tostring(appearance.cost)
     local costFont = #costText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
-    draw.SimpleText(costText, costFont, previewX + 35 * scaleFactor, previewY + 35 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    -- 闪卡模式：花费与行动花费改纯白（2026-10-04）
+    local costColor = IsFlashTemplate(appearance) and Color(255, 255, 255) or VALUE_TEXT_COLOR
+    draw.SimpleText(costText, costFont, previewX + layout.costX * scaleFactor, previewY + layout.costY * scaleFactor, costColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
     -- 绘制行动花费（非指令卡才绘制）
-    -- 行动花费位置说明：位于花费数字右侧，(51, 45)，居中对齐
+    -- 行动花费位置说明：位于花费数字右侧，居中对齐
     -- 十位数以上用更小字号（18）避免与花费数字重叠
     if not isCommandCard then
         local actionCostText = tostring(appearance.actionCost)
         local actionCostFont = #actionCostText > 1 and "SourceHan_Heavy_18" or "SourceHan_Heavy_24"
-        draw.SimpleText(actionCostText, actionCostFont, previewX + 51 * scaleFactor, previewY + 45 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(actionCostText, actionCostFont, previewX + layout.actionCostX * scaleFactor, previewY + layout.actionCostY * scaleFactor, costColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 end
 
--- 绘制所属国图标（右上角）
--- 国旗位置说明：从预览图右侧向左偏移60像素，从顶部向下偏移20像素
-local function DrawCardCountry(appearance, previewX, previewY, previewW, scaleFactor)
+-- 绘制所属国图标（右上角；预览器/渲染器共用，位置数值取 layout）
+-- 国旗位置说明：从预览图右侧向左偏移、从顶部向下偏移（数值见 LAYOUT）
+local function DrawCardCountry(appearance, previewX, previewY, previewW, scaleFactor, layout)
     -- 按卡牌所属国选择图标，未知/缺失回退沙盒图标
     local countryKey = tostring(appearance and appearance.country or ""):lower()
     local countryIconPath = KARDS.CardEditor.Canvas.ImagePaths.country[countryKey]
@@ -455,38 +432,47 @@ local function DrawCardCountry(appearance, previewX, previewY, previewW, scaleFa
         local countryH = countryMat:Height() * scaleFactor
         surface.SetDrawColor(255, 255, 255, 255)
         surface.SetMaterial(countryMat)
-        surface.DrawTexturedRect(previewX + previewW - 60 * scaleFactor, previewY + 20 * scaleFactor, countryW, countryH)
+        surface.DrawTexturedRect(previewX + previewW - layout.countryRight * scaleFactor, previewY + layout.countryTop * scaleFactor, countryW, countryH)
     end
 end
 
--- 绘制攻击力、防御力和卡牌类型图标
-local function DrawCardStats(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hideNumbers)
-    if hideNumbers then return end
+-- 绘制攻击力、防御力和卡牌类型图标（预览器/渲染器共用，位置数值取 layout）
+-- renderMode：离屏渲染模式（3D2D 文字卡 hideNumbers 时攻防/总部防御转 3D2D 叠加层，
+--   但类型图标仍保留在纹理；预览模式 hideNumbers 时本函数整体跳过，行为同重构前）
+local function DrawCardStats(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hideNumbers, layout, renderMode)
+    -- 预览模式：hideNumbers 时整个攻防区域（含类型图标）不绘制（重构前预览器行为）
+    if not renderMode and hideNumbers then return end
 
-    -- 总部：仅绘制防御力（不绘制攻击力/类型图标）；位置暂用防御位，可按需调整；防御力文字放大显示
+    -- 闪卡模式：攻防等数值改纯黑（2026-10-04）
+    local statColor = IsFlashTemplate(appearance) and Color(0, 0, 0) or VALUE_TEXT_COLOR
+
+    -- 总部：仅绘制防御力（不绘制攻击力/类型图标）；位置与屏幕预览一致（右下角）；防御力文字放大显示
     if appearance.cardType == "headquarter" then
-        local hqDefenseText = tostring(appearance.defense)
-        local hqDefenseFont = #hqDefenseText > 1 and "SourceHan_Heavy_56" or "SourceHan_Heavy_72"
-        draw.SimpleText(hqDefenseText, hqDefenseFont, previewX + previewW - 150 * scaleFactor, previewY + previewH - 155 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        if not hideNumbers then
+            local hqDefenseText = tostring(appearance.defense)
+            local hqDefenseFont = #hqDefenseText > 1 and "SourceHan_Heavy_56" or "SourceHan_Heavy_72"
+            draw.SimpleText(hqDefenseText, hqDefenseFont, previewX + previewW - layout.hqDefenseRight * scaleFactor, previewY + previewH - layout.hqDefenseBottom * scaleFactor, statColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
         return
     end
 
     if isCommandCard then return end
 
-    -- 绘制攻击力（偏下位置左侧）
-    -- 攻击力位置说明：从预览图左侧偏移79.5像素，从底部向上偏移109.5像素
-    local attackText = tostring(appearance.attack)
-    local attackFont = #attackText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
-    draw.SimpleText(attackText, attackFont, previewX + 79.5 * scaleFactor, previewY + previewH - 109.5 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    -- 绘制攻击力（偏下位置左侧）与防御力（偏下位置右侧）
+    -- 攻击力位置说明：从预览图左侧偏移、从底部向上偏移；防御力同理从右侧偏移（数值见 LAYOUT）
+    -- hideNumbers 时不烘焙攻防数字（转 3D2D 叠加层实时绘制）
+    if not hideNumbers then
+        local attackText = tostring(appearance.attack)
+        local attackFont = #attackText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
+        draw.SimpleText(attackText, attackFont, previewX + layout.attackLeft * scaleFactor, previewY + previewH - layout.attackBottom * scaleFactor, statColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
-    -- 绘制防御力（偏下位置右侧）
-    -- 防御力位置说明：从预览图右侧向左偏移88像素，从底部向上偏移109.5像素
-    local defenseText = tostring(appearance.defense)
-    local defenseFont = #defenseText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
-    draw.SimpleText(defenseText, defenseFont, previewX + previewW - 88 * scaleFactor, previewY + previewH - 109.5 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        local defenseText = tostring(appearance.defense)
+        local defenseFont = #defenseText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
+        draw.SimpleText(defenseText, defenseFont, previewX + previewW - layout.defenseRight * scaleFactor, previewY + previewH - layout.defenseBottom * scaleFactor, statColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
 
-    -- 绘制卡牌类型图标（攻击力和防御力之间）
-    -- 类型图标位置说明：预览图水平居中，从底部向上偏移125像素
+    -- 绘制卡牌类型图标（攻击力和防御力之间；hideNumbers 时仍保留在纹理）
+    -- 类型图标位置说明：预览图水平居中（可相对中心偏移），从底部向上偏移（数值见 LAYOUT）
     local cardTypeScaleFactor = 0.32 * scaleFactor
     local cardTypeIconPath = KARDS.CardEditor.Canvas.ImagePaths.cardType[appearance.cardType]
     if cardTypeIconPath then
@@ -496,45 +482,49 @@ local function DrawCardStats(appearance, previewX, previewY, previewW, previewH,
             local cardTypeH = cardTypeMat:Height() * cardTypeScaleFactor
             surface.SetDrawColor(255, 255, 255, 255)
             surface.SetMaterial(cardTypeMat)
-            surface.DrawTexturedRect(previewX + previewW / 2 - cardTypeW / 2, previewY + previewH - 125 * scaleFactor, cardTypeW, cardTypeH)
+            surface.DrawTexturedRect(previewX + previewW / 2 - cardTypeW / 2 + layout.typeIconCenterX * scaleFactor, previewY + previewH - layout.typeIconBottom * scaleFactor, cardTypeW, cardTypeH)
         end
     end
 end
 
--- 词条位置说明：从预览图底部向上偏移78像素
-local function DrawCardKeywords(appearance, previewX, previewY, previewW, previewH, scaleFactor, cardCenterX)
+-- 词条位置说明：从预览图底部向上偏移（数值见 LAYOUT；预览器/渲染器共用）
+-- 3D2D 文字卡（hideNumbers）：词条转由 3D2D 叠加层实时绘制（不烘焙进纹理）——仅离屏渲染模式
+local function DrawCardKeywords(appearance, previewX, previewY, previewW, previewH, scaleFactor, cardCenterX, layout, hideNumbers)
+    if hideNumbers then return false end
     local keywordsText, hasKeywords = BuildKeywordsList(appearance)
     if hasKeywords then
-        local keywordsY = previewY + previewH - 78 * scaleFactor
+        local keywordsY = previewY + previewH - layout.keywordsBottom * scaleFactor
         draw.SimpleText(keywordsText, "SourceHan_Heavy_20", cardCenterX, keywordsY, Color(0, 0, 0), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     return hasKeywords
 end
 
--- 绘制卡牌描述
-local function DrawCardDescription(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX)
+-- 绘制卡牌描述（预览器/渲染器共用，位置数值取 layout）
+-- 3D2D 文字卡（hideNumbers）：效果描述转由 3D2D 叠加层实时绘制（不烘焙进纹理）——仅离屏渲染模式
+local function DrawCardDescription(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX, layout, hideNumbers)
+    if hideNumbers then return end
     if not (appearance.specialEffect and appearance.specialEffect ~= "") then return end
 
     local descY
     if hasKeywords then
         -- 有词条时：紧靠词条正下方
-        descY = (previewY + previewH - 78 * scaleFactor) + 20 * scaleFactor
+        descY = (previewY + previewH - layout.keywordsBottom * scaleFactor) + layout.descAfterKeywords * scaleFactor
     else
         -- 无词条时：
         if isCommandCard then
             -- 指令、反制指令：紧贴标题下方
-            descY = nameY + 27 * scaleFactor
+            descY = nameY + layout.descAfterName * scaleFactor
         else
             -- 单位模式：上移到词条区域（微移半行填补词条空缺）
-            descY = previewY + previewH - 78 * scaleFactor
+            descY = previewY + previewH - layout.keywordsBottom * scaleFactor
         end
     end
     DrawSpecialEffectRichText(appearance.specialEffect, cardCenterX, descY, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, appearance.descFontSize or 20)
 end
 
--- 绘制品质图标（图片最底部）
--- 品质图标位置说明：预览图水平居中，从底部向上偏移23像素
-local function DrawCardQuality(appearance, previewX, previewY, previewW, previewH, scaleFactor)
+-- 绘制品质图标（图片最底部；预览器/渲染器共用，位置数值取 layout）
+-- 品质图标位置说明：预览图水平居中，从底部向上偏移（数值见 LAYOUT）
+local function DrawCardQuality(appearance, previewX, previewY, previewW, previewH, scaleFactor, layout)
     local qualityScaleFactor = 0.4 * scaleFactor
     local qualityIconPath = KARDS.CardEditor.Canvas.ImagePaths.quality[appearance.quality]
     if not qualityIconPath then return end
@@ -545,11 +535,11 @@ local function DrawCardQuality(appearance, previewX, previewY, previewW, preview
         local qualityH = qualityMat:Height() * qualityScaleFactor
         surface.SetDrawColor(255, 255, 255, 255)
         surface.SetMaterial(qualityMat)
-        surface.DrawTexturedRect(previewX + previewW / 2 - qualityW / 2, previewY + previewH - 23 * scaleFactor, qualityW, qualityH)
+        surface.DrawTexturedRect(previewX + previewW / 2 - qualityW / 2, previewY + previewH - layout.qualityBottom * scaleFactor, qualityW, qualityH)
     end
 end
 
--- ===================== DrawCardPreview 子函数（渲染器版本 _Render） =====================
+-- ===================== DrawCardPreview 共享子函数（边框/插图/模板） =====================
 
 -- 绘制卡牌边框和边缘
 local function DrawCardBorder(previewX, previewY, previewW, previewH, scaleFactor, noEdgeOffset)
@@ -572,7 +562,7 @@ local function DrawCardImage(appearance, previewX, previewY, previewW, previewH,
     local cardMinX, cardMinY = 0, 0
     local cardW, cardH = 140 / 0.25, 110 / 0.25
 
-    local templateKey = appearance.cardTemplate .. "_" .. appearance.cardType
+    local templateKey = TemplateKeyOf(appearance)
     local templatePath = KARDS.CardEditor.Canvas.ImagePaths.template[templateKey]
     if not templatePath then
         templatePath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
@@ -704,182 +694,6 @@ local function DrawCardTemplate(appearance, previewX, previewY, previewW, previe
     end
 end
 
--- 绘制卡牌名称
--- 名称位置说明：普通卡位于预览图顶部向下25像素，指令卡位于预览图底部向上95像素（原110下移30后撤回15，共下移15）
--- 返回 nameY 供 DrawCardDescription 使用
-local function DrawCardName_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard)
-    -- 名称位置计算独立于名称内容：指令/总部卡无名称（name 为空）时也返回位置，
-    -- 供 DrawCardDescription_Render（指令卡无词条时紧贴标题下方锚定）使用，避免 nameY=nil 算术崩溃
-    local nameY
-    if isCommandCard then
-        -- 总部名称下移（下移量减半：原 25 降为 12.5）
-        nameY = (appearance.cardType == "headquarter") and (previewY + previewH - 82.5 * scaleFactor) or (previewY + previewH - 95 * scaleFactor)
-    else
-        nameY = previewY + 25 * scaleFactor
-    end
-    if not (appearance.name and appearance.name ~= "") then return nameY end
-    local nameColor = (appearance.nameIsBlack or isCommandCard) and Color(0, 0, 0) or Color(255, 255, 255)
-
-    local nameFont = "SourceHan_Heavy_" .. appearance.nameFontSize
-    local useEnglishFont = false
-
-    if appearance.nameIsEnglish then
-        local actualSize = appearance.nameFontSize
-        if actualSize == 64 then
-            actualSize = 60
-        end
-        for _, size in ipairs(KARDS.CardEditor.Canvas.DdayFontSizes) do
-            if size == actualSize then
-                nameFont = "Dday_" .. actualSize
-                useEnglishFont = true
-                break
-            end
-        end
-    end
-
-    if not appearance.nameIsEnglish or useEnglishFont then
-        draw.SimpleText(appearance.name, nameFont, previewX + previewW / 2, nameY, nameColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    end
-
-    return nameY
-end
-
--- 绘制卡牌花费（如果hideNumbers为false）
--- 花费位置说明：位于预览图左上角(25, 25)，居中对齐
-local function DrawCardCost_Render(appearance, previewX, previewY, scaleFactor, isCommandCard, hideNumbers)
-    if hideNumbers or appearance.cardType == "headquarter" then return end
-
-    local costText = tostring(appearance.cost)
-    local costFont = #costText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
-    draw.SimpleText(costText, costFont, previewX + 25 * scaleFactor, previewY + 25 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-
-    -- 绘制行动花费（非指令卡才绘制）
-    -- 行动花费位置说明：位于花费数字右侧，(41, 35)，居中对齐
-    -- 十位数以上用更小字号（18）避免与花费数字重叠
-    if not isCommandCard then
-        local actionCostText = tostring(appearance.actionCost)
-        local actionCostFont = #actionCostText > 1 and "SourceHan_Heavy_18" or "SourceHan_Heavy_24"
-        draw.SimpleText(actionCostText, actionCostFont, previewX + 41 * scaleFactor, previewY + 35 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    end
-end
-
--- 绘制所属国图标（右上角）
--- 国旗位置说明：从预览图右侧向左偏移50像素，从顶部向下偏移15像素
-local function DrawCardCountry_Render(appearance, previewX, previewY, previewW, scaleFactor)
-    -- 按卡牌所属国选择图标，未知/缺失回退沙盒图标
-    local countryKey = tostring(appearance and appearance.country or ""):lower()
-    local countryIconPath = KARDS.CardEditor.Canvas.ImagePaths.country[countryKey]
-        or KARDS.CardEditor.Canvas.ImagePaths.country["sandbox"]
-    if not countryIconPath then return end
-
-    local countryMat = Material(countryIconPath)
-    if countryMat then
-        local countryW = countryMat:Width() * scaleFactor
-        local countryH = countryMat:Height() * scaleFactor
-        surface.SetDrawColor(255, 255, 255, 255)
-        surface.SetMaterial(countryMat)
-        surface.DrawTexturedRect(previewX + previewW - 50 * scaleFactor, previewY + 15 * scaleFactor, countryW, countryH)
-    end
-end
-
--- 绘制攻击力、防御力和卡牌类型图标
--- 3D2D 文字卡（hideNumbers）：攻防数字转由 3D2D 叠加层实时绘制（不烘焙进纹理），
--- 但卡牌类型图标仍保留在纹理上（纹理分工：类型/品质/名称/国籍在纹理，词条/效果/攻防/花费转 3D2D）
-local function DrawCardStats_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hideNumbers)
-    -- 总部：仅绘制防御力（不绘制攻击力/类型图标）；位置与屏幕预览一致（右下角 -150/-155），可按需调整；防御力文字放大显示
-    if appearance.cardType == "headquarter" then
-        if not hideNumbers then
-            local hqDefenseText = tostring(appearance.defense)
-            local hqDefenseFont = #hqDefenseText > 1 and "SourceHan_Heavy_56" or "SourceHan_Heavy_72"
-            draw.SimpleText(hqDefenseText, hqDefenseFont, previewX + previewW - 150 * scaleFactor, previewY + previewH - 155 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        end
-        return
-    end
-
-    -- 攻防数字（指令卡不画；hideNumbers 时不烘焙，转 3D2D 叠加层绘制）
-    if not isCommandCard and not hideNumbers then
-        -- 绘制攻击力（偏下位置左侧）
-        -- 攻击力位置说明：从预览图左侧偏移70.5像素，从底部向上偏移105.5像素
-        local attackText = tostring(appearance.attack)
-        local attackFont = #attackText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
-        draw.SimpleText(attackText, attackFont, previewX + 70.5 * scaleFactor, previewY + previewH - 105.5 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-
-        -- 绘制防御力（偏下位置右侧）
-        -- 防御力位置说明：从预览图右侧向左偏移73像素，从底部向上偏移105.5像素
-        local defenseText = tostring(appearance.defense)
-        local defenseFont = #defenseText > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
-        draw.SimpleText(defenseText, defenseFont, previewX + previewW - 73 * scaleFactor, previewY + previewH - 105.5 * scaleFactor, VALUE_TEXT_COLOR, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    end
-
-    -- 卡牌类型图标（攻击力和防御力之间；指令卡不画；hideNumbers 时仍保留在纹理）
-    if isCommandCard then return end
-    -- 类型图标位置说明：预览图水平居中并相对中心右移2像素，从底部向上偏移119像素
-    local cardTypeScaleFactor = 0.32 * scaleFactor
-    local cardTypeIconPath = KARDS.CardEditor.Canvas.ImagePaths.cardType[appearance.cardType]
-    if cardTypeIconPath then
-        local cardTypeMat = Material(cardTypeIconPath)
-        if cardTypeMat then
-            local cardTypeW = cardTypeMat:Width() * cardTypeScaleFactor
-            local cardTypeH = cardTypeMat:Height() * cardTypeScaleFactor
-            surface.SetDrawColor(255, 255, 255, 255)
-            surface.SetMaterial(cardTypeMat)
-            surface.DrawTexturedRect(previewX + previewW / 2 - cardTypeW / 2 + 2 * scaleFactor, previewY + previewH - 119 * scaleFactor, cardTypeW, cardTypeH)
-        end
-    end
-end
-
--- 词条位置说明：从预览图底部向上偏移75像素
--- 3D2D 文字卡（hideNumbers）：词条转由 3D2D 叠加层实时绘制（不烘焙进纹理）
-local function DrawCardKeywords_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, cardCenterX, hideNumbers)
-    if hideNumbers then return false end
-    local keywordsText, hasKeywords = BuildKeywordsList(appearance)
-    if hasKeywords then
-        local keywordsY = previewY + previewH - 75 * scaleFactor
-        draw.SimpleText(keywordsText, "SourceHan_Heavy_20", cardCenterX, keywordsY, Color(0, 0, 0), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    end
-    return hasKeywords
-end
-
--- 绘制卡牌描述
--- 3D2D 文字卡（hideNumbers）：效果描述转由 3D2D 叠加层实时绘制（不烘焙进纹理）
-local function DrawCardDescription_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX, hideNumbers)
-    if hideNumbers then return end
-    if not (appearance.specialEffect and appearance.specialEffect ~= "") then return end
-
-    local descY
-    if hasKeywords then
-        -- 有词条时：紧靠词条正下方
-        descY = (previewY + previewH - 75 * scaleFactor) + 20 * scaleFactor
-    else
-        -- 无词条时：
-        if isCommandCard then
-            -- 指令、反制指令：紧贴标题下方
-            descY = nameY + 35 * scaleFactor
-        else
-            -- 单位模式：上移到词条区域（微移半行填补词条空缺）
-            descY = previewY + previewH - 75 * scaleFactor
-        end
-    end
-    DrawSpecialEffectRichText(appearance.specialEffect, cardCenterX, descY, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, appearance.descFontSize or 20)
-end
-
--- 绘制品质图标（图片最底部）
--- 品质图标位置说明：预览图水平居中，从底部向上偏移20像素
-local function DrawCardQuality_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor)
-    local qualityScaleFactor = 0.4 * scaleFactor
-    local qualityIconPath = KARDS.CardEditor.Canvas.ImagePaths.quality[appearance.quality]
-    if not qualityIconPath then return end
-
-    local qualityMat = Material(qualityIconPath)
-    if qualityMat then
-        local qualityW = qualityMat:Width() * qualityScaleFactor
-        local qualityH = qualityMat:Height() * qualityScaleFactor
-        surface.SetDrawColor(255, 255, 255, 255)
-        surface.SetMaterial(qualityMat)
-        surface.DrawTexturedRect(previewX + previewW / 2 - qualityW / 2, previewY + previewH - 20 * scaleFactor, qualityW, qualityH)
-    end
-end
-
 -- ===================== DrawCardPreview 主函数 =====================
 
 -- 卡牌预览图绘制函数 - 可根据指定数据在任何地方绘制
@@ -893,7 +707,7 @@ end
 -- 计算卡牌模板缩放因子（固定使用外貌属性编辑器的缩放逻辑）
 local function ComputeCardScaleFactor(appearance, previewH)
     local scaleFactor = 1.0
-    local templateKey = appearance.cardTemplate .. "_" .. appearance.cardType
+    local templateKey = TemplateKeyOf(appearance)
     local templatePath = KARDS.CardEditor.Canvas.ImagePaths.template[templateKey]
     if not templatePath then
         templatePath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
@@ -912,13 +726,35 @@ end
 -- 导出供 cl_ca_appearance_editors.lua 等外部模块使用
 KARDS.CardEditor.Canvas.ComputeCardScaleFactor = ComputeCardScaleFactor
 
-function KARDS.CardEditor.Canvas.DrawCardPreview(appearance, previewX, previewY, previewW, previewH, onlyTemplate, hideNumbers, noEdgeOffset)
+-- 计算卡牌模板的视觉中心X坐标（模板居中，而非预览框居中；预览器/渲染器共用）
+local function ComputeCardCenterX(appearance, previewX, previewW, scaleFactor, noEdgeOffset)
+    local cardCenterX = previewX + previewW / 2  -- 默认回退
+    local templatePath = GetTemplatePath(appearance)
+    if templatePath and templatePath ~= "" then
+        local templateMat = Material(templatePath)
+        if templateMat then
+            local templateOffset = noEdgeOffset and 0 or 10 * scaleFactor
+            local templateScaleFactor = 0.25 * scaleFactor
+            local previewTemplateW = templateMat:Width() * templateScaleFactor
+            cardCenterX = previewX + templateOffset + previewTemplateW / 2
+        end
+    end
+    return cardCenterX
+end
+
+-- 共享主绘制流程（2026-08-15 编辑器重构 7.5-5 收敛）：
+-- 双版本共用边框/插图/模板/富文本绘制；
+-- 名称/花费/国旗/攻防/类型/词条/描述/品质位置取传入 layout（LAYOUT.preview / LAYOUT.render）；
+-- renderMode 区分离屏渲染的行为差异（3D2D 文字卡 hideNumbers 时词条/描述/攻防转 3D2D 叠加层）
+local function DrawCardPreviewCommon(appearance, previewX, previewY, previewW, previewH, onlyTemplate, hideNumbers, noEdgeOffset, layout, renderMode)
     -- !!! 重要：previewH 必须为 TotalEditorH / 3，否则卡牌元素渲染将错位/异常 !!!
     -- 内部使用 math.floor(TotalEditorH / 3) 作为参考高度计算缩放因子，
     -- 传入的 previewW/previewH 仅用于绘制位置裁剪，不参与缩放计算。
     -- 所有调用方务必使用：local refH = math.floor(TotalEditorH / 3)
     -- 固定缩放：使用外貌属性编辑器的缩放逻辑
     -- 参考高度 = 编辑器实际内容高度 / 3（与 DrawPreviewArea 保持一致）
+    -- 外貌数据规范化（2026-10-02）：悬停预览的缓存外貌可能字段不全，绘制前统一补默认值
+    appearance = NormalizeAppearance(appearance)
     local referencePreviewH = math.floor((KARDS.CardEditor.Canvas.TotalEditorH or 720) / 3)
     local scaleFactor = ComputeCardScaleFactor(appearance, referencePreviewH)
     onlyTemplate = onlyTemplate or false
@@ -942,354 +778,44 @@ function KARDS.CardEditor.Canvas.DrawCardPreview(appearance, previewX, previewY,
 
     surface.SetDrawColor(255, 255, 255, 255)
 
-    -- 计算卡牌模板的视觉中心X坐标（模板居中，而非预览框居中）
-    local cardCenterX = previewX + previewW / 2  -- 默认回退
-    local templateKey = appearance.cardTemplate .. "_" .. appearance.cardType
-    local templatePath = KARDS.CardEditor.Canvas.ImagePaths.template[templateKey]
-    if not templatePath then
-        templatePath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
-    end
-    if templatePath and templatePath ~= "" then
-        local templateMat = Material(templatePath)
-        if templateMat then
-            local templateOffset = noEdgeOffset and 0 or 10 * scaleFactor
-            local templateScaleFactor = 0.25 * scaleFactor
-            local previewTemplateW = templateMat:Width() * templateScaleFactor
-            cardCenterX = previewX + templateOffset + previewTemplateW / 2
-        end
-    end
+    local cardCenterX = ComputeCardCenterX(appearance, previewX, previewW, scaleFactor, noEdgeOffset)
 
     -- 4. 名称
-    local nameY = DrawCardName(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard)
+    local nameY = DrawCardName(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, layout)
 
     -- 5. 花费
-    DrawCardCost(appearance, previewX, previewY, scaleFactor, isCommandCard, hideNumbers)
+    DrawCardCost(appearance, previewX, previewY, scaleFactor, isCommandCard, hideNumbers, layout)
 
     -- 6. 国旗（总部不绘制国籍）
     if appearance.cardType ~= "headquarter" then
-        DrawCardCountry(appearance, previewX, previewY, previewW, scaleFactor)
+        DrawCardCountry(appearance, previewX, previewY, previewW, scaleFactor, layout)
     end
 
     -- 7. 攻防 + 类型图标
-    DrawCardStats(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hideNumbers)
+    DrawCardStats(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hideNumbers, layout, renderMode)
 
-    -- 8. 词条
-    local hasKeywords = DrawCardKeywords(appearance, previewX, previewY, previewW, previewH, scaleFactor, cardCenterX)
+    -- 8. 词条（预览模式始终绘制；离屏渲染模式 hideNumbers 时转 3D2D 叠加层）
+    local hasKeywords = DrawCardKeywords(appearance, previewX, previewY, previewW, previewH, scaleFactor, cardCenterX, layout, renderMode and hideNumbers)
 
-    -- 9. 描述
-    DrawCardDescription(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX)
+    -- 9. 描述（预览模式始终绘制；离屏渲染模式 hideNumbers 时转 3D2D 叠加层）
+    DrawCardDescription(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX, layout, renderMode and hideNumbers)
 
     -- 10. 品质（总部不绘制品质）
     if appearance.cardType ~= "headquarter" then
-        DrawCardQuality(appearance, previewX, previewY, previewW, previewH, scaleFactor)
+        DrawCardQuality(appearance, previewX, previewY, previewW, previewH, scaleFactor, layout)
     end
 end
 
--- 离屏渲染专用入口：与预览器共用边框/插图/模板/富文本绘制，
--- 但名称/花费/国旗/攻防/类型/词条/描述/品质使用 _Render 版本（独立位置数值）。
+-- 编辑器屏幕预览入口（preview 布局）
+function KARDS.CardEditor.Canvas.DrawCardPreview(appearance, previewX, previewY, previewW, previewH, onlyTemplate, hideNumbers, noEdgeOffset)
+    DrawCardPreviewCommon(appearance, previewX, previewY, previewW, previewH, onlyTemplate, hideNumbers, noEdgeOffset, LAYOUT.preview, false)
+end
+
+-- 离屏渲染专用入口（render 布局）：与预览器共用边框/插图/模板/富文本绘制，
+-- 元素位置数值取 LAYOUT.render（独立于屏幕预览的多年调校值）
 function KARDS.CardEditor.Canvas.DrawCardPreviewRender(appearance, previewX, previewY, previewW, previewH, onlyTemplate, hideNumbers, noEdgeOffset)
-    -- !!! 重要：previewH 必须为 TotalEditorH / 3，否则卡牌元素渲染将错位/异常 !!!
-    -- 内部使用 math.floor(TotalEditorH / 3) 作为参考高度计算缩放因子，
-    -- 传入的 previewW/previewH 仅用于绘制位置裁剪，不参与缩放计算。
-    local referencePreviewH = math.floor((KARDS.CardEditor.Canvas.TotalEditorH or 720) / 3)
-    local scaleFactor = ComputeCardScaleFactor(appearance, referencePreviewH)
-    onlyTemplate = onlyTemplate or false
-    hideNumbers = hideNumbers or false
-    noEdgeOffset = noEdgeOffset or false
-
-    local isCommandCard = appearance.cardType == "command" or appearance.cardType == "counter_command" or appearance.cardType == "headquarter"
-
-    -- 1. 边框
-    DrawCardBorder(previewX, previewY, previewW, previewH, scaleFactor, noEdgeOffset)
-
-    -- 2. 插图（下层）
-    if not onlyTemplate then
-        DrawCardImage(appearance, previewX, previewY, previewW, previewH, scaleFactor, hideNumbers, noEdgeOffset)
-    end
-
-    -- 3. 模板（中层）
-    DrawCardTemplate(appearance, previewX, previewY, previewW, previewH, scaleFactor, noEdgeOffset)
-
-    if onlyTemplate then return end
-
-    surface.SetDrawColor(255, 255, 255, 255)
-
-    -- 计算卡牌模板的视觉中心X坐标（模板居中，而非预览框居中）
-    local cardCenterX = previewX + previewW / 2  -- 默认回退
-    local templateKey = appearance.cardTemplate .. "_" .. appearance.cardType
-    local templatePath = KARDS.CardEditor.Canvas.ImagePaths.template[templateKey]
-    if not templatePath then
-        templatePath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
-    end
-    if templatePath and templatePath ~= "" then
-        local templateMat = Material(templatePath)
-        if templateMat then
-            local templateOffset = noEdgeOffset and 0 or 10 * scaleFactor
-            local templateScaleFactor = 0.25 * scaleFactor
-            local previewTemplateW = templateMat:Width() * templateScaleFactor
-            cardCenterX = previewX + templateOffset + previewTemplateW / 2
-        end
-    end
-
-    -- 4. 名称
-    local nameY = DrawCardName_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard)
-
-    -- 5. 花费
-    DrawCardCost_Render(appearance, previewX, previewY, scaleFactor, isCommandCard, hideNumbers)
-
-    -- 6. 国旗（总部不绘制国籍）
-    if appearance.cardType ~= "headquarter" then
-        DrawCardCountry_Render(appearance, previewX, previewY, previewW, scaleFactor)
-    end
-
-    -- 7. 攻防 + 类型图标
-    DrawCardStats_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hideNumbers)
-
-    -- 8. 词条
-    local hasKeywords = DrawCardKeywords_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, cardCenterX, hideNumbers)
-
-    -- 9. 描述
-    DrawCardDescription_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX, hideNumbers)
-
-    -- 10. 品质（总部不绘制品质）
-    if appearance.cardType ~= "headquarter" then
-        DrawCardQuality_Render(appearance, previewX, previewY, previewW, previewH, scaleFactor)
-    end
+    DrawCardPreviewCommon(appearance, previewX, previewY, previewW, previewH, onlyTemplate, hideNumbers, noEdgeOffset, LAYOUT.render, true)
 end
 
--- 动态材质缓存
-KARDS.CardEditor.Canvas.DynamicMaterials = KARDS.CardEditor.Canvas.DynamicMaterials or {}
-
--- 真正的离屏渲染函数
-local function RenderToRenderTarget(appearance, rtName, width, height, hideNumbers)
-    -- 获取或创建渲染目标
-    local rt = GetRenderTarget(rtName, width, height)
-    if not rt then
-        print("[KARDS] 无法创建渲染目标: " .. rtName)
-        return nil
-    end
-
-    -- 推送到渲染目标
-    render.PushRenderTarget(rt)
-        -- 清除渲染目标：alpha 清为 255，并禁用后续绘制的 alpha 写入
-        -- （OverrideAlphaWriteEnable true,false）→ RT 全图 alpha 恒为 255，
-        -- 保存的卡面 PNG 完全不透明（修复卡面透明度为 0：组卡卡面材质
-        -- 渲染为全透明而露出卡背图片）
-        render.Clear(0, 0, 0, 255, true, true)
-        render.OverrideAlphaWriteEnable(true, false)
-
-        -- 使用 cam.Start2D 来正确设置渲染上下文
-        cam.Start2D()
-            -- 绘制卡牌到渲染目标，使用正确的坐标，无边缘偏移
-            KARDS.CardEditor.Canvas.DrawCardPreviewRender(appearance, 0, 0, width, height, false, hideNumbers, true)
-        cam.End2D()
-
-        render.OverrideAlphaWriteEnable(false)
-    render.PopRenderTarget()
-
-    return rt
-end
-
--- 从渲染目标创建动态材质
-local function CreateDynamicMaterialFromRT(rt, materialName)
-    -- 创建或获取材质
-    local mat = CreateMaterial(materialName, "UnlitGeneric", {
-        ["$basetexture"] = rt:GetName(),
-        ["$translucent"] = 1,
-        ["$vertexalpha"] = 1,
-        ["$vertexcolor"] = 1,
-        ["$nolod"] = 1
-    })
-
-    return mat
-end
-
--- 保存渲染目标为PNG
-local function SaveRTToFile(rt, filePath)
-    local success = false
-    -- 先推送到渲染目标
-    render.PushRenderTarget(rt)
-        -- 捕获渲染目标内容：alpha=false 保存不含 alpha 通道的 PNG（完全不透明）。
-        -- GMod 已知问题：render.Capture 的 PNG 模式配合 alpha=true 时前景会被渲染为透明
-        -- （SetWriteDepthToDestAlpha 干扰），导致卡面纹理 alpha=0、组卡时露出卡背；
-        -- 去掉 alpha 通道后加载即不透明，杜绝该问题。
-        local data = render.Capture({
-            format = "png",
-            x = 0,
-            y = 0,
-            w = rt:Width(),
-            h = rt:Height(),
-            quality = 100,
-            alpha = false
-        })
-
-        if data then
-            file.Write(filePath, data)
-            success = true
-        end
-    render.PopRenderTarget()
-
-    return success
-end
-
--- 离屏渲染并保存卡牌图片，同时创建动态材质
-function KARDS.CardEditor.Canvas.RenderAndSaveCard(appearance)
-    -- 定义保存目录：总部与普通卡并列（kards/headquarters/ vs kards/cards/）
-    local saveDir = (appearance.cardType == "headquarter") and "kards/headquarters/" or "kards/cards/"
-    -- 确保目录存在
-    if not file.Exists(saveDir, "DATA") then
-        file.CreateDir(saveDir)
-    end
-
-    -- 卡牌名称作为文件名（替换非法字符）
-    local cardName = appearance.name or "unnamed_card"
-    -- 替换非法字符
-    local safeName = string.gsub(cardName, "[^%w]", "_")
-    safeName = string.gsub(safeName, "%s+", "_")
-    safeName = string.gsub(safeName, "^_+", "")
-    safeName = string.gsub(safeName, "_+$", "")
-    if safeName == nil or safeName == "" then
-        safeName = "unnamed_card"
-    end
-
-    -- 渲染尺寸（与编辑器预览一致）
-    local renderWidth = 300
-    local renderHeight = 400
-
-    -- 保存图片
-    local timestamp = os.time()
-    local fullFileName = safeName .. "_full_" .. timestamp .. ".png"
-    local templateFileName = safeName .. "_template_" .. timestamp .. ".png"
-    local fullPath = saveDir .. fullFileName
-    local noNumbersPath = saveDir .. templateFileName
-
-    print("[KARDS] 开始离屏渲染...")
-    print("[KARDS] 渲染尺寸: " .. renderWidth .. "x" .. renderHeight)
-
-    -- 1. 渲染完整卡牌
-    local rtFullName = "Kards_Full_" .. safeName .. "_" .. timestamp
-    local rtFull = RenderToRenderTarget(appearance, rtFullName, renderWidth, renderHeight, false)
-
-    -- 2. 渲染模板卡牌
-    local rtTemplateName = "Kards_Template_" .. safeName .. "_" .. timestamp
-    local rtTemplate = RenderToRenderTarget(appearance, rtTemplateName, renderWidth, renderHeight, true)
-
-    if rtFull and rtTemplate then
-        -- 3. 保存到文件
-        local success1 = SaveRTToFile(rtFull, fullPath)
-        local success2 = SaveRTToFile(rtTemplate, noNumbersPath)
-
-        -- 4. 创建动态材质
-        local matFullName = "Kards_Mat_Full_" .. safeName .. "_" .. timestamp
-        local matTemplateName = "Kards_Mat_Template_" .. safeName .. "_" .. timestamp
-
-        local matFull = CreateDynamicMaterialFromRT(rtFull, matFullName)
-        local matTemplate = CreateDynamicMaterialFromRT(rtTemplate, matTemplateName)
-
-        -- 5. 缓存材质
-        KARDS.CardEditor.Canvas.DynamicMaterials[safeName] = {
-            full = matFull,
-            template = matTemplate,
-            timestamp = timestamp
-        }
-
-        print("[KARDS] 离屏渲染完成！")
-        print("[KARDS] 完整卡牌已保存: garrysmod/data/" .. fullPath)
-        print("[KARDS] 模板卡牌已保存: garrysmod/data/" .. noNumbersPath)
-        print("[KARDS] 动态材质已创建: " .. matFullName .. ", " .. matTemplateName)
-
-        -- 在聊天框显示
-        if IsValid(LocalPlayer()) then
-            LocalPlayer():ChatPrint("卡牌渲染完成！")
-            LocalPlayer():ChatPrint("文件保存在 garrysmod/data/kards/cards/")
-            LocalPlayer():ChatPrint("动态材质已创建，可在游戏中使用")
-        end
-
-        return {
-            full = fullPath,
-            template = noNumbersPath,
-            fullMaterial = matFull,
-            templateMaterial = matTemplate
-        }
-    else
-        print("[KARDS] 离屏渲染失败！")
-        return nil
-    end
-end
-
--- 获取卡牌的动态材质
-function KARDS.CardEditor.Canvas.GetCardMaterial(cardName)
-    local safeName = string.gsub(cardName, "[^%w]", "_")
-    safeName = string.gsub(safeName, "%s+", "_")
-    safeName = string.gsub(safeName, "^_+", "")
-    safeName = string.gsub(safeName, "_+$", "")
-
-    return KARDS.CardEditor.Canvas.DynamicMaterials[safeName]
-end
-
--- 清理旧的动态材质
-function KARDS.CardEditor.Canvas.CleanupOldMaterials(maxAgeSeconds)
-    maxAgeSeconds = maxAgeSeconds or 3600 -- 默认1小时
-    local now = os.time()
-
-    for name, data in pairs(KARDS.CardEditor.Canvas.DynamicMaterials) do
-        if data.timestamp and (now - data.timestamp) > maxAgeSeconds then
-            KARDS.CardEditor.Canvas.DynamicMaterials[name] = nil
-            print("[KARDS] 清理过期材质: " .. name)
-        end
-    end
-end
-
--- 测试：在玩家面前生成一个带有动态材质的实体
-function KARDS.CardEditor.Canvas.SpawnTestEntity(cardName)
-    local ply = LocalPlayer()
-    if not IsValid(ply) then return end
-
-    -- 使用直接保存的 LastRenderedMaterial（更可靠）
-    local mat = KARDS.CardEditor.Canvas.LastRenderedMaterial
-    if not mat then
-        print("[KARDS] 没有找到卡牌材质，请先渲染卡牌")
-        return
-    end
-
-    -- 客户端也创建一个客户端实体来预览
-    local tr = ply:GetEyeTraceNoCursor()
-    local pos = tr.HitPos + tr.HitNormal * 5
-    local ang = ply:GetAngles()
-    ang.y = ang.y + 180
-
-    -- 创建一个简单的客户端实体用于显示
-    -- 使用更适合的模型或只用 DrawOverlay
-    print("[KARDS] 创建测试卡牌显示")
-
-    -- 保存数据到 hook 中
-    local testDisplay = {
-        pos = pos,
-        ang = ang,
-        mat = mat,
-        start = CurTime(),
-        duration = 5
-    }
-
-    -- 添加渲染 hook
-    hook.Add("PostDrawOpaqueRenderables", "Kards_TestCardDisplay", function()
-        if not testDisplay or CurTime() - testDisplay.start > testDisplay.duration then
-            hook.Remove("PostDrawOpaqueRenderables", "Kards_TestCardDisplay")
-            return
-        end
-
-        -- 绘制卡牌
-        cam.Start3D2D(testDisplay.pos + testDisplay.ang:Up() * 0.1, testDisplay.ang, 0.1)
-            surface.SetMaterial(testDisplay.mat)
-            surface.SetDrawColor(255, 255, 255, 255)
-            surface.DrawTexturedRect(-150, -200, 300, 400) -- 300x400 是渲染尺寸
-        cam.End3D2D()
-    end)
-
-    -- 添加一些效果
-    local effectdata = EffectData()
-    effectdata:SetOrigin(pos)
-    util.Effect("balloon_pop", effectdata)
-
-    print("[KARDS] 已在你面前显示测试卡牌（5秒）")
-end
+-- 离屏渲染（RenderAndSaveCard / GetCardMaterial / CleanupOldMaterials / SpawnTestEntity）
+-- 已收敛至 canvas_editor/effect_editor/cl_canvas_editor.lua（2026-08-15 编辑器重构 7.5-1 删除本文件覆盖版死代码）

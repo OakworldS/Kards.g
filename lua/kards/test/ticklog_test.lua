@@ -350,14 +350,22 @@ local function RunBattlefieldTest()
     AssertEqual(KARDS.Battlefield:GetFrontlineOwner("1"), nil, "前线空出后控制方应重置")
     AssertEqual(sup1[5], u1, "u1 应回支援阵线槽 5（首个空槽，5 张全满）")
 
-    -- 作弊：P2 单位试图进入 P1 控制的前线
-    AssertEqual(KARDS.Battle:SimMoveToFrontline(u1), true, "u1 再进前线")
+    -- 前线同阵营约束（正常操作拦截，2026-08-15 用户规格）：他方单位经正常操作
+    -- （SimMoveToFrontline）进入已控制前线 → 由「前线已被敌方占领」前置拦截拒绝，
+    -- 不触发作弊机制。作弊检测（Battlefield 层 Stop / 作弊刻）防的是非正常操作：
+    -- 直接篡改服务器数据层前线数据（如使前线出现两个阵营）——正常 API 调用无法触发，
+    -- 故此处仅验证正常操作被拦截（非作弊）。
+    -- （2026-08-15 调整：u1 本回合已移动过（L333 进前线 + L348 撤退），「一个单位只能
+    -- 操作一次」拒绝再次移动（readme 7.1）；改用本回合未移动过的 P1 单位建立前线控制）
+    AssertEqual(KARDS.Battle:SimRemoveFromField(u1c, "remove"), true, "清空支援阵线（为新单位部署腾位）")
+    local u4 = KARDS.CardInterface.CreateMockCard("u4", "unit", "P1", { keywords = { "blitz" } })
+    AssertEqual(KARDS.Battle:SimDeploy(u4, 1), true, "P1 部署 u4（支援阵线有空槽）")
+    AssertEqual(KARDS.Battle:SimMoveToFrontline(u4), true, "P1 u4 进前线（建立控制）")
     local u3 = KARDS.CardInterface.CreateMockCard("u3", "unit", "P2", { attack = 1, defense = 1, keywords = { "blitz" } })
     AssertEqual(KARDS.Battle:SimDeploy(u3, 1), true, "P2 部署 u3（P2 支援阵线 2 张 → 槽 2）")
-    AssertEqual(KARDS.Battle:SimMoveToFrontline(u3), false, "P2 u3 进 P1 控制的前线应被拒绝（作弊）")
-    AssertEqual(KARDS.Battlefield:GetCheater("1"), "P2", "作弊方应为 P2")
-    AssertEqual(KARDS.Battlefield:IsStopped("1"), true, "对局应已停止")
-    AssertEqual(HasOpTypes(KARDS.TickLog:GetTick("1", KARDS.TickLog:Count("1"))[1][2], "cheat"), true, "最后一刻应为作弊刻（cheat）")
+    AssertEqual(KARDS.Battle:SimMoveToFrontline(u3), false, "P2 u3 进 P1 控制的前线应被拒绝（正常拦截，非作弊）")
+    AssertEqual(KARDS.Battlefield:GetCheater("1"), nil, "正常操作拦截不触发作弊（作弊仅防数据层篡改）")
+    AssertEqual(KARDS.Battlefield:IsStopped("1"), false, "正常操作拦截不停局")
 
     -- 总部保护：不可移动 / 不可被移除 / 不可被消灭
     AssertEqual(KARDS.Battlefield:MoveToFrontline("1", hq1), false, "总部不可移动进前线")
@@ -784,6 +792,9 @@ local function RunInterceptTest()
     AssertEqual(tank2:IsAlive(), true, "坦克未受伤害")
 
     -- 非轰炸机不受拦截
+    -- （2026-08-15 调整：infantry 不部署、模拟直接行动——部署在支援阵线的单位受
+    -- attack_range 限制（支援阵线单位不能攻击敌方支援阵线目标，见 sh_battle_combat.lua）；
+    -- 未部署攻击者不受距离检查，拦截检查器对非轰炸机本就不限制）
     KARDS.Battle:StartBattle("1", { "P1", "P2" }, "before", "P1")
     local infantry = KARDS.CardInterface.CreateMockCard("i1", "unit", "P1",
         { attack = 2, defense = 2, actionCost = 0, unitType = "infantry", keywords = { "blitz" } })
@@ -791,7 +802,6 @@ local function RunInterceptTest()
         { attack = 2, defense = 2, unitType = "fighter" })
     local tank3 = KARDS.CardInterface.CreateMockCard("t3", "unit", "P2",
         { attack = 1, defense = 4, unitType = "tank" })
-    KARDS.Battle:SimDeploy(infantry, 1)
     KARDS.Battle:SimDeploy(fighter3, 1)
     KARDS.Battle:SimDeploy(tank3, 2)
     AssertEqual(KARDS.Battle:SimAttack(infantry, tank3), true, "非轰炸机不受拦截")
@@ -894,13 +904,14 @@ local function RunKeywordEffectTest()
     AssertEqual(plain2:GetStat("defense"), 3, "守护：炮兵造成 2 伤害（5-2）")
 
     -- ③ 烟幕 smoke（readme 7.2.2）：无法被敌方单位攻击；攻击后失去（SmokeBroken）；移动后失去
+    -- （2026-08-15 调整：inf3/tg3 不部署、模拟直接行动——部署在支援阵线的单位受 attack_range
+    -- 限制（支援阵线单位不能攻击敌方支援阵线目标，见 sh_battle_combat.lua）；未部署攻击者
+    -- 不受距离检查，与守护/隐蔽等场景的既有模式一致）
     KARDS.Battle:StartBattle("1", { "P1", "P2" }, "before", "P1")
     local inf3 = KARDS.CardInterface.CreateMockCard("i3", "unit", "P1", { attack = 2, defense = 2, unitType = "infantry", keywords = { "blitz" } })
     local tg3 = KARDS.CardInterface.CreateMockCard("tg", "unit", "P1", { attack = 0, defense = 3, unitType = "infantry", keywords = { "blitz" } })
     local smk3 = KARDS.CardInterface.CreateMockCard("smk", "unit", "P2", { attack = 2, defense = 3, unitType = "tank", keywords = { "smoke", "blitz" } })
-    KARDS.Battle:SimDeploy(tg3, 1)
     KARDS.Battle:SimDeploy(smk3, 1)
-    KARDS.Battle:SimDeploy(inf3, 2)
     AssertEqual(KARDS.Battle:SimAttack(inf3, smk3), false, "烟幕：烟幕单位（未破）无法被敌方攻击")
     AssertEqual(KARDS.Battle:SimAttack(smk3, tg3), true, "烟幕：烟幕单位自身可攻击（攻击后失去烟幕）")
     AssertEqual(tg3:GetStat("defense"), 1, "烟幕：目标受 2 伤害（3-2）")
@@ -926,8 +937,11 @@ local function RunKeywordEffectTest()
     local st4 = KARDS.Battle.KeywordStates["1"]
     AssertEqual(st4.Hidden[ste4] == true, true, "隐蔽：部署时背面朝上（Hidden 标记）")
     local cmd4 = KARDS.CardInterface.CreateMockCard("cmd", "command", "P1", {})
-    AssertEqual(KARDS.Battle:SimPlayCard("P1", cmd4, { ste4 }), false, "隐蔽：未揭示单位不能成为指令目标")
-    AssertEqual(KARDS.CommandPoints:GetPoints("1", "P1"), 1, "隐蔽：P1 初始补给后 1 点")
+    -- 2026-08-13 用户规格：指令对隐蔽单位「仍可打出、效果不生效」（目标被过滤而非
+    -- 拒绝——反制指令指向仍隐蔽的移动单位时反制仍触发、消灭不作用成功）
+    AssertEqual(KARDS.Battle:SimPlayCard("P1", cmd4, { ste4 }), true, "隐蔽：指令仍可打出（目标被过滤）")
+    AssertEqual(ste4:GetStat("attack"), 2, "隐蔽：指令效果不作用于隐蔽单位（attack 不变）")
+    AssertEqual(KARDS.CommandPoints:GetPoints("1", "P1"), 1, "隐蔽：指令花费 0 未扣（cmd4 默认费用 0）")
     AssertEqual(KARDS.Battle:SimAttack(ste4, en4), true, "隐蔽：单位发起攻击（Hidden 行动花费 1）")
     AssertEqual(KARDS.CommandPoints:GetPoints("1", "P1"), 0, "隐蔽：攻击消耗 1 点（1-1=0）")
     AssertEqual(en4:GetStat("defense"), 1, "隐蔽：目标受 2 伤害（3-2）")
@@ -1558,6 +1572,14 @@ local function RunCombatModifiersTest()
     AssertEqual(u:AddCombatMultiplier("outgoing", "", 2), false, "空路径拒绝")
     AssertEqual(u:AddCombatMultiplier("outgoing", "p", 0), false, "倍率 0 拒绝")
     AssertEqual(u:AddCombatMultiplier("outgoing", "p", -2), false, "倍率负数拒绝")
+
+    -- 流亡不作国籍（2026-08-16）：开发池/伤害倍率目标选择路径不含 exile
+    local paths = KARDS.VarLib.GetObjectVarPaths("1")
+    local hasExile = false
+    for _, p in ipairs(paths) do
+        if string.find(p.path, ".exile.", 1, true) then hasExile = true break end
+    end
+    AssertEqual(hasExile, false, "目标路径：流亡不作国籍（无 exile 路径）")
 end
 
 -- 场景 17：移除动画（0.25s 升 z → 等待 0.5s → 1s 平滑左移 + 逆时针 180°；阵亡不触发移除）
@@ -1615,6 +1637,163 @@ local function RunRemovalAnimationTest()
     KARDS.Animation.RealTime = false
 end
 
+-- 场景 18：控制规则（readme 7.1，2026-08-15 用户规格测试版实现）
+--  - 只能控制敌方单位（同阵营拒绝）；目标须在战场（不在场拒绝）；总部不可被控制
+--  - 目标不在前线且新控制者支援阵线已满 → 提示「支援阵线已满」并拒绝
+--  - 记录原阵线位置（ControlOrigin）；跨线落位：前线 → 前线第 3 位置 + FrontlineOwner
+--    反转为新控制者；支援阵线 → 新控制者支援阵线右侧
+--  - 解除控制：移回原阵线位置；原位支援已满 / 原位前线被对方占领 → 返回手牌
+local function RunControlTest()
+    print("--- 场景18: 控制规则（readme 7.1 用户规格） ---")
+
+    -- 控制回调收集器（2026-08-16）：验证 SimControl/SimUncontrol 成功后
+    -- NotifyControl(card, isUncontrol, landingZone, landingSlot) 触发参数正确；
+    -- 返回事件表供断言（card/isUncontrol/zone/slot）
+    local function WatchControl(tableID)
+        local evts = {}
+        KARDS.Battle:SetControlCallback(tableID, function(card, isUncontrol, zone, slot, fromOwner, toOwner)
+            table.insert(evts, { card = card, isUncontrol = isUncontrol, zone = zone, slot = slot,
+                from = fromOwner, to = toOwner })
+        end)
+        return evts
+    end
+
+    -- ① 只能控制敌方单位 + 目标须在战场 + 总部不可控制
+    do
+        KARDS.Battle:StartBattle("ctl1", { "P1", "P2" }, "before")
+        local uOwn = KARDS.CardInterface.CreateMockCard("uOwn", "unit", "P1", { attack = 1, defense = 1 })
+        local uOff = KARDS.CardInterface.CreateMockCard("uOff", "unit", "P2", { attack = 1, defense = 1 })
+        AssertEqual(KARDS.Battle:SimControl(uOwn, "P1"), false, "控制：同阵营目标拒绝（只能控制敌方单位）")
+        AssertEqual(KARDS.Battle:SimControl(uOff, "P1"), false, "控制：目标不在战场拒绝")
+        AssertEqual(KARDS.Battle:SimControl(nil, "P1"), false, "控制：空目标拒绝")
+        AssertEqual(KARDS.Battle:SimControl(KARDS.Battlefield:GetHQ("ctl1", "P2"), "P1"), false,
+            "控制：总部不可被控制")
+    end
+
+    -- ② 支援阵线目标：控制后归属转移 + 移到新控制者支援阵线右侧
+    do
+        KARDS.Battle:StartBattle("ctl2", { "P1", "P2" }, "before")
+        local ctl2 = WatchControl("ctl2")
+        local sup1 = KARDS.Battlefield:GetSupport("ctl2", "P1")
+        local hq1 = KARDS.Battlefield:GetHQ("ctl2", "P1")
+        local uA = KARDS.CardInterface.CreateMockCard("uA", "unit", "P2", { attack = 2, defense = 3 })
+        AssertEqual(KARDS.Battle:SimDeploy(uA, 3), true, "前置：uA 部署到 P2 支援阵线")
+        AssertEqual(KARDS.Battle:SimControl(uA, "P1"), true, "控制：P1 控制 P2 支援阵线单位")
+        AssertEqual(uA:GetOwner(), "P1", "控制：归属变为 P1")
+        AssertEqual(sup1[2], hq1, "控制落位：总部位于左侧")
+        AssertEqual(sup1[3], uA, "控制落位：uA 在新控制者支援阵线右侧")
+        AssertEqual(KARDS.Battlefield:FindCardZone("ctl2", uA), "support", "控制落位：uA 在支援阵线")
+        AssertEqual(#ctl2, 1, "控制回调：SimControl 触发一次")
+        AssertEqual(ctl2[1].card, uA, "控制回调：对象为被控单位")
+        AssertEqual(ctl2[1].isUncontrol, false, "控制回调：isUncontrol=false")
+        AssertEqual(ctl2[1].zone, "support", "控制回调：落位阵线=支援阵线")
+        AssertEqual(ctl2[1].slot, KARDS.Battlefield.SLOT_COUNT, "控制回调：落位槽位=支援阵线右侧")
+        AssertEqual(ctl2[1].from, "P2", "控制回调：旋转起点归属=原方 P2")
+        AssertEqual(ctl2[1].to, "P1", "控制回调：旋转终点归属=新控制者 P1")
+    end
+
+    -- ③ 目标不在前线且新控制者支援阵线已满 → 拒绝
+    do
+        KARDS.Battle:StartBattle("ctl3", { "P1", "P2" }, "before")
+        local ctl3 = WatchControl("ctl3")
+        local sup1 = KARDS.Battlefield:GetSupport("ctl3", "P1")
+        local uB = KARDS.CardInterface.CreateMockCard("uB", "unit", "P2", { attack = 1, defense = 1 })
+        KARDS.Battle:SimDeploy(uB, 3) -- P2 支援
+        for i = 1, 4 do -- 填满 P1 支援线（总部 + 4 单位 = 5 张满）
+            KARDS.Battle:SimDeploy(
+                KARDS.CardInterface.CreateMockCard("uP1_" .. i, "unit", "P1", { attack = 1, defense = 1 }), 3)
+        end
+        AssertEqual(sup1[1] ~= nil and sup1[5] ~= nil, true, "前置：P1 支援阵线已满")
+        AssertEqual(KARDS.Battle:SimControl(uB, "P1"), false, "控制：新控制者支援阵线已满 → 拒绝")
+        AssertEqual(uB:GetOwner(), "P2", "控制：拒绝后归属不变")
+        AssertEqual(#ctl3, 0, "控制回调：拒绝不触发通知")
+    end
+
+    -- ④ 前线目标：前线反转为新控制者占领 + 移到前线第 3 位置
+    do
+        KARDS.Battle:StartBattle("ctl4", { "P1", "P2" }, "before")
+        local ctl4 = WatchControl("ctl4")
+        local fl1 = KARDS.Battlefield:GetFrontline("ctl4")
+        local uF = KARDS.CardInterface.CreateMockCard("uF", "unit", "P2", { attack = 2, defense = 2, keywords = { "blitz" } })
+        AssertEqual(KARDS.Battle:SimDeploy(uF, 3), true, "前置：uF 部署到 P2 支援阵线")
+        AssertEqual(KARDS.Battle:SimMoveToFrontline(uF), true, "前置：uF 进入前线（P2 占领）")
+        AssertEqual(KARDS.Battlefield:GetFrontlineOwner("ctl4"), "P2", "前置：前线被 P2 占领")
+        AssertEqual(KARDS.Battle:SimControl(uF, "P1"), true, "控制：P1 控制前线单位 uF")
+        AssertEqual(uF:GetOwner(), "P1", "控制：uF 归属变为 P1")
+        AssertEqual(KARDS.Battlefield:GetFrontlineOwner("ctl4"), "P1", "控制：前线反转为新控制者 P1 占领")
+        AssertEqual(fl1[3], uF, "控制：uF 移到前线第 3 位置")
+        AssertEqual(#ctl4, 1, "控制回调：SimControl 触发一次")
+        AssertEqual(ctl4[1].card, uF, "控制回调：对象为被控单位")
+        AssertEqual(ctl4[1].isUncontrol, false, "控制回调：isUncontrol=false")
+        AssertEqual(ctl4[1].zone, "frontline", "控制回调：落位阵线=前线")
+        AssertEqual(ctl4[1].slot, 3, "控制回调：落位槽位=前线第 3 位置")
+        AssertEqual(ctl4[1].from, "P2", "控制回调：旋转起点归属=原方 P2")
+        AssertEqual(ctl4[1].to, "P1", "控制回调：旋转终点归属=新控制者 P1")
+    end
+
+    -- ⑤ 解除控制：移回原阵线位置（原位未满 / 前线未被对方占领）
+    do
+        KARDS.Battle:StartBattle("ctl5", { "P1", "P2" }, "before")
+        local ctl5 = WatchControl("ctl5")
+        local sup2 = KARDS.Battlefield:GetSupport("ctl5", "P2")
+        local hq2 = KARDS.Battlefield:GetHQ("ctl5", "P2")
+        local uA = KARDS.CardInterface.CreateMockCard("uA", "unit", "P2", { attack = 2, defense = 3 })
+        KARDS.Battle:SimDeploy(uA, 3) -- uA 原位 P2 线（部署后 [uA, HQ] 2 张 → uA 槽 2）
+        KARDS.Battle:SimControl(uA, "P1")
+        AssertEqual(#ctl5, 1, "控制回调：SimControl 触发一次")
+        AssertEqual(KARDS.Battle:SimUncontrol(uA), true, "解除控制：成功")
+        AssertEqual(uA:GetOwner(), "P2", "解除控制：归属还原为原玩家 P2")
+        AssertEqual(KARDS.Battlefield:FindCardZone("ctl5", uA), "support", "解除控制：uA 回到支援阵线")
+        AssertEqual(sup2[2], uA, "解除控制：uA 移回原位（P2 线槽 2）")
+        AssertEqual(sup2[3], hq2, "解除控制：总部随阵线重排")
+        AssertEqual(#ctl5, 2, "控制回调：SimUncontrol 再触发一次")
+        AssertEqual(ctl5[2].card, uA, "控制回调：对象为被控单位")
+        AssertEqual(ctl5[2].isUncontrol, true, "控制回调：isUncontrol=true")
+        AssertEqual(ctl5[2].zone, nil, "控制回调：解除无落位阵线")
+        AssertEqual(ctl5[2].slot, nil, "控制回调：解除无落位槽位")
+        AssertEqual(ctl5[2].from, "P1", "控制回调：旋转起点归属=控制者 P1")
+        AssertEqual(ctl5[2].to, "P2", "控制回调：旋转终点归属=原方 P2")
+    end
+
+    -- ⑥ 解除控制返回手牌：原位在支援阵线且原归属者支援阵线已满
+    do
+        KARDS.Battle:StartBattle("ctl6", { "P1", "P2" }, "before")
+        local ctl6 = WatchControl("ctl6")
+        local uB = KARDS.CardInterface.CreateMockCard("uB", "unit", "P2", { attack = 1, defense = 1 })
+        KARDS.Battle:SimDeploy(uB, 3)
+        KARDS.Battle:SimControl(uB, "P1") -- uB 到 P1 线；P2 线只剩总部
+        AssertEqual(#ctl6, 1, "控制回调：SimControl 触发一次")
+        for i = 1, 4 do -- 填满 P2 支援线（总部 + 4 单位 = 5 张满）
+            KARDS.Battle:SimDeploy(
+                KARDS.CardInterface.CreateMockCard("uP2_" .. i, "unit", "P2", { attack = 1, defense = 1 }), 3)
+        end
+        AssertEqual(KARDS.Battle:SimUncontrol(uB), true, "解除控制：原位支援阵线已满 → 返回手牌")
+        local hand = KARDS.Deck:GetHand("ctl6", "P2")
+        local inHand = false
+        for _, c in ipairs(hand) do if c == uB then inHand = true break end end
+        AssertEqual(inHand, true, "解除控制：uB 返回 P2 手牌")
+        AssertEqual(#ctl6, 1, "控制回调：返回手牌路径不触发解除通知")
+    end
+
+    -- ⑦ 解除控制返回手牌：原位在前线且前线被该单位阵营的另一方（自身以外）占领
+    do
+        KARDS.Battle:StartBattle("ctl7", { "P1", "P2" }, "before")
+        local ctl7 = WatchControl("ctl7")
+        local uF = KARDS.CardInterface.CreateMockCard("uF", "unit", "P2", { attack = 2, defense = 2, keywords = { "blitz" } })
+        KARDS.Battle:SimDeploy(uF, 3)
+        KARDS.Battle:SimMoveToFrontline(uF) -- P2 占领前线
+        KARDS.Battle:SimControl(uF, "P1")   -- 前线反转为 P1 占领
+        AssertEqual(#ctl7, 1, "控制回调：SimControl 触发一次")
+        AssertEqual(KARDS.Battlefield:GetFrontlineOwner("ctl7"), "P1", "前置：控制后前线被 P1 占领")
+        AssertEqual(KARDS.Battle:SimUncontrol(uF), true, "解除控制：原位前线被对方占领 → 返回手牌")
+        local hand = KARDS.Deck:GetHand("ctl7", "P2")
+        local inHand = false
+        for _, c in ipairs(hand) do if c == uF then inHand = true break end end
+        AssertEqual(inHand, true, "解除控制：uF 返回 P2 手牌")
+        AssertEqual(#ctl7, 1, "控制回调：原位前线被占领返回手牌不触发解除通知")
+    end
+end
+
 -- 运行全部测试（GMod 控制台 kards_test 或外部 Lua 直接调用）
 function RunKardsTests()
     print("==============================================")
@@ -1639,6 +1818,7 @@ function RunKardsTests()
     RunCenterShiftTest()
     RunCombatModifiersTest()
     RunRemovalAnimationTest()
+    RunControlTest()
     print("==============================================")
     print(("测试完成: 通过 %d, 失败 %d"):format(TestsPassed, TestsFailed))
     print("==============================================")

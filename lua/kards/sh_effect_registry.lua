@@ -14,6 +14,12 @@
       TurnEnd      回合结束
       CardEnter    卡牌进入战场（渲染层订阅：入战场自动绑定实体）
       CardLeave    卡牌离开战场（渲染层订阅：离场自动移除实体）
+      ReturnToHand 卡牌返回手牌（实体层订阅：广播返回手牌动画）
+      ShuffleInto  洗入成功（实体层订阅：广播洗入动画，2026-09-26 缺口 D）
+      PileCardRemoved 卡牌被弃掉/爆牌（实体层订阅：广播单卡飞出动画，2026-09-26 缺口 E）
+      HandCardDiscarded 手牌被弃掉（实体层订阅：广播手牌飞出动画，2026-10-06 用户规格）
+      FrontlineDenied 进入前线被拒（实体层订阅：向发起方发提示，2026-09-26 缺口 F）
+      JoinField    卡牌加入阵线（实体层订阅：广播加入动画，2026-09-26 缺口 F）
 
     条目结构（Register 的 entry 参数）：
       id       string 注册项唯一 ID（同事件同 ID 重复注册覆盖，幂等）
@@ -40,12 +46,26 @@ KARDS.EffectRegistry = KARDS.EffectRegistry or {}
 -- 事件源枚举（战斗骨架入口在事件发生时 Trigger；卡牌入/离场见 sh_battle_stub.lua Sim* 入口）
 KARDS.EffectRegistry.EVENTS = {
     PlayCommand = "play_command", -- 打出指令成功（SimPlayCard 结尾）
-    Counter     = "counter",      -- 触发反制（SimPlayCard 拦截分支）
+    Counter     = "counter",      -- 触发反制（任一操作被拦截时，KARDS.Battle:InterceptOperation）
     Deploy      = "deploy",       -- 部署单位（SimDeploy）
     TurnBegin   = "turn_begin",   -- 回合开始（SimBeginTurn）
     TurnEnd     = "turn_end",     -- 回合结束（SimEndTurn）
     CardEnter   = "card_enter",   -- 卡牌进入战场（SimDeploy/SimJoinBattlefield/SimJoinFrontline/SimSummonUnit）
     CardLeave   = "card_leave",   -- 卡牌离开战场（SimRemoveFromField/SimRetreat/SimReturnToHand）
+    ReturnToHand = "return_to_hand_anim", -- 卡牌返回手牌（SimReturnToHand；实体层订阅广播返回手牌动画）
+    LayoutChanged = "layout_changed", -- 战场布局重排（SimShuffleField 随机排列；实体层订阅补布局广播，2026-08-18 规划 C1）
+    CountsChanged = "counts_changed", -- 手牌/卡组计数变化（节点效果 burn / shuffleInto 直接改数组；实体层订阅补 SyncBattleCounts，2026-08-18 规划 C5）
+    CommandPointsChanged = "command_points_changed", -- 指挥点/指挥点槽变更（SimChangeCommandPoints/SimChangeCommandSlots；实体层订阅补指挥点广播，2026-08-18 规划 C6）
+    BattleStopped = "battle_stopped", -- 作弊停止对局（Battlefield:Stop；实体层订阅向参战玩家广播冻结提示，2026-08-18 规划 D7）
+    GameOver    = "game_over",    -- 对局结束（总部被摧毁，CheckHQDestroyed判定胜负后触发；实体层订阅广播结算）
+    ShuffleInto = "shuffle_into", -- 洗入成功（2026-09-26 缺口 D：card 模板洗入分支；实体层订阅广播洗入动画）
+    PileCardRemoved = "pile_card_removed", -- 卡牌被节点效果弃掉/爆牌（2026-09-26 缺口 E：实体层订阅广播单卡飞出动画）
+    HandCardDiscarded = "hand_card_discarded", -- 手牌被弃掉（2026-10-06 用户规格：实体层订阅广播手牌飞出动画，牌移到右槽停留 1 秒后顺时针出场）
+    FrontlineDenied = "frontline_denied", -- 进入前线被拒（2026-09-26 缺口 F：前线已被敌方占领；实体层订阅向发起方发提示）
+    JoinField = "join_field",     -- 卡牌加入阵线（2026-09-26 缺口 F：实体层订阅广播加入动画，与部署动画分流）
+    UnitAction = "unit_action",   -- 单位攻击冲刺（2026-09-26 缺口 G：效果路径与手动路径共用一个广播函数）
+    UnitElevate = "unit_elevate", -- 单位升为老兵（2026-09-26 缺口 I：实体层订阅广播老兵升级动画与白色飘字）
+    UnitConvert = "unit_convert", -- 卡牌整体转换（2026-09-26 缺口 J：实体层订阅生成新实体并广播翻面交接动画）
 }
 
 -- 注册表：Instances[tableID][event][id] = entry（按牌桌隔离，与 TickLog / EngineHooks 的 tableID 体系一致）

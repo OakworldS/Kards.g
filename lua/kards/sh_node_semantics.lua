@@ -433,9 +433,30 @@ function KARDS.NodeParser.SetTarget(ctx, target, value, change)
     ctx = EnsureCtx(ctx)
     -- 卡牌专属固定变量：写回发起卡牌（不落存储）
     if target.fixed then
+        -- 飘字旧值快照（2026-08-14）：固定变量 n 型（攻击/防御/行动花费）写入前的旧值
+        local fxOld
+        if target.varType == "n" and ctx.initiatorCard then
+            local fk = target.key
+            if fk == "KARDS.User.攻击" then fxOld = ctx.initiatorCard:GetStat("attack") or 0
+            elseif fk == "KARDS.User.防御" then fxOld = ctx.initiatorCard:GetStat("defense") or 0
+            elseif fk == "KARDS.User.行动花费" then fxOld = ctx.initiatorCard._actionCost or 0 end
+        end
         local ok = KARDS.NodeParser.SetFixedVarValue(ctx.initiatorCard, target.varType, target.key, value)
         if ok then
             KARDS.NodeParser.PushStatChange(ctx, ctx.initiatorCard, change or ("=" .. tostring(value)))
+            -- 飘字（2026-08-14）：固定变量 n 型（攻击/防御/行动花费）设为 → 攻防白色、
+            -- 行动花费按变动符号（增红/减绿）
+            if fxOld ~= nil then
+                local field = (target.key == "KARDS.User.攻击") and "attack"
+                    or (target.key == "KARDS.User.防御") and "defense"
+                    or (target.key == "KARDS.User.行动花费") and "actionCost"
+                    or nil
+                if field then
+                    local new = (field == "actionCost") and (ctx.initiatorCard._actionCost or 0)
+                        or (ctx.initiatorCard:GetStat(field) or 0)
+                    KARDS.Battle:NotifyStatFXByTable(ctx.tableID, ctx.initiatorCard, field, new - fxOld, "set", "node")
+                end
+            end
         end
         return ok
     end
@@ -450,6 +471,14 @@ function KARDS.NodeParser.SetTarget(ctx, target, value, change)
             -- 用户自定义变量：单键存储（internalName 含点但不可拆分，如 "KARDS.User.BOARD"）
             T[target.section][target.key] = value
         else
+            -- 系统事实变量（Battle.* / Special.*，如「友方有老兵单位」Special.Veteran.HasFriendlyUnit）：
+            -- 写入只在本回合内生效。写前快照覆盖前的值登记一回合覆盖，回合边界
+            -- （SimEndTurn）由 VarLib.ClearFactOverrides 还原为事实（2026-10-04 用户规格）
+            if KARDS.VarLib and KARDS.VarLib.SetFactOverride
+                and KARDS.VarLib.IsFactPath and KARDS.VarLib.IsFactPath(target.path) then
+                KARDS.VarLib.SetFactOverride(ctx.tableID, target.path,
+                    KARDS.NodeParser.GetTarget(ctx, target))
+            end
             -- 预定义变量：按 key（去区域前缀后的剩余路径）逐层写入
             SetByPath(T[target.section], target.key, value)
         end
@@ -502,6 +531,13 @@ function KARDS.NodeParser.ResolveNumberValue(ctx, value)
         if refName then
             local target = KARDS.NodeParser.ResolveTarget(ctx, "n", refName)
             local v = target and KARDS.NodeParser.GetTarget(ctx, target)
+            if v == nil then
+                -- 兜底：refName 为变量库路径（如 "Battle.FriendlyCommandPoints"，
+                -- 当 GetDisplayName 无翻译返回路径时，显示名索引无法命中，改为逐层取路径值，2026-10-04）
+                ctx = EnsureCtx(ctx)
+                local byPath = GetByPath(ctx._T, refName)
+                if type(byPath) == "number" then v = byPath end
+            end
             if type(v) ~= "number" then
                 print("[NodeParser] 警告: 数字引用「" .. refName .. "」无数字值（当前: " .. tostring(v) .. "），按 0 处理")
                 return 0
@@ -539,7 +575,15 @@ function KARDS.NodeParser.HandleBool(ctx, target, entry, opLabel)
         local newVal = not (cur == true)
         KARDS.NodeParser.SetTarget(ctx, target, newVal)
     else -- 设为
-        local v = (entry.value == "true") or (entry.value == true)
+        local v
+        if type(entry.value) == "string" and entry.value:match("^var:") then
+            -- 引用另一布尔变量（2026-10-04：跨回合轮转「上回合 = 本回合」）
+            local refName = entry.value:match("^var:(.+)$")
+            local src = KARDS.NodeParser.ResolveTarget(ctx, "b", refName)
+            v = (src and KARDS.NodeParser.GetTarget(ctx, src) == true) or false
+        else
+            v = (entry.value == "true") or (entry.value == true)
+        end
         KARDS.NodeParser.SetTarget(ctx, target, v)
     end
     return true
@@ -633,14 +677,30 @@ end
 -- 对象变量（e）
 -- ====================================================================
 
--- 解析对象变量名 → 卡牌句柄
--- 顺序：预定义对象变量（翻译表反查，如「友方可选目标」→ Battle.FriendlyTarget）
+-- 解析对象变量 → 对象值（卡牌句柄或对象组）
+-- 顺序：数据线注入的对象（对象槽选「数据线传入的对象变量」时，槽值 = 线输出端口名，
+--      经 ResolveEWires 写入 ctx._wireVars[当前节点][变量名]；wantSingle=false 整组返回，
+--      wantSingle=true 取对象组首项）
+--      → 预定义对象变量（翻译表反查，如「友方可选目标」→ Battle.FriendlyTarget）
 --      → 用户自定义 e 变量（longterm → Battle[internalName]；global → CardVars[卡牌ID][internalName]）
--- @param varName string 对象变量显示名
--- @return table|nil 卡牌句柄
-function KARDS.NodeParser.ResolveObject(ctx, varName)
+--      → 卡牌专属固定对象变量（自身）
+-- @param varName    string 对象变量显示名
+-- @param wantSingle boolean 数据线分支是否取对象组首项（单个对象语义；false 返回整组）
+-- @return table|nil 卡牌句柄（或对象组表）
+local function ResolveObjectValue(ctx, varName, wantSingle)
     if not varName or varName == "" then return nil end
     ctx = EnsureCtx(ctx)
+    -- 数据线连接的对象：本节点 e 线解析结果（ResolveEWires 已注入 ctx._wireVars），
+    -- wantSingle=true 对象组取首项（如 var_set 属性修改需单个句柄）；
+    -- wantSingle=false 整组返回（对象槽逐张语义，2026-08-14 与数据线统一）
+    local nodeWires = ctx._wireVars and ctx._currentNodeId and ctx._wireVars[ctx._currentNodeId]
+    if nodeWires then
+        local wv = nodeWires[varName]
+        if wv ~= nil then
+            if wantSingle and type(wv) == "table" then return wv[1] end
+            return wv
+        end
+    end
     local path = ctx._displayIndex and ctx._displayIndex[varName]
     if path then
         return GetByPath(ctx._T, path)
@@ -668,6 +728,50 @@ function KARDS.NodeParser.ResolveObject(ctx, varName)
     return nil
 end
 
+-- 解析对象变量名 → 卡牌句柄（单个对象语义：数据线对象组取首项）
+-- @param varName string 对象变量显示名
+-- @return table|nil 卡牌句柄
+function KARDS.NodeParser.ResolveObject(ctx, varName)
+    return ResolveObjectValue(ctx, varName, true)
+end
+
+-- 解析对象变量名 → 对象值（数据线分支返回整组而非首项；对象槽逐张语义用）
+-- @param varName string 对象变量显示名
+-- @return table|nil 卡牌句柄（或对象组表）
+function KARDS.NodeParser.ResolveObjectGroup(ctx, varName)
+    return ResolveObjectValue(ctx, varName, false)
+end
+
+-- 对象值 → 正序对象列表（2026-08-14 对象槽/数据线统一逐张语义）
+-- 单个卡牌句柄（Mock 句柄为纯字段表，v[1] 恒 nil）→ {句柄}；
+-- 对象组表（元素为卡牌句柄）→ 原样返回；空表/非表 → {}
+-- @param v any 对象槽直写值 / 对象变量解析结果
+-- @return table 正序对象列表（可为空表）
+function KARDS.NodeParser.NormalizeObjectList(v)
+    if type(v) ~= "table" then return {} end
+    if next(v) == nil then return {} end -- 空对象组
+    if v[1] ~= nil then return v end     -- 对象组（元素为卡牌句柄）
+    return { v }                         -- 单个卡牌句柄
+end
+
+-- 读取对象槽并解析为对象列表（正序逐张语义，2026-08-14 与数据线统一）
+-- 优先级：直写卡牌句柄/对象组（测试与数据线直写）→ 字符串（数据线变量名 / 用户对象变量 /
+-- 预定义对象变量名，经 ResolveObjectGroup 解析）→ 其余（索引等）返回空表
+-- @param ctx    table 执行上下文
+-- @param node   table 节点实例
+-- @param compId string 对象槽组件 ID
+-- @return table 正序对象列表（可为空表）
+function KARDS.NodeParser.ResolveObjectSlot(ctx, node, compId)
+    local v = KARDS.NodeParser.ReadSlot(node, compId)
+    if type(v) == "table" then
+        return KARDS.NodeParser.NormalizeObjectList(v)
+    end
+    if type(v) == "string" and v ~= "" then
+        return KARDS.NodeParser.NormalizeObjectList(KARDS.NodeParser.ResolveObjectGroup(ctx, v))
+    end
+    return {}
+end
+
 -- 卡牌对象字段写入（骨架 MockCard 内部字段；公开接口见 sh_card_interface.lua）
 -- 支持：attack/defense（ApplyChange，modifier 缺省 set）/ cost / actionCost / unitType / keywords
 -- 其余外观字段（名称/描述/品质/插图/历史/子类型）卡牌句柄通常不具备 → 记录日志
@@ -684,9 +788,10 @@ function KARDS.NodeParser.SetCardField(card, field, value, modifier)
             return true
         end
     elseif field == "cost" then
-        if card._cost ~= nil then card._cost = value return true end
+        -- kards 数值上限 99（2026-08-13）：数据层统一上限，不防负值
+        if card._cost ~= nil then card._cost = math.min(99, value) return true end
     elseif field == "actionCost" then
-        if card._actionCost ~= nil then card._actionCost = value return true end
+        if card._actionCost ~= nil then card._actionCost = math.min(99, value) return true end
     elseif field == "unitType" then
         if card._stats then
             local ut = tostring(value or "")
@@ -707,7 +812,7 @@ function KARDS.NodeParser.SetCardField(card, field, value, modifier)
             for part in string.gmatch(tostring(value or ""), "[^,，]+") do
                 local id = part:gsub("^%s+", ""):gsub("%s+$", "")
                 if id ~= "" then
-                    if KARDS.CardInterface.Keywords[id] then
+                    if KARDS.CardInterface.Keywords[id] or KARDS.CardInterface.IsHiddenKeyword(id) then
                         table.insert(newKw, id)
                     else
                         print("[NodeParser] 警告: 非法词条「" .. id .. "」（已忽略）")
@@ -766,7 +871,12 @@ function KARDS.NodeParser.HandleObjectEntry(ctx, entry, varName)
         if field == "attack" or field == "defense" then
             -- 攻击/防御：卡牌接口 ApplyChange 原生支持 set/increase/decrease
             local modifier = (objOp == 2) and "increase" or (objOp == 3) and "decrease" or "set"
+            local old = card:GetStat(field) or 0
             ok = KARDS.NodeParser.SetCardField(card, field, amount, modifier)
+            -- 飘字（2026-08-14）：对象数值属性（攻击/防御）→ 设为/减少白色、增加绿色
+            if ok then
+                KARDS.Battle:NotifyStatFXByTable(ctx.tableID, card, field, (card:GetStat(field) or 0) - old, modifier, "node")
+            end
         else
             -- 花费/行动花费：卡牌接口无 setter，直接字段增减（set 时 amount 原样）
             if objOp == 2 or objOp == 3 then
@@ -774,7 +884,13 @@ function KARDS.NodeParser.HandleObjectEntry(ctx, entry, varName)
                 if type(cur) ~= "number" then cur = 0 end
                 amount = (objOp == 2) and (cur + amount) or (cur - amount)
             end
+            local oldCost = (field == "actionCost") and card._actionCost or nil
             ok = KARDS.NodeParser.SetCardField(card, field, amount)
+            -- 飘字（2026-08-14）：对象数值属性（行动花费）→ 增红/减绿（显示带符号变动值）
+            if ok and field == "actionCost" and oldCost ~= nil then
+                KARDS.Battle:NotifyStatFXByTable(ctx.tableID, card, "actionCost", card._actionCost - oldCost,
+                    (objOp == 2) and "increase" or (objOp == 3) and "decrease" or "set", "node")
+            end
         end
         if ok then
             change = (objOp == 2) and ("+" .. tostring(entry.value)) or (objOp == 3) and ("-" .. tostring(entry.value)) or ("=" .. tostring(amount))
@@ -991,9 +1107,9 @@ end
 -- ====================================================================
 -- BaseSemantics 语义表：模板类型 → select 选项值 → 语义动作
 -- ====================================================================
--- action（lua/node_templates/action.json）：
+-- action（data_static/kards/node_templates/action.json）：
 --   mainSelect select_2（获得/取消/被消灭）
---     获得 → subSelect select_3（17 项动作），items 键 = select_3 选项值
+--     获得 → subSelect select_3（19 项动作），items 键 = select_3 选项值
 --     取消 → subSelect select_10（被压制/被抑制/被控制/免疫 状态），items 键 = 选项值
 --     被消灭 → 直接动作 destroy
 KARDS.NodeParser.BaseSemantics = {
@@ -1020,6 +1136,8 @@ KARDS.NodeParser.BaseSemantics = {
                     [15] = { act = "triggerKeyword", target = "select_6", keyword = "select_7" }, -- 触发关键字效果
                     [16] = { act = "returnToHand" },       -- 返回手牌
                     [17] = { act = "summonUnit", unit = "select_8", zone = "select_9" }, -- 召唤单位
+                    [18] = { act = "elevateToVeteran" },    -- 升为老兵
+                    [19] = { act = "returnToDeckTop" },     -- 返回卡组顶（放到所有者牌堆顶）
                 },
             },
             [2] = { -- 取消
@@ -1034,8 +1152,10 @@ KARDS.NodeParser.BaseSemantics = {
             [3] = { act = "destroy" }, -- 被消灭
         },
     },
-    -- card（lua/node_templates/card.json）：
+    -- card（data_static/kards/node_templates/card.json）：
     --   sideSelect select_1（友方/敌方）+ mainSelect select_2（抽取/复制/弃掉/开发/选择/爆牌/洗切卡组/洗入）
+    --   弃掉（2026-10-06 扩展手牌来源）：select_7 位置 1=手中 2=卡组顶 3=卡组底 4=随机 5=指定；
+    --     选「手中」时 select_8 二级 1=自选的一张卡（无值 → 经指定操作让玩家选择）/ 2=第（number_4 数值序数）
     card = {
         sideSelect = "select_1",
         mainSelect = "select_2",
@@ -1043,16 +1163,27 @@ KARDS.NodeParser.BaseSemantics = {
             [1] = { act = "draw",          count = "number_1", position = "select_3",
                     typeSelect = "select_4", typeSelectFallback = "select_5", specifiedIndex = 4 }, -- 抽取
             [2] = { act = "copy",          count = "number_2", position = "select_6" }, -- 复制
-            [3] = { act = "discard",       count = "number_3", position = "select_7" }, -- 弃掉
-            [4] = { act = "develop",       count = "number_4", pool = "select_8" }, -- 开发（{$} 开发池对象组变量）
-            [5] = { act = "scry",          count = "number_5" }, -- 选择（观星）
-            [6] = { act = "burn",          count = "number_6" }, -- 爆牌
+            -- 弃掉：position 1=手中（handKind 1=自选的一张卡 / 2=第 ordinal 张），2=卡组顶 3=卡组底 4=随机 5=指定
+            [3] = { act = "discard",       count = "number_3", position = "select_7",
+                    handKind = "select_8", ordinal = "number_4" }, -- 弃掉
+            [4] = { act = "develop",       count = "number_5", pool = "select_9" }, -- 开发（{$} 开发池对象组变量）
+            [5] = { act = "scry",          count = "number_6" }, -- 选择（观星）
+            [6] = { act = "burn",          count = "number_7" }, -- 爆牌
             [7] = { act = "shuffleDeck" },                       -- 洗切卡组
-            [8] = { act = "shuffleInto",   source = "select_9", randomKind = "select_10",
-                    randomCount = "number_7", specifiedCount = "number_8" }, -- 洗入
+            -- 洗入（2026-09-26 缺口 D：三来源；2026-09-27 补充「对象组」来源）
+            --   select_10 来源 1=手牌中 2=指定的 3=凭空生成 4=对象组
+            --   手牌中：select_11 随机1/指定2 + number_8 张数
+            --   凭空生成：select_12 {$} 开发池对象组变量 + number_9 张数
+            --   指定的：select_13 手牌1/场上2 + number_10 张数
+            --   对象组：select_14 {$} 对象(组)变量 + number_11 张数
+            --     （张数留空或 0 = 该对象(组)全部；列表仅 1 张而张数大于 1 时按克隆补足到该张数）
+            [8] = { act = "shuffleInto",   source = "select_10", randomKind = "select_11",
+                    randomCount = "number_8", genPool = "select_12", genCount = "number_9",
+                    specifiedZone = "select_13", specifiedCount = "number_10",
+                    groupVar = "select_14", groupCount = "number_11" }, -- 洗入
         },
     },
-    -- command（lua/node_templates/command.json）：
+    -- command（data_static/kards/node_templates/command.json）：
     --   mainSelect select_1（阵营 友方1/敌方2/双方3）+ resourceSelect select_2（指挥点1/指挥点槽2）
     --   + opSelect select_3（增加1/减少2/设为3）+ amount number_1（[lib] 数值）
     command = {
@@ -1066,11 +1197,12 @@ KARDS.NodeParser.BaseSemantics = {
             [3] = { act = "commandPoint", side = "both" },     -- 双方
         },
     },
-    -- condition（lua/node_templates/condition.json）：
-    --   mainSelect select_1（判断数量1/关键字检查2）
+    -- condition（data_static/kards/node_templates/condition.json）：
+    --   mainSelect select_1（判断数量1/关键字检查2/前线归属3）
     --   分支 1（判断数量）：side select_2（敌方1/友方2）+ countType number_1（[lib+5] 5 种统计方式）
     --     + operator select_3（=1/>2/<3/>=4/<=5）+ value number_2（[lib] 比较值）
     --   分支 2（关键字检查）：target select_4（卡牌对象槽）+ keyword select_5（@combat_keywords 下拉）
+    --   分支 3（前线归属）：side select_6（友方1/敌方2/无主3，读 GetFrontlineOwner 判定）
     --   结果输出：n比较结果、p布尔值、p是否有关键字
     condition = {
         mainSelect = "select_1",
@@ -1078,14 +1210,16 @@ KARDS.NodeParser.BaseSemantics = {
             [1] = { act = "countCheck",   side = "select_2", countType = "number_1",
                     operator = "select_3", value = "number_2" },
             [2] = { act = "keywordCheck", target = "select_4", keyword = "select_5" },
+            [3] = { act = "frontlineOwnerCheck", side = "select_6" },
         },
     },
-    -- event_monitor（lua/node_templates/event_monitor.json）：
+    -- event_monitor（data_static/kards/node_templates/event_monitor.json）：
     --   sideSelect select_1（友方1/敌方2）+ eventTypeSelect select_2（8 种事件类型）
     --   分支按 select_2 选项值索引：目标1/单位2（共分支，监听属性变化/触发；H4：属性 select_4 +
     --   变化类型 select_5 + 变化值 number_2）、总部3（含防御约束 number_1）、
     --   打出指令4（select_7 时/花费/情报，花费约束 number_3；H1：「时：触发情报」约束情报数）、
-    --   触发反制5（骨架无拦截刻，恒不触发）、加入6（部署/召唤/加入战场）、
+    --   触发反制5（M1.4：任一操作被拦截时触发，拦截收尾 KARDS.Battle:InterceptOperation
+    --   推 {操作类型, "counter"} 刻并调 TriggerEventHooks(tableID, "counter", card)）、加入6（部署/召唤/加入战场）、
     --   玩家7（@player_actions，手牌张数约束 number_4）、回合8（select_9 开始/结束）
     --   结果输出：t事件类型、e事件目标、p触发事件；返回值供双输出分支（触发/未触发）
     event_monitor = {
@@ -1102,7 +1236,7 @@ KARDS.NodeParser.BaseSemantics = {
             [8] = { act = "monitor", event = "turn",       phase = "select_9" },
         },
     },
-    -- extract（lua/node_templates/extract.json）：
+    -- extract（data_static/kards/node_templates/extract.json）：
     --   select_1 阵营（友方1/敌方2/双方3，执行器内自行展开，不走 sideSelect）+ mainSelect select_2（卡牌类型）
     --   单位分支（1）：属性条件 attr select_3（攻击力1/防御力2/卡牌花费3/行动花费4）+ 属性值 number_1
     --   指令（2）/反制（3）分支：卡牌花费 number_2
@@ -1117,7 +1251,7 @@ KARDS.NodeParser.BaseSemantics = {
             [4] = { act = "extract", cardType = "headquarter" },
         },
     },
-    -- headquarter（lua/node_templates/headquarter.json）：
+    -- headquarter（data_static/kards/node_templates/headquarter.json）：
     --   mainSelect select_1（阵营 友方1/敌方2/双方3）+ opSelect select_2（增加1/减少2/设为3）
     --   + amount number_1（[lib] 数值；总部防御可低于 0，总部始终驻留）
     headquarter = {
@@ -1130,12 +1264,22 @@ KARDS.NodeParser.BaseSemantics = {
             [3] = { act = "hqDefense", side = "both" },     -- 双方
         },
     },
-    -- loop（lua/node_templates/loop.json）：
+    -- loop（data_static/kards/node_templates/loop.json）：
     --   无 select 分支；单一动作 loop，number_1 为循环计数（[0] 数字槽）
     --   双输出节点（hasSecondOutput）：未结束（>0）→ 计数 -1 返回 true（第一输出点继续循环），
     --   已结束（=0）→ 返回 false（第二输出点循环结束）
     loop = { act = "loop" },
-    -- property（lua/node_templates/property.json，base 带 e 输入前缀）：
+    -- choice（data_static/kards/node_templates/choice.json，2026-10-04 新增）：
+    --   无 select 分支（同 loop：单一动作 act 直接定义在 sem 上）
+    --   双输出节点（hasSecondOutput）：玩家选择「效果一」→ 返回 true（第一输出点/端口 satisfied），
+    --   选择「效果二」→ 返回 false（第二输出点/端口 not_satisfied）
+    --   text1/text2 = 两个文本槽组件 id（值为直接文本 或 "var:<文本变量名>"，由执行器解析）
+    choice = {
+        act = "choice",
+        text1 = "textslot_1",
+        text2 = "textslot_2",
+    },
+    -- property（data_static/kards/node_templates/property.json，base 带 e 输入前缀）：
     --   mainSelect select_1（随机排列所有1/战斗2）；随机排列所有 → select_2 单位1/友方2/敌方3
     --   「随机排列」在目标方控制的阵线范围（支援阵线 + 控制的前线）随机重排所有单位（总部不参与）
     --   战斗 → 攻击者 = e 数据线 targets[1]（target_selector 选出的对象组，无注入时回退 select_3 对象槽）
@@ -1147,7 +1291,7 @@ KARDS.NodeParser.BaseSemantics = {
             [2] = { act = "battle", attacker = "select_3", defender = "select_4" }, -- 战斗（与对象槽单位战斗）
         },
     },
-    -- register_hook（lua/node_templates/register_hook.json）：
+    -- register_hook（data_static/kards/node_templates/register_hook.json）：
     --   「注册钩子」双分支（mainSelect select_1：通用效果1/一般属性修饰2）
     --   一般属性修饰（分支2）：select_2 作用目标（敌方/友方/所有）、select_3 修饰对象（造成的伤害/攻击力/防御力）、
     --     select_4 修饰方式（增加/减少/设为）、number_1 数值、select_5 作用域（存活在场/永久）→ 引擎钩子持续修饰
@@ -1161,7 +1305,7 @@ KARDS.NodeParser.BaseSemantics = {
             [2] = { act = "registerModifier" }, -- 一般属性修饰：引擎钩子持续数值修饰
         },
     },
-    -- target_selector（lua/node_templates/target_selector.json）：
+    -- target_selector（data_static/kards/node_templates/target_selector.json）：
     --   「选择卡牌单位目标」：mainSelect select_1（选择方式 指向一个1/随机2/所有3/属性最高4/属性最低5）
     --   属性最高/最低 → select_2 属性（@card_stats）+ number_1 名次；随机 → number_2 数量
     --   select_3 阵营范围（友方1/敌方2/场上3）× select_4 卡牌类别（单位1/目标2/总部3），
@@ -1177,23 +1321,27 @@ KARDS.NodeParser.BaseSemantics = {
             [5] = { act = "select", mode = "lowest" },  -- 属性最低：同上（升序）
         },
     },
-    -- trigger_function（lua/node_templates/trigger_function.json）：
+    -- trigger_function（data_static/kards/node_templates/trigger_function.json）：
     --   「触发函数」：mainSelect select_1（触发模式 触发一次1/保持触发2/停止保持触发3/拦截一次4/保持拦截5）
-    --   e 输入注册/触发的目标实体；funcslot_1 函数；select_2 效果图标（主动效果/被动效果/无/@combat_keywords）
+    --   e 输入注册/触发的目标实体；funcslot_1 函数；select_5 效果图标（主动效果/被动效果/无/@combat_keywords）
+    --   拦截分支（4/5）内另有操作类型选择：拦截一次 select_2 / 保持拦截 select_3（16 种操作，见
+    --   sh_node_hooks.lua INTERCEPT_OPTYPES），决定拦截 args.opType 命中的操作类型
     --   输出 e目标、t效果图标类型（base 输出端口）
     --   触发一次 = 立即同步调用函数子图；保持触发 = 注册到目标实体每回合自动执行；
-    --   停止保持触发 = 移除目标实体上的注册；拦截 = 注册 OnBeforePlayCard 引擎钩子（复用 args.intercepted）
+    --   停止保持触发 = 移除目标实体上的注册；
+    --   拦截一次/保持拦截 = 注册 OnBeforeOperation 引擎钩子并按操作类型过滤（复用 args.intercepted；
+    --   拦截一次首次命中后自动注销，见 sh_node_hooks.lua RegisterIntercept）
     trigger_function = {
         mainSelect = "select_1",
         branches = {
             [1] = { act = "triggerOnce" },   -- 触发一次：立即执行函数子图（同步，函数完成后本节点再继续）
             [2] = { act = "keepTrigger" },   -- 保持触发：注册到目标实体，实体拥有者回合开始自动执行
             [3] = { act = "stopTrigger" },   -- 停止保持触发：从目标实体移除本节点注册的保持触发
-            [4] = { act = "interceptOnce" }, -- 拦截一次：注册 OnBeforePlayCard 拦截，首次拦截后自动注销
-            [5] = { act = "keepIntercept" }, -- 保持拦截：持续拦截敌方打出指令
+            [4] = { act = "interceptOnce", opSelect = "select_2" }, -- 拦截一次：按操作类型拦截，首次命中后自动注销
+            [5] = { act = "keepIntercept", opSelect = "select_3" }, -- 保持拦截：按操作类型持续拦截敌方操作
         },
     },
-    -- trigger（lua/node_templates/trigger.json）：
+    -- trigger（data_static/kards/node_templates/trigger.json）：
     --   「属性与伤害」：目标卡牌 = e 输入数据线 targets（select_1 为卡牌对象选择 {$}，槽值恒 1）
     --   mainSelect select_2（攻击1/防御2/受到伤害3）
     --   分支 1（攻击）：select_3 操作（设为1/增加2/减少3）+ number_1 数值 → 目标攻击力修改
@@ -1209,17 +1357,18 @@ KARDS.NodeParser.BaseSemantics = {
             [3] = { act = "damage", amount = "number_3" }, -- 受到伤害：目标受到 N 点伤害
         },
     },
-    -- turn（lua/node_templates/turn.json）：
+    -- turn（data_static/kards/node_templates/turn.json）：
     --   「回合」实在的时间刻节点（跨刻执行）：mainSelect select_1（等待1/使2）
     --   分支 1（等待）：select_2 阵营（友方1/敌方2/任意3）× select_3 时刻（开始1/结束2）
     --     × number_1 次数（数字槽，缺省 1）
     --     → 效果跨刻挂起：信号停滞在 turn 节点，后续符合条件的时间刻计数 +1，达标后继续效果
-    --   分支 2（使）：select_4（回合结束1/跳过回合2）→ 立即推进当前回合（不走挂起）
+    --   分支 2（使，2026-08-14 增加归属）：select_4 归属（友方1/敌方2）× select_5 动作
+    --     （回合结束1/跳过回合2）→ 立即推进目标归属的当前回合（不走挂起）
     turn = {
         mainSelect = "select_1",
         branches = {
             [1] = { act = "waitTurn", side = "select_2", phase = "select_3", times = "number_1" }, -- 等待
-            [2] = { act = "makeTurn", op = "select_4" }, -- 使
+            [2] = { act = "makeTurn", side = "select_4", op = "select_5" }, -- 使：归属×动作
         },
     },
 }

@@ -303,7 +303,9 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
         -- 使用当前选中选项的文字宽度（而非所有选项最大宽度），
         -- 使切换选项时下拉框和节点宽度动态自适应。
         local selectedIdx = numberData.selectedOptionIndex or 1
-        local selectedOpt = options[selectedIdx] or options[1]
+        -- 空选项兜底：options 为空表时 selectedOpt 为 nil 会导致
+        -- GetDisplayName(nil) 返回 nil 传入 surface.GetTextSize 崩溃
+        local selectedOpt = options[selectedIdx] or options[1] or ""
         local displayOpt = selectedOpt
         if KARDS.VarLib and KARDS.VarLib.GetDisplayName then
             displayOpt = KARDS.VarLib.GetDisplayName(selectedOpt)
@@ -862,6 +864,10 @@ function KARDS.CardEditor.Canvas.DrawExpandedDropdowns()
     -- 数字槽→黄色，函数槽→紫色，普通→无特殊描边
     if info.isNumberSlot then
         surface.SetDrawColor(Color(230, 200, 30))
+        surface.DrawOutlinedRect(dropdownX, dropdownY, totalWidth, dropdownH)
+    elseif info.isTextSlot then
+        -- 文本槽（INE <> 组件，2026-10-04）：绿色描边，与槽类型标识色一致
+        surface.SetDrawColor(Color(76, 175, 80))
         surface.DrawOutlinedRect(dropdownX, dropdownY, totalWidth, dropdownH)
     elseif info.dropdownData and info.dropdownData._funcOptions then
         surface.SetDrawColor(Color(180, 70, 200))

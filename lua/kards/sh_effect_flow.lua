@@ -31,6 +31,9 @@ local GetTemplateType = KARDS.NodeParser.GetTemplateType
 --     （variableName 即上游输出端口名，编辑器 fromPort.portData.name 同源），
 --     结果直接注入下游节点的 targets（action 类节点以对象组为目标集执行）。
 -- 依赖 ExecuteEffect / ExecuteEffectFlow 预置 ctx._nodesById（节点 id → 节点实例）。
+-- 同时记录本节点各 e 线解析结果到 ctx._wireVars[node.id][variableName]（variableName = 线
+-- 输出端口名），供对象槽「数据线连接的对象」在 ResolveObject 中解析（ExecuteBaseNode
+-- 先置 ctx._currentNodeId 再调用本函数）。
 -- @param ctx     table 执行上下文（含 dataConnections / _nodesById）
 -- @param node    table 消费者节点实例（dc.toNode == node.id 时命中）
 -- @param targets table|nil 原 targets（未接 e 线时原样返回）
@@ -38,16 +41,24 @@ local GetTemplateType = KARDS.NodeParser.GetTemplateType
 local function ResolveEWires(ctx, node, targets)
     local t = targets or {}
     if not node or not ctx.dataConnections or not ctx._nodesById then return t end
+    local wireVars = {}
+    ctx._wireVars = ctx._wireVars or {}
+    -- 节点无 id（测试/旧格式效果节点未带 id 字段）时跳过缓存：_wireVars 仅供
+    -- ResolveObject 按 node.id 查询（无 id 节点查不到 → 走兜底），不影响执行
+    if node.id ~= nil then
+        ctx._wireVars[node.id] = wireVars -- 每节点独立缓存，防止跨节点误用
+    end
     for _, dc in ipairs(ctx.dataConnections) do
         if dc.dataType == "e" and dc.toNode == node.id then
             local from = ctx._nodesById[dc.fromNode]
             local val = from and from.data and from.data[dc.variableName or ""]
             -- 兜底：输出端口名可能带 e 前缀（node.data["e提取的卡牌对象组"]）
             if val == nil and dc.variableName and dc.variableName:sub(1, 1) ~= "e" then
-                val = from.data["e" .. dc.variableName]
+                val = from and from.data and from.data["e" .. dc.variableName]
             end
             if type(val) == "table" then
                 t = val -- 卡牌对象组直接作为下游目标集
+                if dc.variableName then wireVars[dc.variableName] = val end
             end
         end
     end
@@ -69,13 +80,17 @@ KARDS.NodeParser.ResolveEWires = ResolveEWires
 -- 轮次不变（沿用原单轮去重语义，汇聚节点只执行一次）。
 -- startNodeId（可选）：跨刻恢复模式——不执行入口，从该节点沿 output 连线继续
 -- （turn「等待」挂起后由 ResumeEffect 传入挂起节点 id，挂起节点本身不再次执行）。
+-- entryTitle（可选）：指定开始点标题时只从匹配的开始点进入（单位效果入口分流：
+--   SimDeploy 执行「部署」链 / SimRemoveFromField("death") 执行「阵亡」链，2026-08-12）；
+--   缺省执行全部无入边入口（原语义）。
 -- @param ctx         table 执行上下文（含 tableID / _T；_currentEffect 供 turn 挂起取效果数据）
 -- @param card        table 效果发起卡牌句柄
 -- @param targets     table 受影响卡牌列表
 -- @param effect      table 效果数据（nodes / connections）
 -- @param startNodeId any|nil 跨刻恢复起点节点 id（缺省从入口执行）
+-- @param entryTitle  string|nil 开始点标题（如「部署」「阵亡」；缺省全部入口）
 -- @return boolean 是否至少成功执行一个节点
-local function ExecuteEffectFlow(ctx, card, targets, effect, startNodeId)
+local function ExecuteEffectFlow(ctx, card, targets, effect, startNodeId, entryTitle)
     ctx._currentEffect = effect -- 当前效果数据（turn「等待」挂起时保存，供达标后恢复）
     local nodesById, outEdges, hasIncoming = {}, {}, {}
     for _, node in ipairs(effect.nodes) do
@@ -89,17 +104,36 @@ local function ExecuteEffectFlow(ctx, card, targets, effect, startNodeId)
             hasIncoming[conn.toNode] = true
         end
     end
-    -- 入口节点：无入边的节点；全部有入边（闭环，如 loop 循环图）时优先 loop 节点，其次兜底首节点
+    -- 入口节点：指定开始点标题时只从匹配开始点进入（部署/阵亡/在场等按事件分流，
+    -- 2026-08-12——否则 ExecuteEffectFlow 会把全部无入边节点当入口，误走所有开始点链）；
+    -- 否则无入边节点；全部有入边（闭环，如 loop 循环图）时优先 loop 节点，其次兜底首节点。
+    -- 向后兼容（2026-08-15）：效果无开始点（旧格式/测试的纯节点链）时，即使指定了
+    -- entryTitle 也退回「全部无入边入口」原逻辑；含开始点但无匹配标题 → 不执行
+    -- （开始点 = 触发点：触发一个不存在的开始点无意义，与顺序模式 ExecuteEffect 一致）。
     local entries = {}
-    for _, node in ipairs(effect.nodes) do
-        if not hasIncoming[node.id] then table.insert(entries, node) end
-    end
-    if #entries == 0 then
+    local hasStartPoints = false
+    if entryTitle then
         for _, node in ipairs(effect.nodes) do
-            if GetTemplateType(node) == "loop" then entries[1] = node break end
+            if node.type == "start" or node.name == "start_point" then
+                hasStartPoints = true
+                if node.data and node.data.title == entryTitle then
+                    table.insert(entries, node)
+                end
+            end
         end
-        if #entries == 0 and effect.nodes[1] then entries[1] = effect.nodes[1] end
     end
+    if #entries == 0 and not (entryTitle and hasStartPoints) then
+        for _, node in ipairs(effect.nodes) do
+            if not hasIncoming[node.id] then table.insert(entries, node) end
+        end
+        if #entries == 0 then
+            for _, node in ipairs(effect.nodes) do
+                if GetTemplateType(node) == "loop" then entries[1] = node break end
+            end
+            if #entries == 0 and effect.nodes[1] then entries[1] = effect.nodes[1] end
+        end
+    end
+
 
     local executed, visited = false, {}
     local round = 1 -- 循环轮次（loop 节点返回 true 时 +1，允许环内节点重新执行）

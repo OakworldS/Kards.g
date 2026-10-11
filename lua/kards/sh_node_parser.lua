@@ -67,7 +67,7 @@ KARDS.NodeParser = KARDS.NodeParser or {}
 -- 解析 base 结构串为组件树（纯结构，不含节点数据）
 -- base 语法（对齐 INE._CompsToBase 固化输出，不含文本组件）：
 --   <输入类型前缀 n/p/t/g/e/f 连续> {N} 下拉（N 个选项） [N] 数字槽（N 个预设选项，0=空槽）
---   [lib] / [lib+N] 变量库数字槽 # 函数槽
+--   [lib] / [lib+N] 变量库数字槽 # 函数槽 <> 文本槽（2026-10-04 新增，可填文本/引用文本变量）
 --   if <分支序号> then ... elseif <分支序号> then ... else ... end（可嵌套）
 --   (<输出类型+名，如 nResult、tName、可多个以、分隔>) 后缀
 -- @param baseStr string 模板 base 结构串（如 action 模板的 base 字段）
@@ -75,6 +75,7 @@ KARDS.NodeParser = KARDS.NodeParser or {}
 --   select:   { type, id, optionsCount }
 --   number:   { type, id, optionsCount, useLib, extraCount }
 --   funcslot: { type, id }
+--   textslot: { type, id }（文本值由 FillBaseValues 从 node.data 读取）
 --   if:       { type, id, boundSelectId, branches = { {index?, else?, components} } }
 --             boundSelectId = 同一分支内 if 之前的最近 select（编辑器按最近 select 选中值匹配分支）
 function KARDS.NodeParser.ParseBaseStructure(baseStr)
@@ -86,6 +87,7 @@ function KARDS.NodeParser.ParseBaseStructure(baseStr)
     local selectCount = 0
     local numberCount = 0
     local funcslotCount = 0
+    local textCount = 0
     local ifId = 0
 
     -- 跳过开头空白，解析前缀输入类型（连续 n/p/t/g/e/f）
@@ -156,6 +158,17 @@ function KARDS.NodeParser.ParseBaseStructure(baseStr)
             funcslotCount = funcslotCount + 1
             addComp({ type = "funcslot", id = "funcslot_" .. funcslotCount })
             i = i + 1
+        elseif c == "<" then
+            -- 文本槽（<>，2026-10-04 新增）：结构占位，槽值由 FillBaseValues 从 node.data 读取
+            -- （编辑器侧对应 INE.ParseTextSlotComponent，base 由 _CompsToBase 固化为 <>）
+            local j = str:find(">", i, true)
+            if not j then
+                i = i + 1
+            else
+                i = j + 1
+                textCount = textCount + 1
+                addComp({ type = "textslot", id = "textslot_" .. textCount })
+            end
         elseif c == "i" then
             local s2 = str:sub(i)
             local consumed = s2:match("^(if%s+%d+%s+then)")
@@ -258,6 +271,8 @@ function KARDS.NodeParser.GetBaseSlotValue(node, compType, compId)
         return d[compId]
     elseif compType == "funcslot" then
         return d[compId]
+    elseif compType == "textslot" then
+        return d[compId]
     end
     return nil
 end
@@ -279,6 +294,9 @@ function KARDS.NodeParser.FillBaseValues(struct, node)
             c.value = KARDS.NodeParser.GetBaseSlotValue(node, "number", comp.id)
         elseif comp.type == "funcslot" then
             c.funcName = KARDS.NodeParser.GetBaseSlotValue(node, "funcslot", comp.id)
+        elseif comp.type == "textslot" then
+            -- 文本槽：值为直接文本 或 "var:<变量名>"（编辑器统一槽优先，扁平键回退）
+            c.text = KARDS.NodeParser.GetBaseSlotValue(node, "textslot", comp.id)
         elseif comp.type == "if" then
             c.boundSelectId = comp.boundSelectId
             c.branches = {}
@@ -411,7 +429,9 @@ function KARDS.NodeParser.ExecuteBaseNode(ctx, card, targets, node)
     -- 结构校验：base 结构解析失败则无槽值可读（ParseBaseNode 打印缺失 base 告警）
     local tree = KARDS.NodeParser.ParseBaseNode(ctx, node)
     if not tree then return false end
-    -- 数据线解析：e 类型数据线（extract/target_selector 输出对象组）注入下游 targets
+    -- 数据线解析：e 类型数据线（extract/target_selector 输出对象组）注入下游 targets；
+    -- 先置当前节点 id，供对象槽「数据线连接的对象」经 ResolveObject 定位 ctx._wireVars
+    ctx._currentNodeId = node.id
     targets = KARDS.NodeParser.ResolveEWires(ctx, node, targets or {})
     -- 语义项定位：mainSelect 选中选项值 → 分支语义（loop 特例：无语义分支表，act 直接定义在 sem 上）
     local selIdx = sem.mainSelect and ReadSlot(node, sem.mainSelect)
@@ -450,9 +470,45 @@ function KARDS.NodeParser.ExecuteBaseNode(ctx, card, targets, node)
         local side = ReadSlot(node, sem.sideSelect) or 1
         local owner = (card and card.GetOwner and card:GetOwner()) or "P1"
         local player = (side == 2) and EnemyOf(owner) or owner
-        return handler(ctx, card, player, item, node)
+        -- 节点一刻（2026-09-27 用户规格：一个节点只能推一刻；指向、循环等纯数据节点不推刻）：
+        -- 节点执行期间数据层 Sim* 的推刻合并为一刻（见 sh_ticklog.lua BeginBatch）。
+        -- pcall 保证执行器异常时也结束合并，避免后续推刻被永久吞掉
+        KARDS.TickLog:BeginBatch(ctx.tableID)
+        local ok, res = pcall(handler, ctx, card, player, item, node)
+        KARDS.TickLog:EndBatch(ctx.tableID)
+        if not ok then error(res, 0) end
+        return res
     end
-    return handler(ctx, card, targets, item, node)
+    -- 隐蔽拦截（2026-08-13 用户规格：任何节点上作用到非自身的效果，无法作用到
+    -- 隐蔽的单位；除非自身是隐蔽单位就能作用到自身）：targets = 本节点作用目标
+    -- （action 模板 e 输入对象槽，含指令/反制/单位效果一切节点路径），过滤掉
+    -- 处于隐蔽（Hidden 未揭示）且非效果发起者（自身）的目标——覆盖 readme 7.2.2
+    -- 「不受指令/反制/单位效果影响」的统一数据层收口。攻击伤害（SimAttack/SimEngage）
+    -- 不走节点执行器，不受此拦截（隐蔽不免疫攻击伤害）。
+    -- 反制例证（readme 7.2.2 + 用户规格）：移动触发的反制作用于仍隐蔽的单位被过滤
+    -- （「消灭」无效）；攻击触发的反制在单位已揭示（SimAttack 提前 SimReveal）后
+    -- 结算 → 正常作用到已揭示的隐蔽单位。
+    if #targets > 0 then
+        local st = KARDS.Battle and KARDS.Battle.KeywordStates
+            and KARDS.Battle.KeywordStates[ctx.tableID]
+        if st then
+            local filtered = {}
+            for _, t in ipairs(targets) do
+                if KARDS.KeywordStates.Hidden.Is(st, t) and t ~= card then
+                    -- 隐蔽且非自身：本节点效果不作用于该目标（跳过）
+                else
+                    filtered[#filtered + 1] = t
+                end
+            end
+            targets = filtered
+        end
+    end
+    -- 节点一刻（同 card 分支：一个节点只能推一刻）
+    KARDS.TickLog:BeginBatch(ctx.tableID)
+    local ok, res = pcall(handler, ctx, card, targets, item, node)
+    KARDS.TickLog:EndBatch(ctx.tableID)
+    if not ok then error(res, 0) end
+    return res
 end
 
 -- 入口：执行卡牌效果（节点数组），支持顺序模式与控制流模式
@@ -462,12 +518,14 @@ end
 --   （ResumeTurnNodes → ResumeEffect 从挂起节点后继继续）。
 -- 控制流模式（有 connections 连线）：经 ExecuteEffectFlow 沿连线执行
 --   （双输出节点按结果分支、跨刻挂起检测，见 sh_effect_flow.lua）。
--- @param ctx     table 执行上下文（含 tableID / initiatorCard / variables / dataConnections / functions / battle / specify）
--- @param card    table 效果发起卡牌句柄（指令卡）
--- @param targets table 受影响卡牌列表（action 模板的 e 输入对象槽）
--- @param effect  table 效果数据（nodes / connections / variables / dataConnections）
+-- @param ctx         table 执行上下文（含 tableID / initiatorCard / variables / dataConnections / functions / battle / specify）
+-- @param card        table 效果发起卡牌句柄（指令卡）
+-- @param targets     table 受影响卡牌列表（action 模板的 e 输入对象槽）
+-- @param effect      table 效果数据（nodes / connections / variables / dataConnections）
+-- @param startNodeId string|nil 指定入口节点 ID（缺省按 entryTitle 匹配或全部入口）
+-- @param entryTitle  string|nil 开始点标题（如「部署」「阵亡」；缺省控制流取全部无入边入口）
 -- @return boolean 是否至少成功执行一个节点
-function KARDS.NodeParser.ExecuteEffect(ctx, card, targets, effect)
+function KARDS.NodeParser.ExecuteEffect(ctx, card, targets, effect, startNodeId, entryTitle)
     ctx = KARDS.NodeParser.EnsureCtx(ctx)
     if not effect or not effect.nodes or #effect.nodes == 0 then return false end
     -- 顺序模式：无控制流连线时按节点数组顺序执行
@@ -479,7 +537,30 @@ function KARDS.NodeParser.ExecuteEffect(ctx, card, targets, effect)
         end
         ctx._nodesById = nodesById -- 供 ResolveEWires 定位上游节点输出（e 数据线注入 targets）
         ctx._currentEffect = effect -- 当前效果数据（turn「等待」挂起时保存，供达标后恢复；与控制流模式一致）
-        for _, node in ipairs(effect.nodes) do
+        -- 入口定位：指定 entryTitle 时从匹配开始点起执行（其之前的节点跳过，避免误执行其它开始点链）。
+        -- 含开始点的效果若无匹配标题 → 不执行（开始点 = 触发点：触发一个不存在的开始点无意义）；
+        -- 无开始点的效果（旧格式/测试的纯节点链）保持从首节点执行，向后兼容。
+        local startIndex = 1
+        local matchedStart, hasStartPoints = false, false
+        if entryTitle then
+            for i, node in ipairs(effect.nodes) do
+                if node.type == "start" or node.name == "start_point" then
+                    hasStartPoints = true
+                    if not matchedStart and node.data and node.data.title == entryTitle then
+                        startIndex = i
+                        matchedStart = true
+                    end
+                end
+            end
+            if hasStartPoints and not matchedStart then return false end
+        end
+        for i = startIndex, #effect.nodes do
+            local node = effect.nodes[i]
+            -- 链边界：入口开始点之后遇到下一个开始点即停止（顺序模式多开始点隔离——
+            -- 触发「部署」不会顺带执行「阵亡」等其它开始点链；控制流模式由连线天然隔离）
+            if i > startIndex and (node.type == "start" or node.name == "start_point") then
+                break
+            end
             local ok = false
             if node.type == "var_set" then
                 ok = KARDS.NodeParser.ParseSetVariable(ctx, node)
@@ -508,5 +589,5 @@ function KARDS.NodeParser.ExecuteEffect(ctx, card, targets, effect)
     end
     -- 控制流模式：沿 connections 连线执行（ExecuteEffectFlow 定义于 sh_effect_flow.lua，
     -- 此处经 KARDS.NodeParser 表访问；加载完成后由 ExecuteEffectFlow 定义处暴露）
-    return KARDS.NodeParser.ExecuteEffectFlow(ctx, card, targets, effect)
+    return KARDS.NodeParser.ExecuteEffectFlow(ctx, card, targets, effect, startNodeId, entryTitle)
 end

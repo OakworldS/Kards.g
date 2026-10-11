@@ -1,0 +1,59 @@
+{
+	"runtime_no_cull": true,
+	"scale": 10,
+	"build_id": "13fd4fa1b284",
+	"model_id": "frontline_takend_pii",
+	"flip_v": true,
+	"material_count": 1,
+	"manifest_hash": "b2a1ff7a76bb",
+	"source_name_en": "frontlinetakend-P2",
+	"pmx_bone_count": 0,
+	"axis_preset": "x,-z,y",
+	"bounds": {
+		"mins": [
+			-219.997617,
+			-7.607552,
+			0
+		],
+		"maxs": [
+			220.002191,
+			2.492868,
+			0
+		]
+	},
+	"mesh_file": "pmx_static_importer/models/frontline_takend_pii/mesh.json",
+	"winding_flipped_baked": false,
+	"source_name_local": "frontlinetakend-P2",
+	"source_format": "glb",
+	"source_file": "frontlinetakend-P2.glb",
+	"vertex_count": 67,
+	"pmx_morph_count": 0,
+	"triangle_count": 23,
+	"static_only_warning": false,
+	"submeshes": [
+		{
+			"no_cull": true,
+			"double_sided": false,
+			"pmx_double_sided": false,
+			"diffuse": [
+				0.8,
+				0.8,
+				0.8,
+				1
+			],
+			"vertex_count": 69,
+			"alpha": 1,
+			"triangle_count": 23,
+			"translucent": false,
+			"index": 0,
+			"image_path": "data/pmx_static_importer/frontline_takend_pii/front.png",
+			"texture_source": "generated-diffuse-color",
+			"name": "平面.023",
+			"safe_name": "mat_000_023"
+		}
+	],
+	"safe_display_name": "frontline_takend_pii",
+	"display_name": "Frontline takend Pii",
+	"render_vertex_count": 69,
+	"format": 2
+}

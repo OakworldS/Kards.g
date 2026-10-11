@@ -1,0 +1,59 @@
+{
+  "format": 2,
+  "build_id": "1f350528c6a7",
+  "model_id": "wooden_table",
+  "display_name": "Wooden Table",
+  "safe_display_name": "wooden_table",
+  "source_file": "wooden_table2.glb",
+  "source_format": "glb",
+  "source_name_local": "wooden_table2",
+  "source_name_en": "wooden_table2",
+  "axis_preset": "x,-z,y",
+  "scale": 10.0,
+  "flip_v": true,
+  "triangle_count": 984,
+  "vertex_count": 1186,
+  "render_vertex_count": 2952,
+  "material_count": 1,
+  "pmx_bone_count": 0,
+  "pmx_morph_count": 0,
+  "static_only_warning": false,
+  "mesh_file": "pmx_static_importer/models/wooden_table/mesh.json",
+  "runtime_no_cull": true,
+  "winding_flipped_baked": false,
+  "bounds": {
+    "mins": [
+      -14.974416,
+      -7.499997,
+      -6.148547
+    ],
+    "maxs": [
+      15.028257,
+      7.500005,
+      6.127992
+    ]
+  },
+  "submeshes": [
+    {
+      "index": 0,
+      "name": "01_-_Default",
+      "safe_name": "mat_000_01_default",
+      "image_path": "pmx_static_importer/wooden_table/mat_000_01_default_03344267d3.png",
+      "texture_source": "__embedded__/03344267d3f5.png",
+      "vertex_count": 2952,
+      "triangle_count": 984,
+      "double_sided": false,
+      "pmx_double_sided": false,
+      "no_cull": true,
+      "translucent": false,
+      "alpha": 1.0,
+      "diffuse": [
+        0.4,
+        0.4,
+        0.4,
+        1.0
+      ]
+    }
+  ],
+  "manifest_hash": "857ae88872c4"
+}

@@ -57,36 +57,26 @@ local SKIP_CARD_VARS = {
 KARDS.VarLib.Tables = KARDS.VarLib.Tables or {}
 
 -- ====================================================================
--- 创建牌桌变量库
+-- 变量表工厂（B1：Create 与 ResetBattleVars 两段近 200 行重复收敛）
 -- ====================================================================
 
--- 为指定牌桌创建完整的变量库
--- @param tableID string 牌桌唯一标识符（如 "1", "2"）
--- @return table 创建的变量库，若已存在则返回现有库
-function KARDS.VarLib.Create(tableID)
-    if KARDS.VarLib.Tables[tableID] then
-        return KARDS.VarLib.Tables[tableID]
+-- 构建战斗特别变量表（Special，按关键词批量生成）
+-- Create 与 ResetBattleVars 共用；每次调用重建全部关键词子表。
+-- 传入 target 时复用其表引用（ResetBattleVars 保持 T.Special 引用不变，
+-- 仅重填各子表——外部动态遍历 T.Special 的路径不受整体替换影响），
+-- 否则新建返回。
+-- @param target table|nil 复用目标表（可选；传入时先清空旧键）
+-- @return table 填充完成的 Special 表
+local function BuildSpecialVars(target)
+    local special = target or {}
+    if target then
+        for k in pairs(special) do special[k] = nil end
     end
-
-    local T = {}
-    KARDS.VarLib.Tables[tableID] = T
-
-    -- 浮点变量追踪表（记录可能出现小数的数字型变量路径）
-    T._floatVars = {}
-
-    -- 卡牌实例变量空间（global 作用域用户变量：每张卡牌实例隔离，不受其他全等卡牌设置影响）
-    -- 结构：T.CardVars[卡牌ID][internalName] = 值；战斗结束随 ResetBattleVars 清空
-    T.CardVars = {}
-
-    -- ====================================================================
-    -- 战斗特别变量（按关键词批量生成）
-    -- ====================================================================
-    T.Special = {}
 
     for _, kw in ipairs(KEYWORDS) do
         local skipCard = SKIP_CARD_VARS[kw]
         local s = {}
-        T.Special[kw] = s
+        special[kw] = s
 
         if not skipCard then
             -- 手牌/牌库/卡组相关变量（被压制/被收缴/被抑制跳过这些）
@@ -114,10 +104,19 @@ function KARDS.VarLib.Create(tableID)
         s.EnemyUnitCount         = 0      -- n敌方具有"XX"单位数
     end
 
-    -- ====================================================================
-    -- 战斗时基础变量
-    -- ====================================================================
-    T.Battle = {
+    return special
+end
+
+-- 构建战斗基础变量表（Battle）
+-- Create 与 ResetBattleVars 共用（字段完全一致）；仅 ResetBattleVars 需保留
+-- 玩家选的国家与重新调度状态（preserved 传入），Create 缺省按初始值
+-- （国家 "" / 重新调度 false）。
+-- @param preserved table|nil 保留字段：
+--   { FriendlyMainCountry, EnemyMainCountry, FriendlyAllyCountry, EnemyAllyCountry,
+--     FriendlyReshuffled, EnemyReshuffled }
+-- @return table 新的 Battle 表
+local function BuildBattleVars(preserved)
+    return {
         -- 全局战斗变量
         Turn                = 0,      -- n回合数
         IsFriendlyTurn      = false,  -- ?友方回合
@@ -207,14 +206,14 @@ function KARDS.VarLib.Create(tableID)
         EnemyMoraleDamage     = 0,
 
         -- 国家（文本）
-        FriendlyMainCountry   = "",   -- tE主国
-        EnemyMainCountry      = "",
-        FriendlyAllyCountry   = "",   -- tE盟国
-        EnemyAllyCountry      = "",
+        FriendlyMainCountry   = preserved and preserved.FriendlyMainCountry or "",   -- tE主国
+        EnemyMainCountry      = preserved and preserved.EnemyMainCountry or "",
+        FriendlyAllyCountry   = preserved and preserved.FriendlyAllyCountry or "",   -- tE盟国
+        EnemyAllyCountry      = preserved and preserved.EnemyAllyCountry or "",
 
         -- 重新调度
-        FriendlyReshuffled    = false,-- ?E重新调度完成
-        EnemyReshuffled       = false,
+        FriendlyReshuffled    = preserved and preserved.FriendlyReshuffled or false, -- ?E重新调度完成
+        EnemyReshuffled       = preserved and preserved.EnemyReshuffled or false,
 
         -- 总部累计伤害
         FriendlyHQLastTurnDamage = 0, -- nE总部本回合累计受到伤害
@@ -224,6 +223,67 @@ function KARDS.VarLib.Create(tableID)
         FriendlyCommandPoints    = 0, -- nE剩余指挥点
         EnemyCommandPoints       = 0,
     }
+end
+
+-- ====================================================================
+-- 剩余指挥点 → 变量库事实（2026-10-04）
+-- ====================================================================
+
+--[[
+    把当前指挥点写入变量库 Battle 区事实变量（FriendlyCommandPoints / EnemyCommandPoints）。
+
+    「友方」取 KARDS.Battle.Players[1]，「敌方」取 Players[2]（与既有事实变量默认视角一致）。
+    直接赋值（不经 SetFactOverride），使剩余指挥点为跨回合持续的真实事实；
+    由 KARDS.CommandPoints.OnChanged 在指挥点/槽变更时回调（注册见 VarLib.Create）。
+]]
+function KARDS.VarLib.SyncCommandPoints(tableID)
+    local T = KARDS.VarLib.Tables[tableID]
+    if not T or not T.Battle then return end
+    if not KARDS.CommandPoints then return end
+    local players = (KARDS.Battle and KARDS.Battle.Players) or { "P1", "P2" }
+    if players[1] then
+        T.Battle.FriendlyCommandPoints = KARDS.CommandPoints:GetPoints(tableID, players[1]) or 0
+    end
+    if players[2] then
+        T.Battle.EnemyCommandPoints = KARDS.CommandPoints:GetPoints(tableID, players[2]) or 0
+    end
+end
+
+-- ====================================================================
+-- 创建牌桌变量库
+-- ====================================================================
+
+-- 为指定牌桌创建完整的变量库
+-- @param tableID string 牌桌唯一标识符（如 "1", "2"）
+-- @return table 创建的变量库，若已存在则返回现有库
+function KARDS.VarLib.Create(tableID)
+    if KARDS.VarLib.Tables[tableID] then
+        return KARDS.VarLib.Tables[tableID]
+    end
+
+    local T = {}
+    KARDS.VarLib.Tables[tableID] = T
+
+    -- 浮点变量追踪表（记录可能出现小数的数字型变量路径）
+    T._floatVars = {}
+
+    -- 事实变量一回合覆盖登记：[path] = { prev = 覆盖前的值, hasPrev = 覆盖前是否存在 }
+    -- 「设置变量」节点改写 Battle.* / Special.* 时登记，回合边界还原（见本文件事实变量段）
+    T.FactOverrides = {}
+
+    -- 卡牌实例变量空间（global 作用域用户变量：每张卡牌实例隔离，不受其他全等卡牌设置影响）
+    -- 结构：T.CardVars[卡牌ID][internalName] = 值；战斗结束随 ResetBattleVars 清空
+    T.CardVars = {}
+
+    -- ====================================================================
+    -- 战斗特别变量（按关键词批量生成）
+    -- ====================================================================
+    T.Special = BuildSpecialVars()
+
+    -- ====================================================================
+    -- 战斗时基础变量
+    -- ====================================================================
+    T.Battle = BuildBattleVars()
 
     -- ====================================================================
     -- 场外变量
@@ -254,6 +314,14 @@ function KARDS.VarLib.Create(tableID)
 
     -- 构建对象/对象组变量路径列表（亨舍尔伤害倍率等方案的数据源）
     KARDS.VarLib.RebuildObjectVarPaths(tableID)
+
+    -- 剩余指挥点同步（2026-10-04）：注册指挥点变更回调并立即同步一次
+    if KARDS.CommandPoints then
+        KARDS.CommandPoints.OnChanged = function(tid, player)
+            if tid == tableID then KARDS.VarLib.SyncCommandPoints(tid) end
+        end
+        KARDS.VarLib.SyncCommandPoints(tableID)
+    end
 
     return T
 end
@@ -365,6 +433,96 @@ function KARDS.VarLib.GetFloatVars(tableID)
 end
 
 -- ====================================================================
+-- 事实变量一回合覆盖（断言变量，2026-10-04 用户规格）
+-- ====================================================================
+-- 「设置变量」节点改写系统事实变量（Battle.* / Special.*，如「友方有老兵单位」
+-- Special.Veteran.HasFriendlyUnit）时，写入只在本回合内生效：写前快照覆盖前的值，
+-- 回合边界（SimEndTurn，见 sh_battle_stub.lua）调用 ClearFactOverrides 还原为
+-- 覆盖前的值（即当前事实）。用户自定义变量与卡牌实例变量（CardVars / KARDS.User.*）
+-- 不在此列，保持原有持久语义。
+
+-- 按路径逐层设置值（与 sh_node_semantics.lua SetByPath 同式；value 为 nil 时把叶子置 nil）
+local function SetPathValue(section, path, value)
+    if type(section) ~= "table" or type(path) ~= "string" or path == "" then return false end
+    local segs = {}
+    for seg in string.gmatch(path, "[^.]+") do table.insert(segs, seg) end
+    local cur = section
+    for i = 1, #segs - 1 do
+        if type(cur[segs[i]]) ~= "table" then cur[segs[i]] = {} end
+        cur = cur[segs[i]]
+    end
+    cur[segs[#segs]] = value
+    return true
+end
+
+-- 拆分事实变量路径 → 区域名 + 区域内的键路径（"Battle.Turn" → "Battle", "Turn"）
+local function SplitFactPath(path)
+    local dot = path:find(".", 1, true)
+    if not dot then return nil, nil end
+    return path:sub(1, dot - 1), path:sub(dot + 1)
+end
+
+-- 路径是否为系统事实变量（Battle.* / Special.*）
+-- @param path string 变量路径
+-- @return boolean
+function KARDS.VarLib.IsFactPath(path)
+    if type(path) ~= "string" then return false end
+    local head = path:match("^([^.]+)")
+    return head == "Battle" or head == "Special"
+end
+
+-- 该事实变量本回合是否已被「设置变量」覆盖（覆盖期间事实刷新应让位，见 SetFact）
+-- @param tableID string 牌桌唯一标识符
+-- @param path    string 变量路径
+-- @return boolean
+function KARDS.VarLib.IsFactOverridden(tableID, path)
+    local T = KARDS.VarLib.Get(tableID)
+    return (T and T.FactOverrides and T.FactOverrides[path]) and true or false
+end
+
+-- 登记事实变量的一回合覆盖（写前快照覆盖前值；同回合重复写入只记录首次的旧值）
+-- @param tableID   string 牌桌唯一标识符
+-- @param path      string 变量路径
+-- @param prevValue any 覆盖前的值（nil 表示该路径原本不存在）
+function KARDS.VarLib.SetFactOverride(tableID, path, prevValue)
+    if not KARDS.VarLib.IsFactPath(path) then return end
+    local T = KARDS.VarLib.GetOrCreate(tableID)
+    T.FactOverrides = T.FactOverrides or {}
+    if T.FactOverrides[path] == nil then
+        T.FactOverrides[path] = { prev = prevValue, hasPrev = (prevValue ~= nil) }
+    end
+end
+
+-- 事实写入（供未来的战场事实刷新器使用）：该路径本回合被覆盖时让位（不写入），
+-- 未覆盖时正常写值。回合边界清覆盖后，刷新器重跑即可写回真实事实。
+-- @param tableID string 牌桌唯一标识符
+-- @param path    string 变量路径
+-- @param value   any 事实值
+-- @return boolean 是否写入（false = 已被设置变量覆盖，让位）
+function KARDS.VarLib.SetFact(tableID, path, value)
+    if KARDS.VarLib.IsFactOverridden(tableID, path) then return false end
+    local T = KARDS.VarLib.Get(tableID)
+    if not T then return false end
+    local section, key = SplitFactPath(path)
+    if not section or not T[section] then return false end
+    return SetPathValue(T[section], key, value)
+end
+
+-- 还原全部事实变量覆盖（回合边界 SimEndTurn 调用）：按登记的覆盖前值写回，清空登记
+-- @param tableID string 牌桌唯一标识符
+function KARDS.VarLib.ClearFactOverrides(tableID)
+    local T = KARDS.VarLib.Get(tableID)
+    if not T or not T.FactOverrides then return end
+    for path, rec in pairs(T.FactOverrides) do
+        local section, key = SplitFactPath(path)
+        if section and key and T[section] then
+            SetPathValue(T[section], key, rec.hasPrev and rec.prev or nil)
+        end
+    end
+    T.FactOverrides = {}
+end
+
+-- ====================================================================
 -- 玩家数据管理
 -- ====================================================================
 
@@ -426,126 +584,27 @@ function KARDS.VarLib.ResetBattleVars(tableID)
     local oldReshuffledE  = T.Battle.EnemyReshuffled
     local players = T.OffTable.Players
 
-    -- 重新创建 Special 部分
-    for _, kw in ipairs(KEYWORDS) do
-        local skipCard = SKIP_CARD_VARS[kw]
-        local s = {}
-        T.Special[kw] = s
+    -- 重新创建 Special 部分（复用原表引用，仅重填各关键词子表，B1 工厂）
+    BuildSpecialVars(T.Special)
 
-        if not skipCard then
-            s.FriendlyHandCount    = 0
-            s.FriendlyDeckCount    = 0
-            s.EnemyHandCount       = 0
-            s.EnemyDeckCount       = 0
-            s.HasDeploy            = false
-            s.DeployCount          = 0
-            s.EnemyHasDeploy       = false
-            s.EnemyDeployCount     = 0
-            s.FieldHasDeploy       = false
-            s.HandCards            = {}
-            s.EnemyHandCards       = {}
-            s.FieldCards           = {}
-            s.FriendlyFieldCards   = {}
-            s.EnemyFieldCards      = {}
-        end
-
-        s.FieldUnitCount         = 0
-        s.HasFriendlyUnit        = false
-        s.FriendlyUnitCount      = 0
-        s.HasEnemyUnit           = false
-        s.EnemyUnitCount         = 0
-    end
-
-    -- 重新创建 Battle 部分，保留国家（玩家选的）和重新调度状态
-    T.Battle = {
-        Turn                = 0,
-        IsFriendlyTurn      = false,
-        FieldUnitCount      = 0,
-        FriendlyUnitCount   = 0,
-        TotalDeployedThisGame = 0,
-        GameDuration        = 0,
-        FrontlineUnitCount  = 0,
-
-        FriendlyHandCount   = 0,
-        EnemyHandCount      = 0,
-        FriendlyDeckCount   = 0,
-        EnemyDeckCount      = 0,
-        FriendlyTotalHP     = 0,
-        EnemyTotalHP        = 0,
-        FriendlyCommandUsed    = 0,
-        EnemyCommandUsed       = 0,
-        FriendlyDeployCount    = 0,
-        EnemyDeployCount       = 0,
-        FriendlyDeployTotal    = 0,
-        EnemyDeployTotal       = 0,
-        FriendlySupportCount   = 0,
-        EnemySupportCount      = 0,
-
-        FriendlyUnits          = {},
-        EnemyUnits             = {},
-        FriendlySupportUnits   = {},
-        EnemySupportUnits      = {},
-        FriendlyFrontlineUnits = {},
-        EnemyFrontlineUnits    = {},
-
-        -- 宏观对象/对象组变量
-        FriendlyTarget         = nil,
-        EnemyTarget            = nil,
-        FriendlyHeadquarter    = nil,
-        EnemyHeadquarter       = nil,
-        FriendlyGroundUnits    = {},
-        EnemyGroundUnits       = {},
-        FriendlyAirUnits       = {},
-        EnemyAirUnits          = {},
-        FriendlyInfantry       = {},
-        EnemyInfantry          = {},
-        FriendlyTank           = {},
-        EnemyTank              = {},
-        FriendlyArtillery      = {},
-        EnemyArtillery         = {},
-        FriendlyFighter        = {},
-        EnemyFighter           = {},
-        FriendlyBomber         = {},
-        EnemyBomber            = {},
-        FriendlyUnitCards      = {},
-        EnemyUnitCards         = {},
-        FriendlyCommandCards   = {},
-        EnemyCommandCards      = {},
-        FriendlyCounterCards   = {},
-        EnemyCounterCards      = {},
-
-        FriendlyDrawCount     = 0,
-        EnemyDrawCount        = 0,
-        FriendlyDiscardCount  = 0,
-        EnemyDiscardCount     = 0,
-        FriendlyBurnCount     = 0,
-        EnemyBurnCount        = 0,
-        FriendlyMoraleDamage  = 0,
-        EnemyMoraleDamage     = 0,
-
-        -- 保留玩家选的国家
+    -- 重新创建 Battle 部分，保留国家（玩家选的）和重新调度状态（B1 工厂）
+    T.Battle = BuildBattleVars({
         FriendlyMainCountry = oldMainCountryF,
         EnemyMainCountry    = oldMainCountryE,
         FriendlyAllyCountry = oldAllyCountryF,
         EnemyAllyCountry    = oldAllyCountryE,
-
-        -- 保留重新调度状态
         FriendlyReshuffled  = oldReshuffledF,
         EnemyReshuffled     = oldReshuffledE,
-
-        FriendlyHQLastTurnDamage = 0,
-        EnemyHQLastTurnDamage    = 0,
-
-        -- 剩余指挥点
-        FriendlyCommandPoints    = 0,
-        EnemyCommandPoints       = 0,
-    }
+    })
 
     -- 恢复玩家数据引用
     T.OffTable.Players = players
 
     -- 清空卡牌实例变量空间（global 作用域用户变量，战斗结束重置）
     T.CardVars = {}
+
+    -- 清空事实变量一回合覆盖登记（新对局重新开始，旧覆盖不跨局残留）
+    T.FactOverrides = {}
 
     -- 重建对象/对象组变量路径列表
     KARDS.VarLib.RebuildObjectVarPaths(tableID)
@@ -871,9 +930,11 @@ local DEVELOP_OWN = {
     own_elite_command = "本国精英指令",
     own_elite_unit    = "本国精英单位",
 }
+-- 国籍维度（2026-08-16：流亡不作国籍——流亡为部队状态而非国家，
+-- 不参与开发池/伤害倍率配置的国籍筛选）
 local DEVELOP_COUNTRIES = {
     usa = "美国", germany = "德国", soviet = "苏联", uk = "英国", japan = "日本",
-    italy = "意大利", france = "法国", poland = "波兰", exile = "流亡", any = "任意国籍",
+    italy = "意大利", france = "法国", poland = "波兰", any = "任意国籍",
 }
 local DEVELOP_TYPES = {
     unit = "单位", command = "指令", any = "任意",
@@ -881,6 +942,21 @@ local DEVELOP_TYPES = {
 local DEVELOP_UNIT_TYPES = {
     infantry = "步兵", tank = "坦克", artillery = "火炮", fighter = "战斗机", bomber = "轰炸机", any = "任意",
 }
+
+-- 开发池显示名拼接（2026-10-02 用户规格）：去掉「·」分隔与「任意」维度，只保留位置与具体维度
+-- 直接相连，如「卡组中德国单位步兵」「卡组中」。「任意国籍」与「任意」两档不写入名称。
+-- @param ... string 各维度显示名（依次为位置、国籍、卡牌类型、单位类型）
+-- @return string 拼接后的显示名
+local function PoolDisplayName(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+        local seg = select(i, ...)
+        if type(seg) == "string" and seg ~= "" and not seg:find("任意") then
+            parts[#parts + 1] = seg
+        end
+    end
+    return table.concat(parts)
+end
 
 -- 枚举全部开发池组合路径（含显示名）
 -- @return table { [path] = displayName, ... }（路径为 Battle.DevelopPool.xxx）
@@ -893,11 +969,11 @@ local function BuildDevelopPoolPaths()
                 if typeKey == "unit" then
                     for utKey, utCN in pairs(DEVELOP_UNIT_TYPES) do
                         paths["Battle.DevelopPool." .. posKey .. "." .. countryKey .. ".unit." .. utKey]
-                            = posCN .. "·" .. countryCN .. "·单位·" .. utCN
+                            = PoolDisplayName(posCN, countryCN, "单位", utCN)
                     end
                 else
                     paths["Battle.DevelopPool." .. posKey .. "." .. countryKey .. "." .. typeKey]
-                        = posCN .. "·" .. countryCN .. "·" .. typeCN
+                        = PoolDisplayName(posCN, countryCN, typeCN)
                 end
             end
         end
@@ -931,6 +1007,12 @@ end
 -- 按开发池组合定义筛选玩家卡池（readme 7.2.1 开发 = 从特定卡池随机 3 选 1）
 -- 本国* 位置：country 取该玩家主国国籍（Battle.FriendlyMainCountry / EnemyMainCountry），
 -- 并按位置固定卡牌类型（本国指令 → command；本国精英指令 → command+elite；本国精英单位 → unit+elite）
+-- 位置维度（2026-10-02 补上筛选）：先按国籍、卡牌类型、单位类型、精英筛完整副卡组得到对象组，
+-- 再在对象组里取端头。卡组中 = 筛选结果整组；卡组顶 = 筛选结果里最靠卡组顶的那一张；
+-- 卡组底 = 筛选结果里最靠卡组底的那一张。位置是相对「筛选后的对象组」而非绝对卡组
+-- （用户规格）：卡组顶·德国·单位·步兵 取的是卡组里所有德国步兵中最靠顶的那张，
+-- 而不是「卡组顶那一张恰好是德国步兵」。牌组约定与 Deck 一致（末项为顶，抽牌 / Peek 取末项；
+-- 首项为底）。本国* 三档不按位置收窄，仍用整个卡组的筛选结果。
 -- @param tableID string 牌桌唯一标识符
 -- @param player  string 玩家标识
 -- @param def     table 组合定义（ParseDevelopPoolPath 结果）
@@ -965,11 +1047,20 @@ function KARDS.VarLib.GetDevelopPoolCards(tableID, player, def)
             table.insert(pool, c)
         end
     end
+    -- 位置取端头（相对筛选后的对象组，2026-10-02 用户规格）：卡组顶 = 对象组里最靠卡组顶的
+    -- 那一张（数组末项），卡组底 = 最靠卡组底的那一张（首项）；对象组为空则返回空表，
+    -- 卡组中与本国* 三档返回整组
+    if def.position == "top" then
+        return pool[#pool] and { pool[#pool] } or {}
+    elseif def.position == "bottom" then
+        return pool[1] and { pool[1] } or {}
+    end
     return pool
 end
 
 -- 开发池对象组变量翻译（card 模板「开发」，H5 修复：位置 × 国籍 × 类型 × 单位类型的所有组合）
--- 显示名如「卡组中·德国·单位·步兵」「本国精英指令」；与 Battle.DevelopPool.* 路径一一对应，
+-- 显示名如「卡组中德国单位步兵」「卡组中」（2026-10-02 起去掉「·」分隔与「任意」维度）；
+-- 「本国精英指令」等本国三档不变；与 Battle.DevelopPool.* 路径一一对应，
 -- 供 {$} 卡牌对象选择器列出与运行时 BuildDisplayIndex 反查路径。
 for path, display in pairs(BuildDevelopPoolPaths()) do
     KARDS.VarLib.Translations["zh-CN"][path] = display
@@ -989,28 +1080,35 @@ function KARDS.VarLib.RebuildObjectVarPaths(tableID)
     local T = KARDS.VarLib.Get(tableID)
     local result = {}
 
+    -- 1. 白名单中的宏观对象/对象组变量（直接遍历白名单：
+    --    总部/目标等键默认值为 nil，在 Lua 中不产生表键，pairs(T.Battle) 遍历不到，
+    --    若仅靠运行时键匹配则编辑器模板库（总部未填充）将永远看不到总部）
+    for path, isGroup in pairs(BATTLE_OBJECT_PATHS) do
+        table.insert(result, { path = path, isGroup = isGroup })
+    end
+
     if T and T.Battle then
-        -- 收集 Battle 层（白名单 + 动态检测）
+        -- 2. 动态注册的对象/对象组（table 值，非数字/布尔/文本；数组归为对象组，
+        --    跳过白名单已列路径避免重复）
         for k, v in pairs(T.Battle) do
             if type(k) == "string" and k:sub(1, 1) ~= "_" then
                 local path = "Battle." .. k
-                local isGroup = BATTLE_OBJECT_PATHS[path]
-                if isGroup ~= nil then
-                    table.insert(result, { path = path, isGroup = isGroup })
-                elseif type(v) == "table" then
-                    -- 动态注册的对象/对象组：数组归为对象组，非数组且含 isUnit 标记归为对象
-                    local isArray = #v > 0 or next(v) == nil
-                    if not isArray then
-                        isArray = false
-                        for _, item in pairs(v) do
-                            if type(item) == "table" then isArray = true break end
+                if BATTLE_OBJECT_PATHS[path] == nil then
+                    if type(v) == "table" then
+                        -- 动态注册的对象/对象组：数组归为对象组，非数组且含 isUnit 标记归为对象
+                        local isArray = #v > 0 or next(v) == nil
+                        if not isArray then
+                            isArray = false
+                            for _, item in pairs(v) do
+                                if type(item) == "table" then isArray = true break end
+                            end
                         end
-                    end
-                    local isUnitObject = type(v) == "table" and v.isUnit == true
-                    if isArray and not isUnitObject then
-                        table.insert(result, { path = path, isGroup = true })
-                    elseif isUnitObject then
-                        table.insert(result, { path = path, isGroup = false })
+                        local isUnitObject = type(v) == "table" and v.isUnit == true
+                        if isArray and not isUnitObject then
+                            table.insert(result, { path = path, isGroup = true })
+                        elseif isUnitObject then
+                            table.insert(result, { path = path, isGroup = false })
+                        end
                     end
                 end
             end

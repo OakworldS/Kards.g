@@ -26,12 +26,14 @@
                         移动（同移到前线）；目标槽位缺省自动首个空槽
           * 每次槽位变化后，涉及到的阵线自动居中重排
       - 前线的所有槽位必须是同一阵营：进入前线时以上一刻前线阵营（FrontlineOwner）为基准，
-        他方单位试图进入已控制的前线 → 判定试图进入方为作弊 → 对局立即停止
+        他方单位试图进入已控制的前线 → 拒绝进入并返回「前线已被敌方占领」（2026-09-26 缺口 F：
+        不再立即停局，同时存在两方单位的一致性由刻级校验 KARDS.Battle:VerifyFrontlineExclusive 追溯）
       - 前线空出后（FrontlineOwner = nil），任一方可进入，实现"争夺控制权"
       - 反作弊基础：布局校验由服务端权威执行，停止后所有操作入口拒绝执行
 
     操作类型复用第 9 节枚举（deploy / join_battlefield / move / retreat / death / remove）；
-    作弊刻使用新枚举 `cheat`（9.8 对局管控），由 Battle 骨架在作弊发生时写入时间刻，供审计。
+    作弊刻使用新枚举 `cheat`（9.8 对局管控），由 Battle 骨架在作弊发生时写入时间刻，供审计
+    （刻级前线一致性校验定位到作弊者后写入）。
 ]]
 
 KARDS = KARDS or {}
@@ -141,7 +143,10 @@ function KARDS.Battlefield:Create(tableID, players)
         Frontline = {}, -- 前线固定 SLOT_COUNT 槽（全 nil）
         FrontlineOwner = nil, -- 上一刻前线阵营（进入前线校验基准；空出后为 nil）
         Cheater = nil, -- 作弊方（对局停止后记录）
-        Stopped = false, -- 对局是否已停止
+        Stopped = false, -- 对局是否已停止（作弊 / 总部被摧毁后冻结所有操作）
+        Players = players or { "P1", "P2" }, -- 玩家标识列表（总部被摧毁胜负判定用）
+        HQDestroyed = {}, -- 已摧毁总部：HQDestroyed[player] = 摧毁顺序号（1 = 最先被摧毁）
+        GameOver = nil, -- 对局结束信息 { winner = player, loser = player }（总部被摧毁结算；nil = 未结束）
     }
     for i = 1, self.SLOT_COUNT do inst.Frontline[i] = nil end
     self.Instances[tableID] = inst
@@ -217,6 +222,45 @@ function KARDS.Battlefield:FindCardZone(tableID, card)
 end
 
 --[[
+    查找卡牌所在阵线数组与槽位（公开；控制落位/回位等需要槽位的场景用）
+
+    @param tableID string 牌桌唯一标识符
+    @param card    table 卡牌句柄
+    @return table|nil line 所在阵线数组（支援阵线或前线；不在场返回 nil）
+    @return number|nil slot 槽位（1..SLOT_COUNT）
+]]
+function KARDS.Battlefield:FindCardSlot(tableID, card)
+    local inst = self.Instances[tableID]
+    if not inst then return nil, nil end
+    return FindCard(inst, card)
+end
+
+--[[
+    查询指定玩家的支援阵线是否已满（含总部；readme 7.1 控制规则「支援阵线已满」判定用）
+
+    @param tableID string 牌桌唯一标识符
+    @param owner   string 玩家标识
+    @return boolean 已满返回 true（阵线不存在也按已满处理，保守拒绝）
+]]
+function KARDS.Battlefield:IsSupportFull(tableID, owner)
+    local line = self:GetSupport(tableID, owner)
+    if not line then return true end
+    return CountUnits(line) >= self.SLOT_COUNT
+end
+
+--[[
+    查询前线是否已满（含前线上的全部单位）
+
+    @param tableID string 牌桌唯一标识符
+    @return boolean 已满返回 true（前线不存在也按已满处理）
+]]
+function KARDS.Battlefield:IsFrontlineFull(tableID)
+    local line = self:GetFrontline(tableID)
+    if not line then return true end
+    return CountUnits(line) >= self.SLOT_COUNT
+end
+
+--[[
     获取指定阵线的占用单位列表（轰炸机拦截判定用；含总部等所有占用槽位）
 
     @param tableID string 牌桌唯一标识符
@@ -273,6 +317,83 @@ function KARDS.Battlefield:Stop(tableID, cheater, reason)
     inst.Stopped = true
     inst.Cheater = cheater
     print("[Battlefield] 对局停止（作弊）: 作弊方=" .. tostring(cheater) .. " 原因=" .. tostring(reason))
+    -- 作弊停止事件（2026-08-18 规划 D7）：此前实体层无收口（客户端仅零散失败提示），
+    -- 实体层订阅后向参战玩家广播冻结提示并停回合超时定时器
+    if KARDS.EffectRegistry then
+        KARDS.EffectRegistry.Trigger(tableID, KARDS.EffectRegistry.EVENTS.BattleStopped,
+            { cheater = cheater, reason = reason })
+    end
+end
+
+-- 指定牌桌对局是否已结束（总部被摧毁，正常结算；区别于作弊停止）
+function KARDS.Battlefield:IsGameOver(tableID)
+    local inst = self.Instances[tableID]
+    return not not (inst and inst.GameOver)
+end
+
+-- 获取对局结束信息（nil = 未结束）：{ winner = player, loser = player }
+function KARDS.Battlefield:GetGameOver(tableID)
+    local inst = self.Instances[tableID]
+    return inst and inst.GameOver or nil
+end
+
+--[[
+    停止对局（总部被摧毁的正常结算）：冻结布局与操作，记录胜负
+
+    @param tableID string 牌桌唯一标识符
+    @param winner  string 胜利方玩家标识
+    @param loser   string 失败方玩家标识
+]]
+function KARDS.Battlefield:StopByVictory(tableID, winner, loser)
+    local inst = self.Instances[tableID]
+    if not inst or inst.Stopped then return end
+    inst.Stopped = true
+    inst.GameOver = { winner = winner, loser = loser }
+    print(("[Battlefield] 对局结束: 胜利方=%s 失败方=%s"):format(tostring(winner), tostring(loser)))
+end
+
+--[[
+    检查指定玩家总部是否被摧毁（防御力 ≤ 0，readme 7.1：摧毁敌方总部即胜利）。
+
+    总部被摧毁后：记录摧毁顺序（HQDestroyed[player] = 顺序号）→ 判定胜负 →
+    停止对局（StopByVictory）→ 触发 GameOver 事件（实体层订阅广播结算动画）。
+
+    胜负判定（readme 7.1 注：若双方总部都被摧毁，最早被摧毁的一方失败）：
+      单毁   → 被摧毁方失败，另一方胜利；
+      双毁   → 摧毁顺序较早的一方失败（另一方胜利）。
+
+    幂等：已记录摧毁 / 对局已停止时直接返回 false（同一总部不重复判定）。
+
+    @param tableID string 牌桌唯一标识符
+    @param owner   string 总部所有者玩家标识
+    @return boolean 是否本次判定为总部被摧毁（首次判定 true，已判定/未摧毁 false）
+]]
+function KARDS.Battlefield:CheckHQDestroyed(tableID, owner)
+    local inst = self.Instances[tableID]
+    if not inst or inst.Stopped or inst.HQDestroyed[owner] then return false end
+    local hq = self:GetHQ(tableID, owner)
+    if not hq or (hq.GetStat and (hq:GetStat("defense") or 0) > 0) then return false end
+    -- 记录摧毁顺序（1 = 最先被摧毁）
+    inst.HQDestroyOrder = (inst.HQDestroyOrder or 0) + 1
+    inst.HQDestroyed[owner] = inst.HQDestroyOrder
+    -- 胜负判定：单毁 = 被摧毁方失败；双毁 = 最早被摧毁的一方失败
+    local p1, p2 = inst.Players[1], inst.Players[2]
+    local winner, loser
+    if inst.HQDestroyed[p1] and inst.HQDestroyed[p2] then
+        loser = (inst.HQDestroyed[p1] < inst.HQDestroyed[p2]) and p1 or p2
+        winner = (loser == p1) and p2 or p1
+    elseif inst.HQDestroyed[p1] then
+        loser, winner = p1, p2
+    else
+        loser, winner = p2, p1
+    end
+    self:StopByVictory(tableID, winner, loser)
+    -- GameOver 事件（实体层订阅：广播结算 + 移除被摧毁总部实体）
+    if KARDS.EffectRegistry and KARDS.EffectRegistry.EVENTS.GameOver then
+        KARDS.EffectRegistry.Trigger(tableID, KARDS.EffectRegistry.EVENTS.GameOver,
+            { winner = winner, loser = loser, destroyed = owner })
+    end
+    return true
 end
 
 -- 前线空出后重置控制方（供内部操作调用）
@@ -379,11 +500,11 @@ end
 
     与 MoveToFrontline 的区别：单位不在场上（手牌/效果创建），直接加入前线而非从支援阵线移动。
     阵营一致性校验与 MoveToFrontline 一致：上一刻前线阵营与进入单位阵营必须一致，
-    否则试图进入方作弊 → 对局立即停止。
+    否则拒绝进入并返回原因（2026-09-26 缺口 F：不再立即停局，一致性由刻级校验兜底）。
 
     @param tableID string 牌桌唯一标识符
     @param card    table 单位卡牌句柄
-    @return boolean, string 是否成功；失败原因（cheat 表示触发作弊并已停止对局）
+    @return boolean, string 是否成功；失败原因（"前线已被敌方占领" 表示阵营冲突被拒）
 ]]
 function KARDS.Battlefield:JoinFrontline(tableID, card)
     local inst = self.Instances[tableID]
@@ -395,13 +516,12 @@ function KARDS.Battlefield:JoinFrontline(tableID, card)
     local line, _ = FindCard(inst, card)
     if line then return false, "already_on_field" end
 
-    -- 阵营一致性校验：上一刻前线阵营与进入单位阵营必须一致，否则进入方作弊
+    -- 阵营一致性校验（2026-09-26 缺口 F 软失败）：上一刻前线阵营与进入单位阵营必须一致，
+    -- 否则拒绝进入（刻级校验 KARDS.Battle:VerifyFrontlineExclusive 负责追溯作弊者）
     local owner = card:GetOwner()
     local lastOwner = inst.FrontlineOwner
     if lastOwner and lastOwner ~= owner then
-        self:Stop(tableID, owner,
-            "前线阵营冲突：玩家 " .. owner .. " 的单位试图加入 " .. lastOwner .. " 控制的前线")
-        return false, "cheat"
+        return false, "前线已被敌方占领"
     end
 
     local slot = FirstEmpty(frontline)
@@ -413,15 +533,83 @@ function KARDS.Battlefield:JoinFrontline(tableID, card)
 end
 
 --[[
+    加入前线指定槽位（效果落位 / 控制反转用，非玩家移动）
+
+    与 JoinFrontline / MoveToFrontline 的区别：
+      - 指定槽位（受限选位 + 自动居中），而非首个空槽；
+      - opts.forceOwner 控制反转（readme 7.1 控制规则：控制前线单位时前线反转为
+        新控制者占领）：跳过「上一刻前线阵营一致」作弊校验，直接令 FrontlineOwner
+        = forceOwner，再把卡插入前线 slotIndex 位置（控制是合法操作，不触发作弊）。
+
+    @param tableID   string 牌桌唯一标识符
+    @param card      table 单位卡牌句柄
+    @param slotIndex number 前线目标槽位（1..SLOT_COUNT；占用时插入到该卡左侧）
+    @param opts      table|nil { forceOwner = string|nil } 控制反转时传新控制者
+    @return boolean, string 是否成功；失败原因（"前线已被敌方占领" 阵营冲突被拒 /
+                           frontline_full 前线已满）
+]]
+function KARDS.Battlefield:AddToFrontline(tableID, card, slotIndex, opts)
+    local inst = self.Instances[tableID]
+    if not inst then return false, "no_table" end
+    if inst.Stopped then return false, "stopped" end
+    if not card or card:GetType() == "headquarter" then return false, "hq_immovable" end
+    if type(slotIndex) ~= "number" or slotIndex < 1 or slotIndex > self.SLOT_COUNT then
+        return false, "invalid_slot"
+    end
+    local line, _ = FindCard(inst, card)
+    if line then return false, "already_on_field" end
+
+    local forceOwner = opts and opts.forceOwner or nil
+    local enterOwner = forceOwner or card:GetOwner()
+    local lastOwner = inst.FrontlineOwner
+    -- 阵营一致性：控制反转（forceOwner）跳过校验（合法操作）；其余须与上一刻前线阵营一致，
+    -- 否则拒绝进入（2026-09-26 缺口 F：不再立即停局，一致性由刻级校验兜底）
+    if not forceOwner and lastOwner and lastOwner ~= enterOwner then
+        return false, "前线已被敌方占领"
+    end
+    -- 前线已满则拒绝（先校验后落位，失败不改变任何状态）
+    if CountUnits(inst.Frontline) >= self.SLOT_COUNT then
+        return false, "frontline_full"
+    end
+    if not InsertCentered(inst.Frontline, card, slotIndex) then
+        return false, "frontline_full"
+    end
+    inst.FrontlineOwner = enterOwner
+    return true
+end
+
+--[[
+    原地置换阵线中的卡牌（2026-09-26 缺口 J 转换）
+
+    保持阵线与槽位不变，仅把该槽位元素替换为新卡（不改动数组长度，因此不需要居中
+    重排）。既有 AddToSupport / JoinBattlefield 都会重排居中，不适用于原地替换。
+
+    @param tableID string 牌桌唯一标识符
+    @param oldCard table 旧卡牌句柄（须在场上）
+    @param newCard table 新卡牌句柄
+    @return boolean 是否成功（旧卡不在场返回 false）
+]]
+function KARDS.Battlefield:ReplaceCard(tableID, oldCard, newCard)
+    local inst = self.Instances[tableID]
+    if not inst then return false end
+    if not oldCard or not newCard then return false end
+    local line, slot = FindCard(inst, oldCard)
+    if not line or not slot then return false end
+    line[slot] = newCard
+    return true
+end
+
+--[[
     移到前线：单位从本方支援阵线槽位跨数组移动到前线槽位（含阵营一致性作弊检测），双方阵线自动居中
 
     顺序：先校验（目标槽合法 + 阵营一致），再从支援阵线取槽（清空）、受限选位填入前线；
-    作弊时对局立即停止且不改变任何布局状态（仅由 Battle 骨架写入作弊刻）。
+    阵营冲突时拒绝进入且不改变任何布局状态（2026-09-26 缺口 F：不再立即停局，
+    一致性由刻级校验兜底）。
 
     @param tableID   string 牌桌唯一标识符
     @param card      table 单位卡牌句柄
     @param slotIndex number|nil 前线目标槽位（缺省自动首个空槽；占用时插入到该卡左侧）
-    @return boolean, string 是否成功；失败原因（cheat 表示触发作弊并已停止对局）
+    @return boolean, string 是否成功；失败原因（"前线已被敌方占领" 阵营冲突被拒）
 ]]
 function KARDS.Battlefield:MoveToFrontline(tableID, card, slotIndex)
     local inst = self.Instances[tableID]
@@ -440,13 +628,12 @@ function KARDS.Battlefield:MoveToFrontline(tableID, card, slotIndex)
         if not targetSlot then return false, "frontline_full" end
     end
 
-    -- 阵营一致性校验：上一刻前线阵营与进入单位阵营必须一致，否则进入方作弊
+    -- 阵营一致性校验（2026-09-26 缺口 F 软失败）：上一刻前线阵营与进入单位阵营必须一致，
+    -- 否则拒绝进入（刻级校验 KARDS.Battle:VerifyFrontlineExclusive 负责追溯作弊者）
     local owner = card:GetOwner()
     local lastOwner = inst.FrontlineOwner
     if lastOwner and lastOwner ~= owner then
-        self:Stop(tableID, owner,
-            "前线阵营冲突：玩家 " .. owner .. " 的单位试图进入 " .. lastOwner .. " 控制的前线")
-        return false, "cheat"
+        return false, "前线已被敌方占领"
     end
 
     -- 从本方支援阵线取槽（先校验后修改，作弊时不改变布局）

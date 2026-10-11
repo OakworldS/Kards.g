@@ -1,0 +1,17 @@
+{
+    "type": "choice",
+    "color": [186, 85, 211],
+    "hasInput": true,
+    "hasOutput": true,
+    "hasSecondOutput": true,
+    "outputLabels": ["效果一", "效果二"],
+    "names": {
+        "zh-CN": "抉择",
+        "en": "Choice"
+    },
+    "configs": {
+        "zh-CN": "'抉择：'<>'或'<>",
+        "en": "'Choice: '<>' or '<>"
+    },
+    "base": "<><>"
+}

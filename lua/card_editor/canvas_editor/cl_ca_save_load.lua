@@ -27,10 +27,15 @@ KARDS.CardEditor.Canvas.SaveWindow = {
     x = 0,
     y = 0,
     width = 450,
-    height = 280,
+    height = 340, -- 2026-10-02：新增「设为默认卡牌」勾选行，原 280
     inputText = "",
     isReplaceMode = false,
     errorMessage = "",
+    -- 【默认卡牌】「设为默认卡牌」勾选状态（仅测试版可见可用，正式版移除）
+    setDefault = false,
+    checkbox = { x = 0, y = 0, size = 22, hovered = false, hitX = 0, hitY = 0, hitW = 0, hitH = 0 },
+    -- 【默认卡牌】「解锁默认卡牌」按钮（仅测试版可见可用，正式版移除）
+    unlockButton = { x = 0, y = 0, width = 130, height = 30, hovered = false },
     buttons = {
         {
             id = "confirm",
@@ -187,7 +192,43 @@ function KARDS.CardEditor.Canvas.DrawSaveWindow()
     
     -- 绘制按钮
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    
+
+    -- 【默认卡牌】「设为默认卡牌」勾选行 + 「解锁默认卡牌」按钮（仅测试版；正式版移除本段）
+    if KARDS.CardEditor.DefaultCardTestMode then
+        local cb = saveWindow.checkbox
+        cb.size = 22
+        cb.x = saveWindow.x + 40
+        cb.y = saveWindow.y + 176
+        cb.hitX = saveWindow.x + 36
+        cb.hitY = saveWindow.y + 170
+        cb.hitW = saveWindow.width - 72
+        cb.hitH = 34
+        cb.hovered = mouseX >= cb.hitX and mouseX <= cb.hitX + cb.hitW and mouseY >= cb.hitY and mouseY <= cb.hitY + cb.hitH
+
+        local boxColor = saveWindow.setDefault and Color(80, 140, 220) or (cb.hovered and Color(85, 85, 85) or Color(60, 60, 60))
+        draw.RoundedBox(3, cb.x, cb.y, cb.size, cb.size, boxColor)
+        if saveWindow.setDefault then
+            surface.SetDrawColor(255, 255, 255)
+            surface.DrawLine(cb.x + 4, cb.y + cb.size * 0.55, cb.x + cb.size * 0.45, cb.y + cb.size - 5)
+            surface.DrawLine(cb.x + cb.size * 0.45, cb.y + cb.size - 5, cb.x + cb.size - 4, cb.y + 4)
+        end
+        draw.SimpleText("设为默认卡牌", "SourceHan_Heavy_16", cb.x + cb.size + 10, cb.y + cb.size / 2, Color(235, 235, 235), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText("默认卡牌将锁定，不可修改、不可删除", "SourceHan_Heavy_12", cb.x + cb.size + 10, cb.y + cb.size + 15, Color(150, 150, 150), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+
+        -- 当前编辑卡牌为默认卡牌：提示已锁定并提供解锁入口
+        local isDefault = KARDS.CardEditor.Canvas.CardAppearance and KARDS.CardEditor.Canvas.CardAppearance.isDefault == true
+        if isDefault then
+            draw.SimpleText("当前卡牌为默认卡牌（已锁定）", "SourceHan_Heavy_14", saveWindow.x + 40, saveWindow.y + 240, Color(230, 180, 90), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            local ub = saveWindow.unlockButton
+            ub.x = saveWindow.x + saveWindow.width - 40 - ub.width
+            ub.y = saveWindow.y + 225
+            ub.hovered = mouseX >= ub.x and mouseX <= ub.x + ub.width and mouseY >= ub.y and mouseY <= ub.y + ub.height
+            local ubColor = ub.hovered and Color(210, 160, 75) or Color(175, 125, 55)
+            draw.RoundedBox(6, ub.x, ub.y, ub.width, ub.height, ubColor)
+            draw.SimpleText("解锁默认卡牌", "SourceHan_Heavy_14", ub.x + ub.width / 2, ub.y + ub.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
+    end
+
     -- 确定/替换按钮
     local confirmBtn = saveWindow.buttons[1]
     confirmBtn.x = saveWindow.x + saveWindow.width / 2 - 115
@@ -282,11 +323,13 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
         local itemColor = isSelected and Color(80, 80, 120) or (isHovered and Color(65, 65, 65) or Color(50, 50, 50))
         draw.RoundedBox(2, listX + 2, itemY, listW - 4, rowH - 2, itemColor)
         
-        -- 获取卡牌名称
-        local displayName = KARDS.CardEditor.SaveSystem.GetCardNameFromFile(fileName)
+        -- 获取卡牌名称与默认卡牌锁定标记
+        local cardInfo = KARDS.CardEditor.SaveSystem.GetCardInfo(fileName)
+        local displayName = cardInfo and cardInfo.name or ""
         if displayName == "" then
             displayName = "无名称"
         end
+        local isDefaultCard = cardInfo and cardInfo.isDefault == true
         
         -- 绘制行分隔线
         if i < visibleRows and loadWindow.files[fileIndex + 1] then
@@ -297,6 +340,10 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
         
         draw.SimpleText(KARDS.CardEditor.SaveSystem.UnescapeFileName(fileName), "SourceHan_Heavy_14", listX + 15, itemY + (rowH - 2) / 2, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         draw.SimpleText(displayName, "SourceHan_Heavy_14", listX + fileNameColW + 15, itemY + (rowH - 2) / 2, Color(150, 150, 150), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        -- 默认卡牌（锁定）标记
+        if isDefaultCard then
+            draw.SimpleText("默认·锁定", "SourceHan_Heavy_12", listX + fileNameColW - 10, itemY + (rowH - 2) / 2, Color(230, 180, 90), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        end
     end
     
     -- 绘制滚动条（列表超出可视区域时显示）

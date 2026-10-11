@@ -113,6 +113,7 @@ KARDS.RulesVocabulary.Registry = {
             { id = "intelligence", label = { ["zh-CN"] = "情报",   ["en"] = "Intelligence" } },
             { id = "exile",        label = { ["zh-CN"] = "流亡",   ["en"] = "Exile" } },
             { id = "veteran_elite",label = { ["zh-CN"] = "老兵(精英)", ["en"] = "Veteran(Elite)" } },
+            { id = "navy",         label = { ["zh-CN"] = "海军",   ["en"] = "Navy" } },
         },
         allowCustom = true,
         category = "keyword",
@@ -164,7 +165,8 @@ KARDS.RulesVocabulary.Registry = {
             { id = "italy",    label = { ["zh-CN"] = "意大利",  ["en"] = "Italy" } },
             { id = "france",   label = { ["zh-CN"] = "法国",    ["en"] = "France" } },
             { id = "poland",   label = { ["zh-CN"] = "波兰",    ["en"] = "Poland" } },
-            { id = "exile",    label = { ["zh-CN"] = "流亡",    ["en"] = "Exile" } },
+            -- 2026-08-16：流亡不作国籍（readme 7.2.3 特别战斗词条；流亡为卡组层面的
+            -- 入组规则：流亡牌可投入包含本国或流亡国的卡组，国籍下拉不再提供流亡选项）
         },
         allowCustom = true,
         category = "card",
@@ -185,19 +187,25 @@ function KARDS.RulesVocabulary.GetOptions(sectionId)
     if not section then return {} end
 
     local result = {}
+    local seen = {}
     -- 内置选项
     for _, opt in ipairs(section.options or {}) do
         table.insert(result, opt)
+        seen[opt.id] = true
     end
-    -- 合并自定义选项（按 ID 去重，覆盖同 ID 内置项由 AddCustomOption 负责）
+    -- 合并自定义选项（按 ID 去重，2026-10-04：AddCustomOption 同时写入 section.options 与
+    -- CustomAdditions，若不按 ID 去重，列表会同时出现内置插入项与持久化项两条）
     local customs = KARDS.RulesVocabulary.CustomAdditions[sectionId]
     if customs then
         for customId, data in pairs(customs) do
-            table.insert(result, {
-                id = customId,
-                label = data.label,
-                isCustom = true,
-            })
+            if not seen[customId] then
+                table.insert(result, {
+                    id = customId,
+                    label = data.label,
+                    isCustom = true,
+                })
+                seen[customId] = true
+            end
         end
     end
     return result

@@ -6,26 +6,41 @@
 
     帧序列（frames，t 为相对动画起始的秒数，须升序）：
       { t = 秒数, pos = Vector?, ang = Angle?, easing = 曲线名?, event = 事件名? }
-      - 首帧省略 pos/ang 时自动快照目标当前姿态（动画从当前位置/角度出发）
+      - 首帧省略 pos/ang 时自动快照目标当前姿态（动画从当前位置/角度出发；快照在
+        「动画实际开始」时进行，而非入队时）
       - 后续帧省略某轴（pos 或 ang）= 该轴保持上一帧值 → 仅位置 / 仅角度动画无需特殊开关
       - easing 作用于「到达本帧的段」（缺省取 opts.easing 或 "smooth"）
       - event 为命名关键帧：t 越过该帧时回调 opts.onKeyframe(target, 事件名, t)
       - 两帧姿态相同 = 停留（deckDraw 桌中停留 / 移除动画等待段）
 
+    动画队列（2026-08-12 新增：全局 FIFO + 并行组 + 免排队标记）：
+      - 默认所有动画按调用顺序进入全局 FIFO 队列：更晚的动画必须等更早的动画
+        播放完成才能开始（非动画系统的操作——如打出指令的效果——仍即时生效，
+        属服务端数据层，本模块不涉及；但若该生效伴随动画，动画同样排队）。
+      - opts.group 兼作「并行组」调度语义：同一组内动画可并发（后入队的同组动画
+        加入当前组并发播放）；不同组之间严格串行（后一组的动画必须等当前组全部
+        播完才开播）。未分组（group=nil）的动画为独立批次（默认串行）。
+      - 同一 target 再次 Play = 原位替换（不追加）：正在播的被重启（新帧立即生效）；
+        已入队的原位覆盖帧（保留队列位置）。每 target 全局最多一个动画。
+      - opts.noQueue = true：免排队——直接播放、不排队、也不阻挡队列（高频交互
+        反馈，如拖拽腾位预览 fieldRepos）。
+
     opts：
       delay?      动画开始前延迟秒数（延迟期间保持首帧姿态；mulligan 发牌错峰）
-      group?      组名（Active(target, 组名...) 按组判定；Any(组名) 判定某组是否有动画在播）
+      group?      组名（Active(target, 组名...) 按组判定；Any(组名) 判定某组是否有
+                  动画在播；兼作并行组调度语义，见上）
+      noQueue?    true = 免排队直接播放（默认 false）
       easing?     缺省曲线名
       onStart?    function(target)  延迟结束、动画实际开始时回调（发牌音效）
       onKeyframe? function(target, name, t)  命名关键帧到达回调（阶段事件）
       onComplete? function(target)  动画完成回调（登记/SetNoDraw 等收尾）
 
     API：
-      Play(target, frames, opts)  播放（同一 target 已有动画则替换）
-      Get(target)                 取播放中的 clip（含 toPos/toAng 目标值，供调用方比对）
-      Active(target, ...groups)   是否在播；给组名则仅当所属组命中任一给定组
-      Any(group)                  是否存在某组的动画在播（mulligan 发牌全部完成判定）
-      Stop(target)                停止（立即清表，不写任何值）
+      Play(target, frames, opts)  播放/排队（同一 target 已有动画则原位替换）
+      Get(target)                 取播放中或排队中的 clip（含 toPos/toAng 目标值）
+      Active(target, ...groups)   是否在播或排队；给组名则仅当所属组命中任一给定组
+      Any(group)                  是否存在某组动画在播或排队（mulligan 发牌完成判定）
+      Stop(target)                停止（活跃或队列中移除，不写任何值）
       StopAll()                   停止全部（退出牌桌 / 新对局复位）
 
     写入端（writer）：
@@ -42,10 +57,16 @@
 KARDS = KARDS or {}
 KARDS.AnimPlayer = KARDS.AnimPlayer or {}
 
--- 播放中的动画（weak keys：实体 / 相机对象），[target] = clip
--- clip = { target, frames, opts, start, group, hasPos, hasAng, startPos, startAng,
---          toPos, toAng, fired, started }
+-- 活跃播放中的动画（weak keys：实体 / 相机对象），[target] = clip
+-- clip = { target, frames, opts, group, hasPos, hasAng, startPos, startAng,
+--          toPos, toAng, fired, started, start, fromQueue }
+-- fromQueue：true = 队列提升播放（参与组间串行门槛）；false = noQueue 即时播放
 local clips = setmetatable({}, { __mode = "k" })
+
+-- 等待队列（FIFO 数组）：[1..n] = clip（强引用；失效实体由调度清理）
+local queue = {}
+-- 队列反向索引（weak keys）：[target] = clip（O(1) 查找/替换/删除）
+local queuedTargets = setmetatable({}, { __mode = "k" })
 
 -- 缓动注册表（t ∈ [0,1] → [0,1]；与旧动画系统的曲线一一对应）
 local Easings = {
@@ -109,12 +130,62 @@ local function WritePose(target, pos, ang)
     end
 end
 
+-- 立即开始播放 clip（Play 直接播放 / 队列提升 / 同 target 活跃替换重启）：
+-- 设定 start（含 delay）+ 首帧省略轴在「此刻」快照起始姿态 + 登记活跃表
+local function BeginClip(clip)
+    local target = clip.target
+    clip.start = CurTime() + (clip.opts.delay or 0)
+    if not clip.frames[1].pos or not clip.frames[1].ang then
+        local curPos, curAng = ReadPose(target)
+        if not clip.frames[1].pos then clip.startPos = curPos end
+        if not clip.frames[1].ang then clip.startAng = curAng end
+    end
+    clips[target] = clip
+end
+
+-- 调度推进（Play / 替换 / Stop / Think 完成 / 失效清理后调用）：
+--   1. 清理队列中失效实体（服务端已移除的实体不播）
+--   2. 无活跃 fromQueue clip → 提升队头开始播放
+--   3. 有活跃 fromQueue clip → 仅当队头与活跃组同组（且队头有组名）→ 提升队头
+--      加入并发；否则等待当前组播完（组间严格串行）
+--   4. 未分组（group=nil）clip 为独立批次：仅自身一组（默认串行）
+local function PromoteQueue()
+    local i = 1
+    while i <= #queue do
+        local c = queue[i]
+        if IsEntityObj(c.target) and not IsValid(c.target) then
+            queuedTargets[c.target] = nil
+            table.remove(queue, i)
+        else
+            i = i + 1
+        end
+    end
+    if #queue == 0 then return end
+    -- 活跃 fromQueue clip 的组（同组并发；若因替换出现多组并存，以先遇到的为准）
+    local activeGroup = nil
+    for _, c in pairs(clips) do
+        if c.fromQueue then
+            activeGroup = c.group
+            break
+        end
+    end
+    local head = queue[1]
+    if activeGroup then
+        -- 组间串行：当前组播完前不提升不同组的队头
+        if not head.group or head.group ~= activeGroup then return end
+    end
+    -- 提升队头（队列 → 活跃）
+    table.remove(queue, 1)
+    queuedTargets[head.target] = nil
+    BeginClip(head)
+end
+
 --[[
-    播放 6 值关键帧动画（同一 target 已有动画则替换；参数非法返回 nil）
+    播放 6 值关键帧动画（同一 target 已有动画则原位替换；参数非法返回 nil）
 
     @param target 实体 | 相机对象
     @param frames 帧序列（见文件头约定）
-    @param opts   { delay?, group?, easing?, onStart?, onKeyframe?, onComplete? }
+    @param opts   { delay?, group?, noQueue?, easing?, onStart?, onKeyframe?, onComplete? }
     @return table clip（含 toPos/toAng：末帧目标值，供调用方比对目标是否变化）
 ]]
 function KARDS.AnimPlayer:Play(target, frames, opts)
@@ -137,11 +208,10 @@ function KARDS.AnimPlayer:Play(target, frames, opts)
         target = target,
         frames = frames,
         opts = opts,
-        start = CurTime() + (opts.delay or 0),
         group = opts.group,
         hasPos = hasPos,
         hasAng = hasAng,
-        -- 起始姿态：首帧明确给定则用给定值，否则快照目标当前姿态
+        -- 起始姿态：首帧明确给定则用给定值，否则占位（实际开始时快照当前姿态）
         startPos = frames[1].pos or curPos,
         startAng = frames[1].ang or curAng,
         -- 目标姿态：末帧给定值（该轴未参与动画则沿用起始姿态）
@@ -150,23 +220,65 @@ function KARDS.AnimPlayer:Play(target, frames, opts)
         fired = {},
         started = false,
     }
-    clips[target] = clip
+    -- 同 target 已有动画（活跃或排队）→ 原位替换（保留现有「同 target 替换」语义）
+    if clips[target] then
+        -- 活跃中：重启（继承 fromQueue 状态；新 delay 重排 start、此刻快照姿态）
+        clip.fromQueue = clips[target].fromQueue
+        BeginClip(clip)
+        return clip
+    end
+    -- 免排队：直接播放（高频交互反馈；不排队、不阻挡队列；同 target 若在排队则
+    -- 移除——保证「免排队即播」且每 target 全局唯一）
+    if opts.noQueue then
+        clip.fromQueue = false
+        if queuedTargets[target] then
+            for i, c in ipairs(queue) do
+                if c.target == target then
+                    table.remove(queue, i)
+                    break
+                end
+            end
+            queuedTargets[target] = nil
+            PromoteQueue() -- 移除后队头可能变化
+        end
+        BeginClip(clip)
+        return clip
+    end
+    if queuedTargets[target] then
+        -- 排队中：原位覆盖队列项（保留队列位置；组可能变化 → 重评估调度）
+        clip.fromQueue = true
+        for i, c in ipairs(queue) do
+            if c.target == target then
+                queue[i] = clip
+                break
+            end
+        end
+        queuedTargets[target] = clip
+        PromoteQueue()
+        return clip
+    end
+    -- 入队（全局 FIFO；若其组正活跃，PromoteQueue 立即提升加入并发）
+    clip.fromQueue = true
+    queue[#queue + 1] = clip
+    queuedTargets[target] = clip
+    PromoteQueue()
     return clip
 end
 
--- 取目标播放中的 clip（无则 nil；调用方可用 clip.toPos/toAng 与目标值比对）
+-- 取目标播放中或排队中的 clip（无则 nil；调用方可用 clip.toPos/toAng 与目标值比对）
 function KARDS.AnimPlayer:Get(target)
-    return clips[target]
+    return clips[target] or queuedTargets[target]
 end
 
 --[[
-    目标是否在播放动画。给组名则仅当所属组命中任一给定组时返回 true：
-      Active(ent)           → 任何动画在播
+    目标是否在播放或排队动画。给组名则仅当所属组命中任一给定组时返回 true：
+      Active(ent)           → 任何动画在播/排队
       Active(ent, "hq")     → 仅总部对局开始动画
       Active(ent, "a", "b") → 属于 a 或 b 组（保留旧代码按动画表逐个判定的精确语义）
+    排队中视为忙碌：拖拽拿起判定 / mulligan 落位等自动生效。
 ]]
 function KARDS.AnimPlayer:Active(target, ...)
-    local clip = clips[target]
+    local clip = clips[target] or queuedTargets[target]
     if not clip then return false end
     local n = select("#", ...)
     if n == 0 then return true end
@@ -176,23 +288,46 @@ function KARDS.AnimPlayer:Active(target, ...)
     return false
 end
 
--- 是否存在某组的动画在播（mulligan 发牌全部完成 = 无 "mulliganDeal" 组动画）
+-- 是否存在某组动画在播或排队（mulligan 发牌全部完成 = 无 "mulliganDeal" 组动画；
+-- 含排队项：发牌未播完前选择/确认不会提前解锁）
 function KARDS.AnimPlayer:Any(group)
     for _, clip in pairs(clips) do
+        if clip.group == group then return true end
+    end
+    for _, clip in ipairs(queue) do
         if clip.group == group then return true end
     end
     return false
 end
 
--- 停止目标动画（立即清表，不写任何值；目标留在当前姿态）
+-- 停止目标动画（活跃或队列中移除，立即清表，不写任何值；目标留在当前姿态）
 function KARDS.AnimPlayer:Stop(target)
-    clips[target] = nil
+    local clip = clips[target]
+    if clip then
+        clips[target] = nil
+        if clip.fromQueue then PromoteQueue() end -- 组可能少成员 → 重评估调度
+        return
+    end
+    if queuedTargets[target] then
+        for i, c in ipairs(queue) do
+            if c.target == target then
+                table.remove(queue, i)
+                break
+            end
+        end
+        queuedTargets[target] = nil
+        PromoteQueue() -- 队头可能变化
+    end
 end
 
--- 停止全部动画（退出牌桌 / 新对局复位）
+-- 停止全部动画（退出牌桌 / 新对局复位；队列一并清空）
 function KARDS.AnimPlayer:StopAll()
     for target in pairs(clips) do
         clips[target] = nil
+    end
+    for i = #queue, 1, -1 do
+        queuedTargets[queue[i].target] = nil
+        queue[i] = nil
     end
 end
 
@@ -260,7 +395,7 @@ local function UpdateClip(clip, now)
     FireEvents(clip, t, target)
 end
 
--- 每帧驱动全部播放中的动画（单一 Think；实体失效即清表）
+-- 每帧驱动全部播放中的动画（单一 Think；实体失效即清表；结束后推进队列）
 hook.Add("Think", "KARDS_AnimPlayer", function()
     local now = CurTime()
     for target, clip in pairs(clips) do
@@ -270,5 +405,5 @@ hook.Add("Think", "KARDS_AnimPlayer", function()
             UpdateClip(clip, now)
         end
     end
+    PromoteQueue() -- 队列推进：当前组播完 → 下个组开始
 end)
-

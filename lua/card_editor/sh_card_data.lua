@@ -10,9 +10,10 @@ KARDS.CardEditor.Data = KARDS.CardEditor.Data or {}
 -- 辅助函数
 -- ============================================================================
 
--- 生成唯一 ID
+-- 生成唯一 ID（统一委托 Core.Utils.GenerateID，见 sh_utils.lua；本文件先于 sh_utils 加载，
+-- 故保留本地委托，运行时 Core.Utils 已就绪——原实现缺 SysTime()，同秒批量创建碰撞概率更高）
 local function generateId()
-    return util.CRC(os.time() .. math.random())
+    return KARDS.CardEditor.Core.Utils.GenerateID()
 end
 
 -- ============================================================================
@@ -123,43 +124,6 @@ function KARDS.CardEditor.Data:ValidateCardData(data)
     return #errors == 0, errors
 end
 
--- [[已废弃]] 序列化卡牌数据
--- 被 sh_save_system.lua 的 FileOps.Encode/Decode 取代
--- 不再被 sv_storage.lua 使用（现直接用完整 cardData JSON）
--- @deprecated
-function KARDS.CardEditor.Data:SerializeCardData(data)
-    return util.TableToJSON(data, true)
-end
-
--- [[已废弃]] 反序列化卡牌数据
--- 被 sh_save_system.lua 的 FileOps.Encode/Decode 取代
--- 不再被 sv_storage.lua 使用
--- @deprecated
-function KARDS.CardEditor.Data:DeserializeCardData(json)
-    local data = util.JSONToTable(json)
-    if not data then
-        return nil
-    end
-    
-    -- 确保所有必要字段存在
-    data.id = data.id or generateId()
-    data.name = data.name or "New Card"
-    data.cost = data.cost or 1
-    data.attack = data.attack or 0
-    data.defense = data.defense or 0
-    data.description = data.description or "Card description"
-    data.imagePath = data.imagePath or ""
-    data.templatePath = data.templatePath or ""
-    data.keywords = data.keywords or {}
-    data.effects = data.effects or {}
-    data.triggers = data.triggers or {}
-    data.nodes = data.nodes or {}
-    data.createdAt = data.createdAt or os.time()
-    data.updatedAt = data.updatedAt or os.time()
-    
-    return data
-end
-
 -- ============================================================================
 -- 枚举定义
 -- ============================================================================
@@ -249,6 +213,7 @@ KARDS.CardEditor.Data.Keywords = {
     COOPERATION = "cooperation", -- 协力：触发效果时，除非上一回合存在与卡牌相同国家单位，否则总部就会受到士气伤害
     EXILE = "exile", -- 流亡：流亡牌可投入包含本国的卡组，也可投入包含流亡国的卡组
     FORECAST = "forecast", -- 预报：您可以从 3 张不同的天气牌中选择一个，然后选择该天气类型的延伸卡牌
+    NAVY = "navy", -- 海军（隐藏词条：算作海军，不出现在卡面）
 }
 
 -- 对战词条详细描述
@@ -272,6 +237,7 @@ KARDS.CardEditor.Data.KeywordDescriptions = {
     cooperation = "协力：触发效果时，除非上一回合存在与卡牌相同国家单位，否则总部就会受到士气伤害",
     exile = "流亡：流亡牌可投入包含本国的卡组，也可投入包含流亡国的卡组",
     forecast = "预报：您可以从 3 张不同的天气牌中选择一个，然后选择该天气类型的延伸卡牌",
+    navy = "海军：算作海军（隐藏词条，不显示在卡面）",
 }
 
 -- 词条显示名称映射（key → 中文显示名）
@@ -295,6 +261,7 @@ KARDS.CardEditor.Data.KeywordDisplayNames = {
     cooperation = "协力",
     exile = "流亡",
     forecast = "预报",
+    navy = "海军",
 }
 
 -- 富文本高亮关键词列表（用于文本绘制时自动加粗）
@@ -350,7 +317,9 @@ KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
         local id = type(kw) == "table" and kw[1] or kw
         local x = type(kw) == "table" and kw[2] or nil
         local name = names[id]
-        if id == "veteran" or id == "countdown" then
+        if KARDS.CardInterface and KARDS.CardInterface.IsHiddenKeyword and KARDS.CardInterface.IsHiddenKeyword(id) then
+            -- 次词条（隐藏词条，如海军）不在卡面显示
+        elseif id == "veteran" or id == "countdown" then
             -- 老兵已置顶；倒计时不在卡面显示（与 BuildKeywordsList 一致）
         elseif id == "pincer" then
             local v = x or pincerValue
@@ -373,17 +342,3 @@ KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
 
     return table.concat(list, "，")
 end
-
--- 词条效果逻辑定义
-KARDS.CardEditor.Data.KeywordEffects = {
-    blitz = {
-        type = "remove_restriction",
-        restriction = "wait_next_turn"
-    },
-    smoke = {
-        type = "cannot_be_targeted",
-        target_type = "enemy_units",
-        lose_on_action = true,
-        remove_on_frontline = true
-    }
-}

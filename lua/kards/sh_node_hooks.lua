@@ -106,13 +106,35 @@ end
 -- ====================================================================
 -- trigger_function 执行器（触发函数：立即执行 / 保持触发注册 / 拦截）
 -- ====================================================================
--- 效果图标（select_2 选项，与模板 configs 顺序一致）：
+-- 效果图标（select_5 选项，与模板 configs 顺序一致；拦截分支扩展后运行时 select 编号后移，
+-- 见 sh_node_semantics.lua trigger_function 注释）：
 --   1 主动效果 / 2 被动效果 / 3 无 / 4 @combat_keywords（引用战斗词条词汇表）
 local TRIGGER_EFFECT_ICONS = {
     [1] = "主动效果",
     [2] = "被动效果",
     [3] = "无",
     [4] = "@combat_keywords",
+}
+
+-- 拦截分支操作类型选项（与模板 configs 拦截选择器选项顺序一致）：
+-- 选项索引 → KARDS.TickLog.OpTypes 英文键（拦截注册按 args.opType 过滤）
+local INTERCEPT_OPTYPES = {
+    "play_command",     -- 打出指令
+    "activate_counter", -- 激活反制
+    "deploy",           -- 部署单位
+    "move",             -- 移动
+    "attack",           -- 攻击
+    "retreat",          -- 撤退
+    "engage",           -- 交战
+    "fight",            -- 战斗
+    "draw",             -- 抽取
+    "discard",          -- 弃牌
+    "summon",           -- 召唤
+    "control",          -- 控制
+    "deal_damage",      -- 伤害
+    "stat_change",      -- 属性变更
+    "remove",           -- 移除
+    "return_to_hand",   -- 返回手牌
 }
 
 -- 保持触发注册表：已迁移至 KARDS.EffectRegistry（re.md B-H2）——
@@ -150,9 +172,11 @@ local function TriggerOutNames(node, outTarget, outIcon)
 end
 
 -- 拦截注册实现（interceptOnce / keepIntercept 共用）
+-- M1.3（2026-10-05 反制）：注册目标由 OnBeforePlayCard 改为统一操作钩子 OnBeforeOperation，
+-- 按节点声明的操作类型（拦截分支内操作类型选择器）过滤 args.opType，命中且函数执行成功即拦截。
 -- @param ctx  table 执行上下文
 -- @param card table 效果发起卡牌句柄（拦截钩子绑定实体，实体离场自动注销）
--- @param node table 节点实例（funcslot_1 函数 / select_2 效果图标）
+-- @param node table 节点实例（funcslot_1 函数 / 拦截分支操作类型选择器）
 -- @param once boolean 是否拦截一次（true = 首次拦截后注销钩子；false = 持续拦截）
 -- @return boolean 是否注册成功
 local function RegisterIntercept(ctx, card, node, once)
@@ -168,24 +192,46 @@ local function RegisterIntercept(ctx, card, node, once)
         print("[NodeParser] trigger_function(拦截): 找不到函数定义: " .. tostring(funcName))
         return false
     end
+    -- 操作类型：语义表给出本分支的操作类型选择组件 id（拦截一次 select_2 / 保持拦截 select_3），
+    -- 选项值索引映射为 TickLog.OpTypes 英文键；旧格式效果无该槽时回退打出指令（保持既有反制行为）
+    local branchIdx = once and 4 or 5
+    local sem = KARDS.NodeParser.BaseSemantics.trigger_function.branches[branchIdx]
+    local opType = INTERCEPT_OPTYPES[tonumber(ReadSlot(node, sem.opSelect))] or "play_command"
     -- 钩子ID：同节点重复执行覆盖旧注册（幂等）
     local hookID = "tfi_" .. tostring(tableID) .. "_" .. tostring(node.id or node.name or "node")
-    KARDS.EngineHooks.Register(tableID, KARDS.EngineHooks.HookPoints.OnBeforePlayCard, hookID, function(args)
-        local playedCard = args.card
-        if not playedCard or playedCard:GetOwner() == owner then return args end -- 不拦截己方打出的卡
+    KARDS.EngineHooks.Register(tableID, KARDS.EngineHooks.HookPoints.OnBeforeOperation, hookID, function(args)
+        -- 操作类型过滤：仅拦截本节点声明的操作类型
+        if args.opType ~= opType then return args end
+        -- 发起方归属：优先 args.player（无主动卡的操作如抽取/回合），其次 args.card 归属；
+        -- 己方发起不拦截（发起方未知时按可拦截处理，符合「敌方操作皆可被反制」）
+        local actor = args.player
+        if not actor and args.card and args.card.GetOwner then actor = args.card:GetOwner() end
+        if actor == owner then return args end
         -- 调用拦截函数：函数效果执行成功即视为「已拦截」（骨架约定，见 templates.md 拦截扩展）
-        local ok = KARDS.NodeParser.CallFunctionData(ctx, playedCard, funcData, { playedCard })
+        local ok = KARDS.NodeParser.CallFunctionData(ctx, args.card or actor, funcData, { args.card or actor })
         if ok then
             args.intercepted = true
+            -- 事件音效（2026-08-13）：反制拦截触发 trigger——通知牌桌实体广播音效
+            -- （无事件源实体，客户端回退音源方位为牌桌 WorldCenter，见 table_session.lua
+            -- SetSoundCallback 注册 / sh_battle_combat.lua NotifyEventSound）
+            if KARDS.Battle and KARDS.Battle.NotifyEventSound then
+                KARDS.Battle:NotifyEventSound(tableID, "trigger", card)
+            end
+            -- 反制自动打出（M5.1）：绑定卡为已激活的反制时，命中敌方操作 → 自动打出
+            -- （移出手牌、公开隐藏花费、按指令口径广播动画，见 sh_battle_card.lua FireCounter）
+            if KARDS.Counter and KARDS.Counter:IsActive(tableID, card)
+                and KARDS.Battle and KARDS.Battle.FireCounter then
+                KARDS.Battle:FireCounter(tableID, card, args)
+            end
             if once then -- 拦截一次：首次拦截后注销钩子（指令/反制卡反制后移除）
-                KARDS.EngineHooks.Unregister(tableID, KARDS.EngineHooks.HookPoints.OnBeforePlayCard, hookID)
+                KARDS.EngineHooks.Unregister(tableID, KARDS.EngineHooks.HookPoints.OnBeforeOperation, hookID)
             end
         end
         return args
     end, KARDS.EngineHooks.TYPE_EFFECT, card)
     local outTarget, outIcon = TriggerOutNames(node, "目标", "效果图标类型")
     node.data[outTarget] = { card }
-    node.data[outIcon] = TRIGGER_EFFECT_ICONS[tonumber(ReadSlot(node, "select_2")) or 2]
+    node.data[outIcon] = TRIGGER_EFFECT_ICONS[tonumber(ReadSlot(node, "select_5")) or 2]
     return true
 end
 
@@ -204,7 +250,7 @@ local TriggerFunctionActs = {
         end
         local outTarget, outIcon = TriggerOutNames(node, "目标", "效果图标类型")
         node.data[outTarget] = targets
-        node.data[outIcon] = TRIGGER_EFFECT_ICONS[tonumber(ReadSlot(node, "select_2")) or 2]
+        node.data[outIcon] = TRIGGER_EFFECT_ICONS[tonumber(ReadSlot(node, "select_5")) or 2]
         return true
     end,
     -- 保持触发：将函数注册到目标实体（e 输入首个目标），实体拥有者回合开始自动执行
@@ -241,7 +287,7 @@ local TriggerFunctionActs = {
         })
         local outTarget, outIcon = TriggerOutNames(node, "目标", "效果图标类型")
         node.data[outTarget] = { entity }
-        node.data[outIcon] = TRIGGER_EFFECT_ICONS[tonumber(ReadSlot(node, "select_2")) or 2]
+        node.data[outIcon] = TRIGGER_EFFECT_ICONS[tonumber(ReadSlot(node, "select_5")) or 2]
         return true
     end,
     -- 停止保持触发：移除本节点注册的保持触发（同注册 ID，EffectRegistry 注销）
@@ -320,22 +366,26 @@ local TurnActs = {
         node.data._turnPaused = true -- 信号停滞标记（ExecuteEffectFlow 检测后停止沿连线继续）
         return true
     end,
-    -- 使：立即推进当前回合（不挂起，本节点执行后信号正常继续）
+    -- 使：立即推进目标归属的回合（不挂起，本节点执行后信号正常继续）
+    -- 2026-08-14 增加归属维度：side 归属（友方1=效果拥有者 / 敌方2=其对手）× op 动作
+    -- （回合结束1 / 跳过回合2）
     makeTurn = function(ctx, card, targets, item, node)
+        local side = tonumber(ReadSlot(node, item.side)) or 1 -- 友方1/敌方2
         local op = tonumber(ReadSlot(node, item.op)) or 1 -- 回合结束1/跳过回合2
         local battle = ctx.battle or KARDS.Battle
         local tableID = ctx.tableID or battle.TableID
-        local cur = battle.CurTurnPlayer and battle.CurTurnPlayer[tableID]
-        if not cur then
-            print("[NodeParser] turn(使): 无当前回合玩家（战斗骨架未记录 CurTurnPlayer，需先 SimBeginTurn）")
+        local owner = card and card:GetOwner()
+        if not owner then
+            print("[NodeParser] turn(使): 缺少效果拥有者（card:GetOwner() 为空）")
             return false
         end
-        if op == 1 then -- 回合结束：结束当前回合玩家回合
-            return battle:SimEndTurn(cur) ~= false
+        local target = (side == 1) and owner or EnemyOf(owner)
+        if op == 1 then -- 回合结束：结束目标归属回合（友方=效果拥有者 / 敌方=其对手）
+            return battle:SimEndTurn(target) ~= false
         end
-        -- 跳过回合：结束当前回合 + 开始对手回合
-        local ok = battle:SimEndTurn(cur) ~= false
-        local opp = EnemyOf(cur)
+        -- 跳过回合：结束目标归属回合 + 开始其对手回合
+        local ok = battle:SimEndTurn(target) ~= false
+        local opp = EnemyOf(target)
         if opp then
             ok = battle:SimBeginTurn(opp) ~= false and ok
         end

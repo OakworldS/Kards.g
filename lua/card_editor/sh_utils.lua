@@ -65,5 +65,28 @@ KARDS.CardEditor.Core.Utils = {
     -- 通用类型名称查找
     GetTypeName = function(lookupTable, typeKey, defaultName)
         return lookupTable[typeKey] or defaultName
+    end,
+    
+    -- UTF-8 安全逐字符拆分（兼容中英文混排；按首字节判断字节数，一个汉字占 3 字节）
+    SplitUTF8Chars = function(text)
+        local chars = {}
+        local len = #text
+        local i = 1
+        while i <= len do
+            local b = text:byte(i)
+            local n = 1
+            if b >= 0x80 then
+                if b < 0xE0 then
+                    n = 2
+                elseif b < 0xF0 then
+                    n = 3
+                elseif b < 0xF8 then
+                    n = 4
+                end
+            end
+            chars[#chars + 1] = text:sub(i, i + n - 1)
+            i = i + n
+        end
+        return chars
     end
 }

@@ -1,0 +1,15 @@
+{
+    "type": "action",
+    "color": [200, 120, 60],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "执行",
+        "en": "Action"
+    },
+    "configs": {
+        "zh-CN": "e'使' {$}{获得、取消、被消灭}\nif 获得 then\n{撤退、移动(到前线)、交战、战斗、加入战场、加入前线、压制、抑制、转换、修复、控制、免疫、情报、造成伤害、触发关键字效果、返回手牌、召唤单位、升为老兵、返回卡组顶}\nif 交战 then\n'与' {$} '交战'\nend\nif 战斗 then\n'与' {$} '战斗'\nend\nif 情报 then\n'触发' [lib] '情报'\nend\nif 造成伤害 then\n'造成' [] '点伤害'\nend\nif 触发关键字效果 then\n'触发' {$} '的' {@combat_keywords} '效果'\nend\nif 返回手牌 then\n'返回手牌'\nend\nif 召唤单位 then\n'召唤' {$} '到' {支援阵线、前线}\nend\nelseif 取消 then\n{被压制、被抑制、被控制、免疫} '状态'\nelseif 被消灭 then\nend",
+        "en": "e'Make' {$}{Gain、Cancel、Destroyed}\nif Gain then\n{Retreat、MoveToFront、Engage、Fight、JoinBattlefield、JoinFrontline、Suppress、Neutralize、Convert、Repair、Control、Immune、Intelligence、DealDamage、TriggerKeyword、ReturnToHand、SummonUnit、ElevateToVeteran、ReturnToDeckTop}\nif Engage then\n'With' {$} 'Engage'\nend\nif Fight then\n'With' {$} 'Fight'\nend\nif Intelligence then\n'Trigger' [lib] 'Intelligence'\nend\nif DealDamage then\n'Deal' [] 'Damage'\nend\nif TriggerKeyword then\n'Trigger' {$} 'of' {@combat_keywords} 'Effect'\nend\nif ReturnToHand then\n'Return To Hand'\nend\nif SummonUnit then\n'Summon' {$} 'To' {SupportLine、Frontline}\nend\nelseif Cancel then\n{Suppressed、Neutralized、Controlled、Immune} 'State'\nelseif Destroyed then\nend"
+    },
+    "base": "e{1}{3} if 1 then {19} if 2 then {1} end if 3 then {1} end if 4 then [lib] end if 5 then [0] end if 6 then {1}{1} end if 7 then end if 8 then {1}{2} end elseif 9 then {4} elseif 10 then end"
+}

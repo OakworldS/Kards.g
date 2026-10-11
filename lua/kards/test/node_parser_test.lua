@@ -26,6 +26,10 @@
       12. RunCardBaseTest            card 模板 base（else 分支 / 嵌套 if / 中文输出名 /
                                       分支序号 1·4·7·10·11·12·13 / number·select 独立计数 /
                                       H5 开发分支改为 [0]{1}（次数 + {$} 开发池））
+      13. RunFactOverrideTest        事实变量一回合覆盖（IsFactPath 判定 / SetFactOverride 首次快照 /
+                                      SetFact 被覆盖时让位 / ClearFactOverrides 按快照还原并清空登记 /
+                                      未改写路径不受影响 / 用户自定义变量不登记覆盖 /
+                                      ParseSetVariable 写入事实变量生效且登记覆盖）
 
     测试不依赖真实牌桌/卡组/手牌系统，全部使用 MockCard（KARDS.CardInterface.CreateMockCard）。
 ]]
@@ -720,7 +724,7 @@ end
 -- 场景 12：card 模板 base 解析（else 分支 / 嵌套 if / 中文输出名；H5 开发分支 {$}）
 -- ====================================================================
 local function RunCardBaseTest()
-    local base = "e{2}{8} if 1 then [0]{4} if 2 then {3} else {3} end elseif 4 then [0]{4} if 5 then else end elseif 7 then [0]{4} if 8 then else end elseif 10 then [0]{1} elseif 11 then [0] elseif 12 then [0] elseif 13 then {2} if 14 then {2}[0] else [0] end end(e影响的卡牌)"
+    local base = "e{2}{8} if 1 then [lib]{4} if 2 then {1} else {4} end elseif 4 then [lib]{4} if 5 then else end elseif 7 then [lib]{5} if 8 then {2} if 9 then [lib] end else end elseif 11 then [lib]{1} elseif 12 then [lib] elseif 13 then [lib] elseif 14 then {4} if 15 then {2}[lib] elseif 16 then {1}[lib] elseif 17 then {1}[lib] else {2}[lib] end end(e影响的卡牌)"
     local s = NP.ParseBaseStructure(base)
 
     -- 前缀 / 输出后缀（中文名）
@@ -740,7 +744,7 @@ local function RunCardBaseTest()
     AssertEqual(s.components[3].boundSelectId, "select_2", "card base if_1 绑定 select_2")
     AssertEqual(#s.components[3].branches, 7, "card base if_1 七个分支")
 
-    -- 分支1（抽取）：[0]{4} + if_2（含 else 分支）
+    -- 分支1（抽取）：[lib]{4} + if_2（含 else 分支）
     local b1 = s.components[3].branches[1]
     AssertEqual(b1.index, 1, "card base 分支1 index=1（抽取）")
     AssertEqual(b1.components[1].id, "number_1", "card base 分支1 number_1（张数）")
@@ -750,11 +754,11 @@ local function RunCardBaseTest()
     AssertEqual(if2.boundSelectId, "select_3", "card base if_2 绑定 select_3")
     AssertEqual(#if2.branches, 2, "card base if_2 两个分支（if/else）")
     AssertEqual(if2.branches[1].index, 2, "card base if_2 分支1 index=2")
-    AssertEqual(if2.branches[1].components[1].id, "select_4", "card base if_2 分支1 select_4（类型卡牌）")
+    AssertEqual(if2.branches[1].components[1].id, "select_4", "card base if_2 分支1 select_4（{$} 指定）")
     AssertEqual(if2.branches[2]["else"], true, "card base if_2 分支2 else")
-    AssertEqual(if2.branches[2].components[1].id, "select_5", "card base if_2 else 分支 select_5")
+    AssertEqual(if2.branches[2].components[1].id, "select_5", "card base if_2 else 分支 select_5（类型卡牌）")
 
-    -- 分支2（复制，elseif 4）：[0]{4} + if_3（空分支 + 空 else）
+    -- 分支2（复制，elseif 4）：[lib]{4} + if_3（空分支 + 空 else）
     local b2 = s.components[3].branches[2]
     AssertEqual(b2.index, 4, "card base 分支2 index=4（复制）")
     AssertEqual(b2.components[1].id, "number_2", "card base 分支2 number_2（张数）")
@@ -766,35 +770,162 @@ local function RunCardBaseTest()
     AssertEqual(#if3.branches[1].components, 0, "card base if_3 分支1 空")
     AssertEqual(if3.branches[2]["else"], true, "card base if_3 分支2 else 空")
 
-    -- 分支3（弃掉，elseif 7）：[0]{4} + if_4（if 8 空 + else 空）
+    -- 分支3（弃掉，elseif 7）：[lib]{5} + if_4
+    --   if 8（手中）→ {2} + if_5（if 9 第 → [lib]）；else 空
     local b3 = s.components[3].branches[3]
     AssertEqual(b3.index, 7, "card base 分支3 index=7（弃掉）")
-    AssertEqual(b3.components[1].id, "number_3", "card base 分支3 number_3")
-    AssertEqual(b3.components[2].id, "select_7", "card base 分支3 select_7")
+    AssertEqual(b3.components[1].id, "number_3", "card base 分支3 number_3（数量）")
+    AssertEqual(b3.components[2].id, "select_7", "card base 分支3 select_7（{5} 手中/卡组顶/底/随机/指定）")
+    AssertEqual(b3.components[2].optionsCount, 5, "card base 分支3 select_7 选项数 5")
     local if4 = b3.components[3]
     AssertEqual(if4.id, "if_4", "card base if_4")
-    AssertEqual(#if4.branches, 2, "card base if_4 两分支")
-    AssertEqual(if4.branches[1].index, 8, "card base if_4 分支1 index=8")
+    AssertEqual(if4.boundSelectId, "select_7", "card base if_4 绑定 select_7")
+    AssertEqual(#if4.branches, 2, "card base if_4 两分支（if 8 手中 + else 空）")
+    AssertEqual(if4.branches[1].index, 8, "card base if_4 分支1 index=8（手中）")
+    AssertEqual(if4.branches[1].components[1].id, "select_8", "card base if_4 分支1 select_8（{2} 自选的一张卡/第）")
+    AssertEqual(if4.branches[1].components[1].optionsCount, 2, "card base if_4 分支1 select_8 选项数 2")
+    local if5 = if4.branches[1].components[2]
+    AssertEqual(if5.id, "if_5", "card base if_5（弃掉·手中 二级）")
+    AssertEqual(if5.boundSelectId, "select_8", "card base if_5 绑定 select_8")
+    AssertEqual(#if5.branches, 1, "card base if_5 一分支（if 9 第）")
+    AssertEqual(if5.branches[1].index, 9, "card base if_5 分支1 index=9（第）")
+    AssertEqual(if5.branches[1].components[1].id, "number_4", "card base if_5 分支1 number_4（第 [lib] 张）")
+    AssertEqual(if4.branches[2]["else"], true, "card base if_4 分支2 else 空")
 
-    -- 分支4（开发，elseif 10）：[0]{1}（H5 修复：次数 number_4 + {$} 开发池 select_8，无国籍/类型/单位类型下拉）
+    -- 分支4（开发，elseif 11）：[lib]{1}（次数 number_5 + {$} 开发池 select_9）
     local b4 = s.components[3].branches[4]
-    AssertEqual(b4.index, 10, "card base 分支4 index=10（开发）")
+    AssertEqual(b4.index, 11, "card base 分支4 index=11（开发）")
     AssertEqual(#b4.components, 2, "card base 分支4 两组件（次数 + 开发池）")
-    AssertEqual(b4.components[1].id, "number_4", "card base 分支4 number_4（次数）")
-    AssertEqual(b4.components[2].id, "select_8", "card base 分支4 select_8（{$} 开发池）")
-    AssertEqual(b4.components[2].optionsCount, 1, "card base 分支4 select_8 选项数 1（{$}）")
+    AssertEqual(b4.components[1].id, "number_5", "card base 分支4 number_5（次数）")
+    AssertEqual(b4.components[2].id, "select_9", "card base 分支4 select_9（{$} 开发池）")
+    AssertEqual(b4.components[2].optionsCount, 1, "card base 分支4 select_9 选项数 1（{$}）")
 
-    -- 分支7（洗入，elseif 13）：{2} + if_5（分支1 含 {2}[0]，else 含 [0]）
+    -- 分支5（选择/观星，elseif 12）：[lib]
+    local b5 = s.components[3].branches[5]
+    AssertEqual(b5.index, 12, "card base 分支5 index=12（选择）")
+    AssertEqual(b5.components[1].id, "number_6", "card base 分支5 number_6（次数）")
+
+    -- 分支6（爆牌，elseif 13）：[lib]
+    local b6 = s.components[3].branches[6]
+    AssertEqual(b6.index, 13, "card base 分支6 index=13（爆牌）")
+    AssertEqual(b6.components[1].id, "number_7", "card base 分支6 number_7（次数）")
+
+    -- 分支7（洗入，elseif 14）：{4} + if_6（四分支，四来源：手牌中/凭空生成/对象组/else 指定的）
     local b7 = s.components[3].branches[7]
-    AssertEqual(b7.index, 13, "card base 分支7 index=13（洗入）")
-    AssertEqual(b7.components[1].id, "select_9", "card base 分支7 select_9（手牌中/指定的）")
-    local if7 = b7.components[2]
-    AssertEqual(if7.id, "if_5", "card base if_5")
-    AssertEqual(if7.boundSelectId, "select_9", "card base if_5 绑定 select_9")
-    AssertEqual(if7.branches[1].components[1].id, "select_10", "card base if_5 分支1 select_10（随机/指定）")
-    AssertEqual(if7.branches[1].components[2].id, "number_7", "card base if_5 分支1 number_7")
-    AssertEqual(if7.branches[2]["else"], true, "card base if_5 分支2 else")
-    AssertEqual(if7.branches[2].components[1].id, "number_8", "card base if_5 else 分支 number_8")
+    AssertEqual(b7.index, 14, "card base 分支7 index=14（洗入）")
+    AssertEqual(b7.components[1].id, "select_10", "card base 分支7 select_10（{4} 手牌中/指定的/凭空生成/对象组）")
+    AssertEqual(b7.components[1].optionsCount, 4, "card base 分支7 select_10 选项数 4")
+    local if6 = b7.components[2]
+    AssertEqual(if6.id, "if_6", "card base if_6")
+    AssertEqual(if6.boundSelectId, "select_10", "card base if_6 绑定 select_10")
+    AssertEqual(#if6.branches, 4, "card base if_6 四分支（手牌中/凭空生成/对象组/else 指定的）")
+    AssertEqual(if6.branches[1].components[1].id, "select_11", "card base if_6 分支1 select_11（{2} 随机/指定）")
+    AssertEqual(if6.branches[1].components[2].id, "number_8", "card base if_6 分支1 number_8（张数）")
+    AssertEqual(if6.branches[2].index, 16, "card base if_6 分支2 index=16（凭空生成）")
+    AssertEqual(if6.branches[2].components[1].id, "select_12", "card base if_6 分支2 select_12（{$} 开发池）")
+    AssertEqual(if6.branches[2].components[1].optionsCount, 1, "card base if_6 分支2 select_12 选项数 1")
+    AssertEqual(if6.branches[2].components[2].id, "number_9", "card base if_6 分支2 number_9（生成张数）")
+    AssertEqual(if6.branches[3].index, 17, "card base if_6 分支3 index=17（对象组）")
+    AssertEqual(if6.branches[3].components[1].id, "select_13", "card base if_6 分支3 select_13（{$} 对象组变量）")
+    AssertEqual(if6.branches[3].components[2].id, "number_10", "card base if_6 分支3 number_10（张数）")
+    AssertEqual(if6.branches[4]["else"], true, "card base if_6 分支4 else（指定的）")
+    AssertEqual(if6.branches[4].components[1].id, "select_14", "card base if_6 else 分支 select_14（{2} 手牌/场上）")
+    AssertEqual(if6.branches[4].components[1].optionsCount, 2, "card base if_6 else 分支 select_14 选项数 2")
+    AssertEqual(if6.branches[4].components[2].id, "number_11", "card base if_6 else 分支 number_11（指定张数）")
+end
+
+-- ====================================================================
+-- 场景 13：事实变量一回合覆盖（设置变量改写 Battle.* / Special.* 的回合内语义）
+-- ====================================================================
+local function RunFactOverrideTest()
+    local tid = "np_fact"
+    local T = NewTable(tid)
+    local vars = MakeVariables()
+    local card = KARDS.CardInterface.CreateMockCard("factcard", "unit", "P1", {})
+
+    -- 统计已登记覆盖条数（用于确认用户自定义变量写入不登记覆盖）
+    local function CountOverrides()
+        local n = 0
+        for _ in pairs(V.Get(tid).FactOverrides or {}) do n = n + 1 end
+        return n
+    end
+
+    -- 1. IsFactPath 判定
+    AssertTrue(V.IsFactPath("Battle.Turn"), "事实路径：Battle.Turn → true")
+    AssertTrue(V.IsFactPath("Special.Veteran.HasFriendlyUnit"), "事实路径：Special.Veteran.HasFriendlyUnit → true")
+    AssertEqual(V.IsFactPath("KARDS.User.X"), false, "事实路径：KARDS.User.X → false")
+    AssertEqual(V.IsFactPath("CardVars.X"), false, "事实路径：CardVars.X → false")
+    AssertEqual(V.IsFactPath(nil), false, "事实路径：nil → false")
+    AssertEqual(V.IsFactPath(123), false, "事实路径：非字符串 123 → false")
+
+    -- 2. 登记覆盖：首次快照被保留，同回合重复写只记首次旧值
+    T.Battle.Turn = 3
+    V.SetFactOverride(tid, "Battle.Turn", T.Battle.Turn)
+    AssertTrue(V.IsFactOverridden(tid, "Battle.Turn"), "登记覆盖：IsFactOverridden(Battle.Turn) → true")
+    V.SetFactOverride(tid, "Battle.Turn", 99) -- 第二次传入 99，首次快照 3 不应被覆盖
+
+    -- 3. SetFact 在已覆盖时让位：返回 false 且不改变当前值
+    T.Battle.Turn = 7 -- 模拟「设置变量」写入后的当前值
+    AssertEqual(V.SetFact(tid, "Battle.Turn", 55), false, "事实写入：已覆盖 → SetFact 返回 false")
+    AssertEqual(T.Battle.Turn, 7, "事实写入：已覆盖 → 当前值保持 7 不变")
+
+    -- 4. 回合边界还原：按首次快照（3，而非 99）写回并清空登记
+    V.ClearFactOverrides(tid)
+    AssertEqual(T.Battle.Turn, 3, "回合边界：ClearFactOverrides 还原首次快照值 3")
+    AssertEqual(V.IsFactOverridden(tid, "Battle.Turn"), false, "回合边界：IsFactOverridden → false")
+
+    -- 5. 清覆盖后 SetFact 恢复写入能力
+    AssertTrue(V.SetFact(tid, "Battle.Turn", 8), "清覆盖后：SetFact 返回 true")
+    AssertEqual(T.Battle.Turn, 8, "清覆盖后：SetFact 写入 8")
+
+    -- 6. 未被改写的路径不受 ClearFactOverrides 影响
+    T.Battle.SomeUntouched = "keep"
+    T.Special.Veteran.HasFriendlyUnit = true
+    V.ClearFactOverrides(tid)
+    AssertEqual(T.Battle.SomeUntouched, "keep", "未改写路径：ClearFactOverrides 后保持 keep")
+    AssertEqual(T.Special.Veteran.HasFriendlyUnit, true, "未改写事实：ClearFactOverrides 后保持 true")
+
+    -- 7. 覆盖前键不存在（hasPrev=false）：还原为 nil（键移除）
+    local spVet = T.Special.Veteran
+    spVet.HasFriendlyUnit = nil
+    V.SetFactOverride(tid, "Special.Veteran.HasFriendlyUnit", nil)
+    spVet.HasFriendlyUnit = true
+    V.ClearFactOverrides(tid)
+    AssertEqual(spVet.HasFriendlyUnit, nil, "覆盖前不存在：ClearFactOverrides 还原为 nil 键移除")
+
+    -- 8. 用户自定义变量（isUser 分支）写入不登记覆盖
+    local before = CountOverrides()
+    NP.ParseSetEntry(MakeCtx(tid, card, vars), MakeEntry("n", "攻击加成", 1, 5))   -- 全局 → CardVars
+    NP.ParseSetEntry(MakeCtx(tid, card, vars), MakeEntry("n", "全局面板", 1, 3))   -- 长期 → Battle
+    AssertEqual(V.IsFactOverridden(tid, V_ATK), false, "用户变量：全局 KARDS.User.ATK_BONUS 不登记覆盖")
+    AssertEqual(V.IsFactOverridden(tid, V_BOARD), false, "用户变量：长期 KARDS.User.BOARD 不登记覆盖")
+    AssertEqual(CountOverrides(), before, "用户变量：写入后覆盖登记条数不变")
+
+    -- 9. 解析器节点入口写入事实变量：写入生效且登记覆盖，回合边界还原
+    local turnBefore = V.Get(tid).Battle.Turn
+    local spBefore = V.Get(tid).Special.Veteran.HasFriendlyUnit
+    local factNode = {
+        type = "var_set",
+        data = {
+            _setEntries = {
+                MakeEntry("n", "回合数", 1, 4),
+                MakeEntry("b", "友方有老兵单位", 1, "true"),
+            },
+        },
+    }
+    AssertTrue(NP.ParseSetVariable(MakeCtx(tid, card, vars), factNode),
+        "解析器：事实写入节点至少成功一条 → true")
+    AssertEqual(V.Get(tid).Battle.Turn, 4, "解析器：Battle.Turn 写入生效 == 4")
+    AssertEqual(V.Get(tid).Special.Veteran.HasFriendlyUnit, true, "解析器：Special.Veteran.HasFriendlyUnit 写入 true")
+    AssertTrue(V.IsFactOverridden(tid, "Battle.Turn"), "解析器：写入 Battle 事实登记覆盖 → true")
+    AssertTrue(V.IsFactOverridden(tid, "Special.Veteran.HasFriendlyUnit"),
+        "解析器：写入 Special 事实登记覆盖 → true")
+
+    V.ClearFactOverrides(tid)
+    AssertEqual(V.Get(tid).Battle.Turn, turnBefore, "解析器：回合边界还原 Battle.Turn 为写入前的值")
+    AssertEqual(V.Get(tid).Special.Veteran.HasFriendlyUnit, spBefore,
+        "解析器：回合边界还原 Special 事实为写入前的值")
+    AssertEqual(CountOverrides(), 0, "解析器：回合边界清空全部覆盖登记")
 end
 
 -- ====================================================================
@@ -818,6 +949,7 @@ function RunNodeParserTests()
     RunEvaluateTest()
     RunBaseTest()
     RunCardBaseTest()
+    RunFactOverrideTest()
     print("==============================================")
     -- 出现 FAIL 项时，在"测试完成"前将失败项重新打印一遍（便于从长输出中定位）
     if TestsFailed > 0 then

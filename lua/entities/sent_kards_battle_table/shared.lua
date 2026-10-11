@@ -11,6 +11,7 @@ ENT.Purpose = "通过前置模组导入的 wooden_table 模型（运行时渲染
 ENT.Instructions = "生成后自动应用牌桌模型，带静态箱体碰撞（可站立，不可推动）"
 ENT.Spawnable = true
 ENT.AdminOnly = false
+ENT.Category = "Kards"
 ENT.RenderGroup = RENDERGROUP_BOTH -- 与前置一致：不透明 + 半透明双通道渲染
 
 -- 自注册显示名短语：GMod 名称显示经 language.GetPhrase 处理，未注册短语会被加 # 前缀
@@ -104,4 +105,24 @@ ENT.SlotCameraLocalPos = Vector(-70, 0, 30)
 -- @return Vector
 function ENT:GetSlotCameraWorldPos()
     return self:LocalToWorld(self.SlotCameraLocalPos)
+end
+
+-- Q 菜单显式注册（2026-09-13 修复：与 sent_kards_unit_test 同款写法）。
+-- GMod 引擎对 Spawnable=true 的实体自动 list.Set("SpawnableEntities")，Category 取
+-- ENT.Category；此处显式注册为双保险，保证 Q 菜单 → Entities → Kards 分类显示，
+-- 且覆盖自动注册的 Name（避免 # 前缀问题）。两端各自注册（Q 菜单列表在客户端填充）
+if SERVER then
+    list.Set("SpawnableEntities", "sent_kards_battle_table", {
+        Name = "Kards牌桌",
+        Category = "Kards",
+        Order = 1,
+    })
+end
+
+if CLIENT then
+    list.Set("SpawnableEntities", "sent_kards_battle_table", {
+        Name = "Kards牌桌",
+        Category = "Kards",
+        Order = 1,
+    })
 end

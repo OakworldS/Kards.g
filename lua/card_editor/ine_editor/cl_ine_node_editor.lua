@@ -150,6 +150,18 @@ INE.BoolVarFieldState = {
 }
 INE.BoolVarTextEntry = nil
 
+-- 文本槽内联输入状态（2026-10-04 新增，DTextEntry IME 兼容方案）
+-- 「抉择」等模板的 <> 文本槽：直接输入模式下点击值区进入内联编辑，
+-- 编辑结果写回 node.data.slots[compId].literalValue 与扁平 data[compId]。
+INE.TextSlotEditState = {
+    active = false,     -- 是否正在编辑某个文本槽
+    node = nil,         -- 所属节点
+    compId = nil,       -- 文本槽组件 ID（textslot_N）
+    text = "",          -- 当前输入文本（OnTextChanged 同步）
+    x = 0, y = 0, w = 0, h = 0,  -- 值区屏幕坐标（绘制时更新，供 DTextEntry 定位）
+}
+INE.TextSlotTextEntry = nil
+
 -- 数组变量对话框待添加项状态
 INE.ArrayVarPendingType = nil  -- 当前选择的类型，nil表示未在选择状态
 INE.ArrayVarItemValue = nil    -- 临时值文本
@@ -159,7 +171,7 @@ INE.ArrayVarNestedCtx = nil   -- { parentEditor, parentVarIdx, tempType, tempVar
 -- 各编辑器模式下自动创建的开始点定义
 -- 键为模式名称，值为按 y 轴顺序排列的开始点标题数组
 INE.StartNodeDefinitions = {
-    unit = {"抽取", "部署", "在场", "阵亡", "移除", "弃牌", "钳击", "钳击对象"},
+    unit = {"抽取", "部署", "在场", "升级", "阵亡", "移除", "弃牌", "钳击", "钳击对象"},
     command = {"抽取", "打出", "弃牌"},
     counter_command = {"抽取", "激活时", "弃牌"},
     headquarter = {"在场", "受到伤害", "防御变化"},
@@ -202,61 +214,43 @@ INE.StartNodeDefinitions = {
     从 data/kards/node_templates/ 加载所有节点模板 JSON 文件。
     
     初始化步骤：
-    1. 确保 data/kards/node_templates/ 目录存在
-    2. 从 lua/node_templates/ 复制所有 JSON 和 TXT 文件到 data/ 目录
-    3. 从 data/kards/node_templates/ 读取并解析所有 JSON 文件
-    4. 根据当前游戏语言选择对应的 name 和 config
-    5. 调用 LogNewNode 注册每个有效节点
-    6. 报告错误（JSON 解析错误、缺少字段、DSL 解析错误）
+    1. 确保本地 data/kards/node_templates/ 目录存在（玩家自定义副本）
+    2. 从 data 文件系统读取所有 JSON 模板（addon data_static/ 只读默认 + 本地
+       data/ 副本覆盖，DATA 模式自动合并、本地优先）
+    3. 根据当前游戏语言选择对应的 name 和 config
+    4. 调用 LogNewNode 注册每个有效节点
+    5. 报告错误（JSON 解析错误、缺少字段、DSL 解析错误）
     
-    @return {table} 成功注册的节点名称列表
+    （2026-08-14：模板源由 lua/node_templates/ 移入 data_static/kards/node_templates/
+    ——gmad 打包白名单拒绝 lua/ 下非 .lua 文件，移动后才可打包分发）
 ]]
 function INE:LoadNodeTemplatesFromFiles()
-    -- 每次调用都会重新复制源文件到 data/ 并比对注册配置：
-    -- 配置未变化的模板静默跳过，配置变化的模板覆盖重新注册，
-    -- 因此修改 lua/node_templates/*.json 后重新打开编辑器即可生效。
+    -- 模板源文件随 addon 只读分发（data_static/kards/node_templates/）；本地
+    -- data/kards/node_templates/ 为玩家自定义副本（覆盖 addon 默认，file.Write
+    -- 可直接修改）。DATA 模式 file.Find/Read 自动合并两者、本地副本优先——修改
+    -- addon 模板后重开编辑器或 kards_reload_templates 即可生效（配置未变化的
+    -- 模板静默跳过，配置变化的覆盖重新注册）。
     
-    -- 确保 data/kards/node_templates/ 目录存在
+    -- 确保本地 data/kards/node_templates/ 目录存在（供玩家自定义副本写入）
     file.CreateDir("kards/node_templates")
     
-    -- 从 lua/node_templates/ 复制所有 JSON 和 TXT 文件到 data/ 目录
-    local luaFiles = file.Find("node_templates/*", "LUA")
-    if luaFiles then
-        for _, fileName in ipairs(luaFiles) do
-            local ext = fileName:sub(-4):lower()
-            if ext == ".txt" or ext == ".json" then
-                local content = file.Read("node_templates/" .. fileName, "LUA")
-                if content then
-                    file.Write("kards/node_templates/" .. fileName, content)
-                end
-            end
-        end
-    end
-    
-    -- 从 addon 的 lua/node_templates/ 读取所有 JSON 文件（源文件始终最新，修改后重启即生效）。
-    -- 仅当 addon 源缺失时回退到 data/kards/node_templates/（供玩家自定义副本）。
-    local sourceMode = "LUA"
-    local dataFiles = file.Find("node_templates/*.json", "LUA")
+    -- 从 data 文件系统读取所有 JSON 模板（addon data_static/ + 本地 data/ 合并，本地优先）
+    local dataFiles = file.Find("kards/node_templates/*.json", "DATA")
     if not dataFiles or #dataFiles == 0 then
-        sourceMode = "DATA"
-        dataFiles = file.Find("kards/node_templates/*.json", "DATA")
-        if not dataFiles or #dataFiles == 0 then
-            print("[INE] 警告: 未在 addon lua 或 data 目录找到任何节点模板 JSON 文件")
-            return {}
-        end
+        print("[INE] 警告: 未在 data 目录（addon data_static 或本地 data）找到任何节点模板 JSON 文件")
+        return {}
     end
     
     local registered = {}
     local errors = {}
     
-    print("[INE] 节点模板来源: " .. (sourceMode == "LUA" and "addon lua 目录" or "data 目录") .. "（" .. #dataFiles .. " 个文件）")
+    print("[INE] 节点模板来源: data 目录（" .. #dataFiles .. " 个文件）")
     -- 获取当前游戏语言
     local lang = GetConVarString("gmod_language") or "zh-CN"
     
     for _, fileName in ipairs(dataFiles) do
         local ok, result = pcall(function()
-            local readPath = (sourceMode == "LUA") and ("node_templates/" .. fileName) or ("kards/node_templates/" .. fileName)
-            local content = file.Read(readPath, sourceMode)
+            local content = file.Read("kards/node_templates/" .. fileName, "DATA")
             if not content then
                 error("无法读取文件")
             end
@@ -341,11 +335,16 @@ function INE:LoadNodeTemplatesFromFiles()
                 hasInput = tpl.hasInput,
                 hasOutput = tpl.hasOutput,
                 hasSecondOutput = tpl.hasSecondOutput or false,
+                outputLabels = tpl.outputLabels,
                 config = configStr,
             }, nodeRegName)
             
             -- 记录本次注册使用的 config，用于下次加载时的变化检测
             INE.RegisteredNodes[nodeRegName]._configSource = configStr
+            
+            -- 记录模板 base（保存端 ExportEditorToFile 写 node.base 用；
+            -- 无 base 或 AUTO: 前缀的模板保存时由 config 自动生成）
+            INE.RegisteredNodes[nodeRegName]._templateBase = tpl.base
             
             return nodeRegName
         end)
@@ -582,6 +581,9 @@ function INE._CompsToBase(components, branchCounter)
                 local optCount = #(comp.options or {})
                 base = base .. "[" .. optCount .. "]"
             end
+        elseif comp.type == "textslot" then
+            -- 文本槽：每个槽一个 <>（结构标记，不含文本内容；内容存 node.data）
+            base = base .. "<>"
         elseif comp.type == "funcslot" then
             base = base .. "#"
         elseif comp.type == "if" then
@@ -605,6 +607,198 @@ function INE._CompsToBase(components, branchCounter)
         end
     end
     return base:gsub("%s+$", "")
+end
+
+--[[
+    构建节点运行时数据（保存端键迁移，修复编辑器/运行时组件 ID 计数不一致）。
+
+    背景：编辑器 INE.ParseConfig 对 text/select/number/if 使用「全组件混合计数」
+    （id = select_4 / number_9，text 组件也占位递增），而运行时
+    KARDS.NodeParser.ParseBaseStructure 按类型独立计数（select_1 / number_1，
+    base 串不含 text）。当 config 含文本组件时两者键错位——同一槽位的保存键与
+    运行时读取键不同（如血红镰刀 target_selector 的 select_4=3「场上」被运行时
+    误读为类别 select_4=3「总部」）。本函数在保存端把节点 data 迁移为运行时键
+    （runtimeData），服务端 LoadEffectForRuntime 直接应用；编辑器加载（LoadEffect）
+    保持原 data 不受影响。
+
+    配对策略：config 与 base 结构并行（模板加载时 ValidateConfigAgainstBase 保证），
+    采用「分支感知锁定步进」——两棵组件树同步遍历，text 仅存在于 config 侧（跳过），
+    if 处按「最近前置 select 的选中值」匹配 config 分支条件，只深入被选中分支。
+    编辑器 if/elseif 各分支共享同一批组件 id（如 card 节点各分支的 number_4/select_6
+    从同一 componentId 重新计数），若按全局位置配对会因重复 id 错位到其它分支的
+    运行时槽位，故必须按分支选中态对齐。未被选中的分支（含嵌套组件）不配对、
+    其数据不迁移，运行时使用默认值。
+
+    组件来源权威性（每组件只保留一种表示，避免陈旧 slots 值污染运行时）：
+      select: slots(mode=variable) → dropdowns.selectedIndex → slots → 扁平
+      number: numbers.value → slots(mode=variable) → slots → 扁平
+      funcslot: 扁平
+    编辑器数字框实时写 numbers[compId].value，而 slots 可能滞后（节点创建时写入默认
+    literalValue=0，之后 SyncNumberSlotToSlotData 仅同步 mode 不同步值），
+    故 numbers/dropdowns 优先于字面量 slots。
+
+    @param config string|nil 节点 config DSL（编辑器组件定义）
+    @param base   string|nil 节点模板 base 结构串（缺失时由 config 自动生成）
+    @param data   table 编辑器节点数据（node.data）
+    @return table runtimeData（组件键已按运行时键迁移；非组件键原样拷贝）
+]]
+function INE.BuildRuntimeData(config, base, data)
+    local rd = {}
+    if not data then return rd end
+    if not config or config == "" then
+        -- 无 config（开始点/数据源等）：无组件键可迁移，原样拷贝
+        for k, v in pairs(data) do rd[k] = v end
+        return rd
+    end
+
+    -- 1. 解析 config 与 base 组件树（结构并行，base 缺失时由 config 派生）
+    local configRes = INE.ParseConfig(config)
+    local baseStr = base
+    if not baseStr or baseStr == "" then
+        baseStr = INE.GenerateBaseFromConfig(config)
+    end
+    local baseRes = KARDS.NodeParser.ParseBaseStructure(baseStr)
+
+    -- 2. 分支感知锁定步进：编辑器组件 id → 运行时组件 id
+    local idMap = {}
+
+    -- 读取 select 组件的选中值文本（分支条件判定用；对象槽为扁平字符串直取）
+    local function selectValueText(comp)
+        local id = comp.id
+        local dd = data.dropdowns and data.dropdowns[id]
+        if dd and dd.selectedIndex ~= nil then
+            local opts = (dd.options and #dd.options > 0) and dd.options or comp.options
+            return opts and opts[dd.selectedIndex]
+        end
+        local v = data[id]
+        if type(v) == "number" then
+            return comp.options and comp.options[v]
+        end
+        return v
+    end
+
+    -- 注：if input={...}/if output={...} 条件依赖节点连接上下文，保存时无法判定，
+    -- ConditionMatches 传 nil context 返回 false，该分支按未选中处理（当前模板未使用）
+    local function walk(cList, bList, lastVal)
+        local ci, bi = 1, 1
+        while ci <= #cList and bi <= #bList do
+            local cc, bc = cList[ci], bList[bi]
+            if cc.type == "text" then
+                ci = ci + 1 -- base 无 text，仅推进 config 侧
+            elseif cc.type == "if" then
+                local chosen = nil
+                if bc.type == "if" then
+                    -- 用进入 if 前的最近 select 选中值匹配 config 分支条件（else 恒匹配）
+                    for i2, br in ipairs(cc.branches or {}) do
+                        if br.condition == "else" or INE.ConditionMatches(br.condition, lastVal, nil) then
+                            chosen = i2
+                            break
+                        end
+                    end
+                end
+                if chosen and bc.branches and bc.branches[chosen] then
+                    walk(cc.branches[chosen].components or {}, bc.branches[chosen].components or {}, lastVal)
+                end
+                ci, bi = ci + 1, bi + 1
+            elseif cc.type == "select" then
+                idMap[cc.id] = bc.id
+                lastVal = selectValueText(cc) -- 更新最近 select 选中值（供后续 if 判定）
+                ci, bi = ci + 1, bi + 1
+            elseif cc.type == "number" or cc.type == "funcslot" then
+                idMap[cc.id] = bc.id
+                ci, bi = ci + 1, bi + 1
+            elseif cc.type == "textslot" then
+                -- 文本槽（2026-10-04 新增）：base 侧同位置一个 textslot 组件，直接配对
+                -- （必须显式映射，否则落入下方 else 只推进不映射 → 文本值在 runtimeData 丢失）
+                idMap[cc.id] = bc.id
+                ci, bi = ci + 1, bi + 1
+            else
+                ci, bi = ci + 1, bi + 1
+            end
+        end
+    end
+    walk(configRes.components or {}, baseRes.components or {}, nil)
+
+    -- 3. 收集所有组件 id（扁平键 + 子表键）
+    local compIds = {}
+    local function markId(k)
+        if type(k) == "string" then
+            local id = k:match("^(select_%d+)$") or k:match("^(number_%d+)$") or k:match("^(funcslot_%d+)$") or k:match("^(textslot_%d+)$")
+            if id then compIds[id] = true end
+        end
+    end
+    for k in pairs(data) do markId(k) end
+    for _, sub in ipairs({ "dropdowns", "numbers", "slots" }) do
+        if type(data[sub]) == "table" then
+            for k in pairs(data[sub]) do markId(k) end
+        end
+    end
+
+    -- 4. 按权威来源写入 runtimeData；仅迁移配对成功的组件
+    --    （未配对 = 未被选中分支的遗留组件，不迁移，运行时用默认值）
+    for compId in pairs(compIds) do
+        local newId = idMap[compId]
+        if newId then
+            local compType = compId:match("^([a-z]+)")
+            local slot = data.slots and data.slots[compId]
+            local slotEssential
+            if slot and slot.mode == "variable" then
+                slotEssential = { mode = "variable", variableRef = slot.variableRef, type = slot.type }
+            elseif slot then
+                slotEssential = { mode = "literal", literalValue = slot.literalValue, type = slot.type }
+            end
+            if compType == "select" then
+                local dd = data.dropdowns and data.dropdowns[compId]
+                if dd and dd.selectedIndex ~= nil then
+                    rd.dropdowns = rd.dropdowns or {}
+                    rd.dropdowns[newId] = { selectedIndex = dd.selectedIndex }
+                elseif slotEssential then
+                    rd.slots = rd.slots or {}
+                    rd.slots[newId] = slotEssential
+                elseif data[compId] ~= nil then
+                    rd[newId] = data[compId]
+                end
+            elseif compType == "number" then
+                local num = data.numbers and data.numbers[compId]
+                if num and num.value ~= nil then
+                    rd.numbers = rd.numbers or {}
+                    rd.numbers[newId] = { value = num.value, mode = num.mode }
+                elseif slotEssential then
+                    rd.slots = rd.slots or {}
+                    rd.slots[newId] = slotEssential
+                elseif data[compId] ~= nil then
+                    rd[newId] = data[compId]
+                end
+            elseif compType == "textslot" then
+                -- 文本槽（2026-10-04 新增）：统一槽优先（literalValue 直接文本 / variableRef "var:<名>"），
+                -- 其次扁平键 data[compId]；运行时 ReadSlot 按同一优先级读取
+                if slotEssential then
+                    rd.slots = rd.slots or {}
+                    rd.slots[newId] = slotEssential
+                elseif data[compId] ~= nil then
+                    rd[newId] = data[compId]
+                end
+            else -- funcslot
+                if data[compId] ~= nil then
+                    rd[newId] = data[compId]
+                end
+            end
+        end
+    end
+
+    -- 5. 非组件键原样拷贝（title / 数据线输出名「选中的卡牌」/ _setEntries 等）
+    --    dropdowns/numbers/slots 是组件存储子表，组件键已由步骤 4 全量处理，不再拷贝
+    for k, v in pairs(data) do
+        local isCompKey = type(k) == "string"
+            and (k:match("^select_%d+$") or k:match("^number_%d+$") or k:match("^funcslot_%d+$") or k:match("^textslot_%d+$"))
+        if not isCompKey then
+            if k ~= "dropdowns" and k ~= "numbers" and k ~= "slots" then
+                rd[k] = v
+            end
+        end
+    end
+
+    return rd
 end
 
 -- 全局节点ID自增计数器，用于生成唯一节点ID
@@ -1103,6 +1297,29 @@ function INE.ParseNumberComponent(str, startPos, len, componentId)
     return comp, j + 1, componentId
 end
 
+-- 解析文本槽组件（尖括号 <>，2026-10-04 新增）
+-- 与数字槽 [] 对称：每个 <> 为一个可填文本 / 可引用文本变量的槽位。
+-- 提示：`<`/`>` 若出现在 `'...'` 文本组件或 `{...}` 下拉选项内，会被
+-- ParseTextComponent / ParseSelectComponent 先行消费，不会进入本分支（现有模板
+-- condition.json 的下拉 `{=、>、<、>=、<=}` 即属此类，故新增分派是安全的）。
+function INE.ParseTextSlotComponent(str, startPos, len, componentId)
+    local j = startPos + 1
+    while j <= len and str:sub(j, j) ~= ">" do
+        j = j + 1
+    end
+
+    -- 没有找到 > 则不视为文本槽组件（单独的 < 被忽略）
+    if j > len then
+        return nil, j + 1, componentId
+    end
+
+    componentId = componentId + 1
+    return {
+        type = "textslot",
+        id = "textslot_" .. componentId
+    }, j + 1, componentId
+end
+
 -- 解析函数槽组件（井号 #）
 -- 标记一个函数变量选择位置，用户可从编辑器已定义函数变量中选择
 -- 组件本身不包含额外文本，选中后存储函数变量引用
@@ -1396,6 +1613,8 @@ function INE.ParseConfig(configString, startComponentId)
             component, i, componentId = INE.ParseSelectComponent(str, i, len, componentId)
         elseif char == "[" then
             component, i, componentId = INE.ParseNumberComponent(str, i, len, componentId)
+        elseif char == "<" then
+            component, i, componentId = INE.ParseTextSlotComponent(str, i, len, componentId)
         elseif char == "(" then
             outputTypes, i = INE.ParseOutputTypes(str, i, len)
         elseif char == "#" then
@@ -1581,7 +1800,9 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                         end
                     end
                     local selectedIdx = numData.selectedOptionIndex or 1
-                    local selectedOpt = options[selectedIdx] or options[1]
+                    -- 空选项兜底：VarLib 无数字变量且无数据线/用户变量时 options 为空表，
+                    -- selectedOpt 为 nil 会导致 GetDisplayName(nil) 返回 nil 传入 GetTextWidth 崩溃
+                    local selectedOpt = options[selectedIdx] or options[1] or ""
                     local displayOpt = selectedOpt
                     if KARDS.VarLib and KARDS.VarLib.GetDisplayName then
                         displayOpt = KARDS.VarLib.GetDisplayName(selectedOpt)
@@ -1608,6 +1829,20 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                 if textW < charW * 4 then textW = charW * 4 end
                 local dropDownW = math.max(textW + 24, 20)
                 local w = totalPrefixW + dropDownW
+                cx = cx + w + 5
+                mx = math.max(mx, cx)
+            elseif comp.type == "textslot" then
+                -- 文本槽：绿色 t 按钮 + 间隔 + 值区（直接输入文本 / "var:<名>" 引用显示变量名）
+                -- 公式与 DrawComponents 的 textslot 分支保持一致（未缩放估算）
+                local charW = INE.GetTextWidth("字")
+                local tCharW = math.max(14, charW * 1.4)
+                local rawVal = data and data[comp.id]
+                local disp = ""
+                if type(rawVal) == "string" then
+                    disp = (rawVal:sub(1, 4) == "var:") and rawVal:sub(5) or rawVal
+                end
+                local textW = math.max(INE.GetTextWidth(disp), INE.GetTextWidth("文本"))
+                local w = tCharW + 4 + textW + 4
                 cx = cx + w + 5
                 mx = math.max(mx, cx)
             elseif comp.type == "if" then
@@ -1683,6 +1918,10 @@ function INE.InitNodeData(components, nodeData)
                 if not data[comp.id] then
                     data[comp.id] = 0
                 end
+            elseif comp.type == "textslot" then
+                if not data[comp.id] then
+                    data[comp.id] = ""  -- 文本槽：直接输入文本 或 "var:<变量名>" 引用
+                end
             elseif comp.type == "funcslot" then
                 if not data[comp.id] then
                     data[comp.id] = ""  -- 函数引用名
@@ -1719,6 +1958,48 @@ function INE:DrawNodeContent(editor, node)
     local startY = nodeY + 40 * scale
 
     self:DrawComponents(editor, node, startX, startY, node.parsedConfig.components, node.data)
+end
+
+--[[
+    收集文本槽可引用的文本变量显示名（2026-10-04 新增）：
+      1. 编辑器全局文本变量 editor.variables["t"]
+      2. 连接到本节点的 t 类型数据线（变量名）
+    与「设置变量」节点文本槽的 GetTextVarOptions（cl_ine_var_op_nodes.lua）语义一致，去重。
+    @param  editor {table} 编辑器实例
+    @param  node   {table} 节点实例
+    @return {table} 显示名数组
+]]
+function INE.GetTextSlotVarOptions(editor, node)
+    local opts = {}
+    local function AddOpt(name)
+        if name and name ~= "" then
+            for _, o in ipairs(opts) do
+                if o == name then return end
+            end
+            table.insert(opts, name)
+        end
+    end
+    if editor and editor.variables and editor.variables["t"] then
+        for _, v in ipairs(editor.variables["t"]) do
+            -- 显示名口径与 VarOp.GetVarDisplayName / 运行时 ResolveTarget（FindUserVar 按显示名匹配）
+            -- 一致：优先 name，其次 internalName
+            local disp = (v.name ~= nil and v.name ~= "") and v.name or v.internalName
+            AddOpt(disp)
+        end
+    end
+    if editor and node and editor.dataConnections then
+        for _, dc in ipairs(editor.dataConnections) do
+            if dc.toNode == node.id and dc.variableName and dc.variableName ~= "" then
+                local toPorts = node.selectedInputTypes or {}
+                local tp = toPorts[dc.toPortIndex]
+                local tpId = (type(tp) == "table" and tp.id) or tp
+                if tpId == "t" then
+                    AddOpt(dc.variableName)
+                end
+            end
+        end
+    end
+    return opts
 end
 
 --[[
@@ -1879,12 +2160,14 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                                 end
                             end
                             -- 3. 数据连接传入的对象变量
+                            --    （isWire=true：数据线连接的对象始终显示，不受「包括全局」开关控制；
+                            --      与 VarLib 全局对象变量（isLibVar）区分，见 DrawCardObjectSelector 过滤）
                             if editor.dataConnections then
                                 for _, dc in ipairs(editor.dataConnections) do
                                     if dc.toNode == node.id and dc.dataType == "e" and dc.variableName then
                                         table.insert(opts, {label = dc.variableName, type = "connection",
                                             variableName = dc.variableName, fromNodeId = dc.fromNode,
-                                            fromPortIndex = dc.fromPortIndex})
+                                            fromPortIndex = dc.fromPortIndex, isWire = true})
                                     end
                                 end
                             end
@@ -1894,13 +2177,21 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                             table.insert(opts, {label = "当前卡牌：" .. ccName, type = "variable",
                                 variableName = ccName, cardName = ccName, cardAppearance = ccAppearance,
                                 isCurrentCard = true})
-                            -- 5. VarLib 对象组变量
-                            local libVars = CollectLibVarsByType(editor)
-                            if libVars and libVars["eg"] then
-                                for _, egVar in ipairs(libVars["eg"]) do
-                                    table.insert(opts, {label = egVar.name, type = "connection",
-                                        variableName = egVar.path, isLibVar = true})
+                            -- 5. VarLib 全局对象/对象组变量（e 单个对象 + eg 对象组）
+                            --    基于 GetObjectVarPaths 白名单（总部/目标为 e，Units/Cards 为 eg，含开发池），
+                            --    与 CollectLibVarsByType 按默认值推断不同——总部等默认 nil 的变量在白名单下正确归为 e
+                            local objVars = {}
+                            if KARDS.VarLib and KARDS.VarLib.GetObjectVarPaths then
+                                objVars = KARDS.VarLib.GetObjectVarPaths("__ine_template__" .. editor.id)
+                            end
+                            for _, ov in ipairs(objVars) do
+                                local display = ov.path
+                                if KARDS.VarLib.GetDisplayName then
+                                    local dn = KARDS.VarLib.GetDisplayName(ov.path)
+                                    if dn and dn ~= "" then display = dn end
                                 end
+                                table.insert(opts, {label = display, type = "connection",
+                                    variableName = ov.path, isLibVar = true, isGroup = ov.isGroup})
                             end
                             KARDS.CardEditor.Canvas.CardObjectSelector = {
                                 nodeId = node.id, compId = comp.id, nodeRef = node,
@@ -2078,6 +2369,44 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                 end
                 local newVal, actualW = KARDS.CardEditor.Canvas.DrawNumberBox(cx, cy, compH, val, node, comp.id, resolvedOptions, compFont)
                 if newVal then data[comp.id] = newVal end
+                -- [lib+N] 数字槽选值回写统一槽（2026-10-04）：变量库变量 → "var:<名>"；附加预设 → 预设索引。
+                -- ReadSlot 优先读 node.data.slots[compId]，据此在运行时解析变量值（如「剩余指挥点」）或预设索引。
+                do
+                    local numData = node.data.numbers and node.data.numbers[comp.id]
+                    local slot = node.data.slots and node.data.slots[comp.id]
+                    if numData and slot then
+                        local libCount = 0
+                        if comp.useLib and KARDS.VarLib and KARDS.VarLib.GetNumericVarPaths then
+                            libCount = #KARDS.VarLib.GetNumericVarPaths("1")
+                        end
+                        local extraCount = (comp.extraOptions and #comp.extraOptions) or 0
+                        if numData.mode == "select" and numData.selectedOptionIndex then
+                            local idx = numData.selectedOptionIndex
+                            local opt = resolvedOptions and resolvedOptions[idx]
+                            if comp.useLib and idx <= libCount then
+                                -- 变量库变量（选项区段首位为数字变量路径）
+                                slot.mode = "variable"
+                                slot.variableRef = "var:" .. ((KARDS.VarLib and KARDS.VarLib.GetDisplayName and KARDS.VarLib.GetDisplayName(opt)) or opt or "")
+                                slot.literalValue = nil
+                            elseif comp.extraOptions and idx > libCount and idx <= libCount + extraCount then
+                                -- 附加预设（[lib+N] 的 N 个预设选项）：存 1 基预设索引
+                                slot.mode = "literal"
+                                slot.literalValue = idx - libCount
+                                slot.variableRef = nil
+                            elseif opt then
+                                -- 数据线/用户自定义变量
+                                slot.mode = "variable"
+                                slot.variableRef = "var:" .. opt
+                                slot.literalValue = nil
+                            end
+                        else
+                            -- 字面量（slot 模式）：存数字
+                            slot.mode = "literal"
+                            slot.literalValue = numData.value
+                            slot.variableRef = nil
+                        end
+                    end
+                end
                 -- 立即重新计算节点宽度
                 if node.parsedConfig and node.parsedConfig.components then
                     local nw, nh = INE.CalculateSize(node.parsedConfig.components, node.data, node.hasSecondOutput, editor, node.id)
@@ -2089,6 +2418,187 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                 -- 记录交互元素包围盒
                 table.insert(editor._interactiveRects, {x = cx, y = cy, w = numTotalW, h = compH, nodeId = node.id, compId = comp.id, type = "number"})
                 cx = cx + numTotalW + spacing
+            elseif comp.type == "textslot" then
+                -- 文本槽组件（2026-10-04 新增）：对照数字槽样式——左侧绿色 t 类型按钮 +
+                -- 间隔 + 值区。交互（与「设置变量」节点文本槽一致）：
+                --   直接输入模式：点值区进入内联输入（透明 DTextEntry，见 INE:Think）
+                --   引用模式（值 "var:<名>"）：值区只读显示变量名；点 t 按钮或值区清空回直接输入
+                --   直接输入模式下点 t 按钮：展开文本变量下拉（全局文本变量 + 传入的 t 数据线）
+                -- 值存储：统一槽 node.data.slots[comp.id]（mode/literalValue/variableRef）与
+                -- 扁平 data[comp.id] 双写（运行时 ReadSlot 优先统一槽，末位回退扁平键）。
+                local slotData = INE.GetOrCreateSlotData("text", node, comp.id, data[comp.id])
+                local rawVal = data[comp.id]
+                if type(rawVal) ~= "string" then
+                    if slotData.mode == "variable" and slotData.variableRef then
+                        rawVal = slotData.variableRef
+                    elseif slotData.literalValue ~= nil then
+                        rawVal = tostring(slotData.literalValue)
+                    else
+                        rawVal = ""
+                    end
+                    data[comp.id] = rawVal
+                end
+                local isRef = rawVal:sub(1, 4) == "var:"
+                if isRef then
+                    slotData.mode = "variable"
+                    slotData.variableRef = rawVal
+                    slotData.literalValue = nil
+                else
+                    slotData.mode = "literal"
+                    slotData.literalValue = rawVal
+                    slotData.variableRef = nil
+                end
+                local editing = INE.TextSlotEditState.active
+                    and INE.TextSlotEditState.node == node
+                    and INE.TextSlotEditState.compId == comp.id
+                local dispText = isRef and rawVal:sub(5) or rawVal
+                if editing then dispText = INE.TextSlotEditState.text end
+                local charW = getScaledTextWidth("字", "SourceHan_Heavy", 14)
+                local tCharW = math.max(14 * scale, charW * 1.4)
+                local tBtnX = cx
+                local valX = tBtnX + tCharW + 4 * scale
+                local measured = getScaledTextWidth(dispText ~= "" and dispText or "文本", "SourceHan_Heavy", 14)
+                local valW = math.max(measured + 8 * scale, charW * 4)
+                -- 交互矩形先注册：避免点击被判定为节点体拖拽/框选
+                table.insert(editor._interactiveRects, {x = tBtnX, y = cy, w = tCharW, h = compH,
+                    nodeId = node.id, compId = comp.id, type = "textslot_t"})
+                table.insert(editor._interactiveRects, {x = valX, y = cy, w = valW, h = compH,
+                    nodeId = node.id, compId = comp.id, type = "textslot"})
+                -- 文本变量选项（下拉与选中回写共用）
+                local tOpts = INE.GetTextSlotVarOptions(editor, node)
+                local ddKey = node.id .. "_textslot_" .. comp.id
+                -- 绘制
+                local mX, mY = gui.MouseX(), gui.MouseY()
+                local tHov = mX >= tBtnX and mX <= tBtnX + tCharW and mY >= cy and mY <= cy + compH
+                draw.RoundedBox(3 * scale, tBtnX, cy, tCharW, compH,
+                    tHov and Color(70, 120, 80) or Color(45, 60, 50))
+                draw.SimpleText("t", compFont, tBtnX + tCharW / 2, cy + compH / 2,
+                    Color(144, 238, 144), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                draw.SimpleText("|", compFont, tBtnX + tCharW + 2 * scale, cy + compH / 2,
+                    Color(120, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                if isRef and not editing then
+                    -- 引用模式：绿色只读变量名
+                    draw.RoundedBox(3 * scale, valX, cy, valW, compH, Color(45, 60, 50))
+                    draw.SimpleText(dispText, compFont, valX + 4 * scale, cy + compH / 2,
+                        Color(144, 238, 144), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                elseif editing then
+                    -- 编辑中：高亮 + 蓝框（DTextEntry 完全透明，叠加在其上）
+                    draw.RoundedBox(3 * scale, valX, cy, valW, compH, Color(60, 60, 70))
+                    surface.SetDrawColor(Color(100, 150, 255, 200))
+                    surface.DrawOutlinedRect(valX, cy, valW, compH)
+                    draw.SimpleText(dispText, compFont, valX + 4 * scale, cy + compH / 2,
+                        Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                else
+                    -- 直接输入模式：文本 / 空值灰占位「文本」
+                    draw.RoundedBox(3 * scale, valX, cy, valW, compH, Color(45, 45, 50))
+                    draw.SimpleText(dispText ~= "" and dispText or "文本", compFont,
+                        valX + 4 * scale, cy + compH / 2,
+                        dispText ~= "" and Color(220, 220, 220) or Color(120, 120, 120),
+                        TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                end
+                -- 点击处理（帧级鼠标刚按下标记，与 select 组件同源）
+                local mouseJustPressed = INE._frameMouseJustPressed or false
+                if mouseJustPressed and not KARDS.CardEditor.Canvas.DraggingNode then
+                    local valHov = mX >= valX and mX <= valX + valW and mY >= cy and mY <= cy + compH
+                    if isRef then
+                        -- 引用模式：点 t 按钮或值区均清空 → 回到直接输入
+                        if tHov or valHov then
+                            data[comp.id] = ""
+                            slotData.mode = "literal"
+                            slotData.literalValue = ""
+                            slotData.variableRef = nil
+                            INE.TextSlotEditState.active = false
+                        end
+                    elseif tHov then
+                        -- 直接输入模式点 t：展开文本变量下拉
+                        if #tOpts > 0 then
+                            local currentTime = SysTime()
+                            if not node.data.dropdowns then node.data.dropdowns = {} end
+                            local ddData = node.data.dropdowns[ddKey]
+                            if not ddData then
+                                ddData = { selectedIndex = 1, appliedIndex = 1, lastClickTime = 0 }
+                                node.data.dropdowns[ddKey] = ddData
+                            end
+                            ddData.options = tOpts
+                            if currentTime - (ddData.lastClickTime or 0) > 0.3 then
+                                ddData.lastClickTime = currentTime
+                                if KARDS.CardEditor.Canvas.ExpandedDropdown == ddKey then
+                                    KARDS.CardEditor.Canvas.ExpandedDropdown = nil
+                                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                                else
+                                    local ddStyle = KARDS.CardEditor.Canvas.DropdownStyle
+                                    local ddY = cy + compH + 2
+                                    local maxRows = math.max(1,
+                                        math.floor((ScrH() - ddY - ddStyle.padding * 2) / ddStyle.rowHeight))
+                                    surface.SetFont(compFont)
+                                    local maxOptW = 0
+                                    for _, o in ipairs(tOpts) do
+                                        maxOptW = math.max(maxOptW, surface.GetTextSize(o))
+                                    end
+                                    local colW = math.max(maxOptW + 22, valW)
+                                    local numCols = math.ceil(#tOpts / maxRows)
+                                    local totalDropW = numCols * colW
+                                    local dropX = valX
+                                    if dropX + totalDropW > ScrW() then
+                                        dropX = math.max(0, ScrW() - totalDropW - 10)
+                                    end
+                                    local dropH = numCols == 1
+                                        and (#tOpts * ddStyle.rowHeight + ddStyle.padding * 2)
+                                        or (maxRows * ddStyle.rowHeight + ddStyle.padding * 2)
+                                    KARDS.CardEditor.Canvas.ExpandedDropdown = ddKey
+                                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = {
+                                        x = valX, y = cy, width = valW, height = compH,
+                                        nodeId = node.id, dropdownId = ddKey,
+                                        options = tOpts,
+                                        dropdownX = dropX, dropdownY = ddY,
+                                        totalWidth = totalDropW, expandedColumnWidth = colW,
+                                        maxRowsPerColumn = maxRows, dropdownH = dropH,
+                                        numColumns = numCols,
+                                        isTextSlot = true,  -- 绿色描边（见 cl_ca_ui_components.lua）
+                                        dropdownData = ddData,
+                                        optFont = compFont, canvasScale = editor.canvasScale or 1,
+                                    }
+                                end
+                            end
+                        end
+                    elseif valHov then
+                        -- 直接输入模式点值区：进入内联输入
+                        INE.TextSlotEditState.active = true
+                        INE.TextSlotEditState.node = node
+                        INE.TextSlotEditState.compId = comp.id
+                        INE.TextSlotEditState.text = rawVal
+                        INE.TextSlotEditState.x = valX
+                        INE.TextSlotEditState.y = cy
+                        INE.TextSlotEditState.w = valW
+                        INE.TextSlotEditState.h = compH
+                    end
+                end
+                -- 下拉选中回写（下拉关闭后按 selectedIndex 变化写引用，与 select 组件同式）
+                do
+                    local ddData = node.data.dropdowns and node.data.dropdowns[ddKey]
+                    if ddData and ddData.selectedIndex then
+                        if ddData.appliedIndex == nil then ddData.appliedIndex = ddData.selectedIndex end
+                        if ddData.selectedIndex ~= ddData.appliedIndex then
+                            ddData.appliedIndex = ddData.selectedIndex
+                            local sel = tOpts[ddData.selectedIndex]
+                            if sel then
+                                local ref = "var:" .. sel
+                                data[comp.id] = ref
+                                slotData.mode = "variable"
+                                slotData.variableRef = ref
+                                slotData.literalValue = nil
+                            end
+                        end
+                    end
+                end
+                -- 立即重新计算节点宽度（与数字槽同式：文本槽宽度随内容变化）
+                if node.parsedConfig and node.parsedConfig.components then
+                    local nw, nh = INE.CalculateSize(node.parsedConfig.components, node.data,
+                        node.hasSecondOutput, editor, node.id)
+                    node.width = nw
+                    node.height = nh
+                end
+                cx = cx + tCharW + 4 * scale + valW + spacing
             elseif comp.type == "funcslot" then
                 -- 函数槽组件：使用统一槽数据模型，但绘制和交互内联实现
                 local slotData = INE.GetOrCreateSlotData("function", node, comp.id, data[comp.id])
@@ -4011,6 +4521,78 @@ function INE:Think()
             end
         end
     end
+
+    -- ============================================================
+    -- 文本槽内联输入 DTextEntry 生命周期管理（2026-10-04 新增）
+    -- 「抉择」等模板 <> 文本槽：直接输入模式下点击值区激活，透明 DTextEntry 捕获
+    -- IME/键盘输入（与上方各变量对话框输入框同方案），OnTextChanged 写回统一槽与扁平键。
+    -- ============================================================
+    local tsState = INE.TextSlotEditState
+    local tsEntry = INE.TextSlotTextEntry
+    if tsState.active and tsState.node and tsState.compId then
+        -- 校验节点仍有效（可能被删除）且组件仍属该节点配置
+        local ed = tsState.node.editor
+        local nodeExists = false
+        if ed and ed.nodes then
+            for _, n in ipairs(ed.nodes) do
+                if n == tsState.node then nodeExists = true break end
+            end
+        end
+        if not nodeExists then
+            tsState.active = false
+        elseif not tsEntry or not IsValid(tsEntry) then
+            local entry = vgui.Create("DTextEntry")
+            entry:SetPos(tsState.x, tsState.y)
+            entry:SetSize(tsState.w, tsState.h)
+            entry:SetText(tsState.text or "")
+            entry:SetCaretPos(#(tsState.text or ""))
+            entry:SetDrawBackground(false)
+            entry:SetDrawBorder(false)
+            entry:SetTextColor(Color(255, 255, 255, 0))
+            entry:SetCursorColor(Color(255, 255, 255, 0))
+            entry.Paint = nil
+            entry:MakePopup()
+
+            entry.OnTextChanged = function(self)
+                local txt = self:GetText()
+                local st = INE.TextSlotEditState
+                if not (st and st.active and st.node and st.compId) then return end
+                st.text = txt
+                local node = st.node
+                local data = node.data
+                if not data then return end
+                data[st.compId] = txt
+                data.slots = data.slots or {}
+                local slot = data.slots[st.compId]
+                if not slot then
+                    slot = INE.GetOrCreateSlotData("text", node, st.compId, txt)
+                end
+                slot.mode = "literal"
+                slot.literalValue = txt
+                slot.variableRef = nil
+            end
+
+            entry.OnKeyCodeTyped = function(self, keyCode)
+                if keyCode == KEY_ESCAPE or keyCode == KEY_ENTER then
+                    if INE.TextSlotEditState then INE.TextSlotEditState.active = false end
+                end
+            end
+
+            INE.TextSlotTextEntry = entry
+        else
+            -- 跟随节点拖动 / 缩放更新位置与尺寸
+            tsEntry:SetPos(tsState.x, tsState.y)
+            tsEntry:SetSize(tsState.w, tsState.h)
+            if not tsEntry:HasFocus() then
+                tsEntry:MakePopup()
+            end
+        end
+    else
+        if tsEntry and IsValid(tsEntry) then
+            tsEntry:Remove()
+        end
+        INE.TextSlotTextEntry = nil
+    end
 end
 
 --[[
@@ -4247,7 +4829,9 @@ function INE:GetDataPortIconAtPosition(editor, screenX, screenY)
     -- 逆序遍历：后创建/后绘制的节点在上层，优先检测
     for i = #editor.nodes, 1, -1 do
         local node = editor.nodes[i]
-        if not node.isStartNode then
+        -- 允许开始点（含数据源开始点如"钳击对象"）的数据端口作为拖线起点；
+        -- 普通开始点无数据端口，不受影响
+        if not node.isUnregistered then
             -- 检测输出数据点
             if node._outputDataPortPositions then
                 for j, portPos in ipairs(node._outputDataPortPositions) do
@@ -4372,7 +4956,8 @@ end
 function INE:GetStartNodeAtPort(editor, screenX, screenY)
     for i = #editor.nodes, 1, -1 do
         local node = editor.nodes[i]
-        if node.isStartNode then
+        -- 数据源开始点（钳击对象）无执行输出端口，其中数据端口由 GetDataPortIconAtPosition 处理
+        if node.isStartNode and node.name ~= "data_start_point" then
             local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
             local portR = 6 * editor.canvasScale
             local portCX = nodeX  -- 端口圆心在 Y 轴（node.x = 0）
@@ -5213,6 +5798,7 @@ function LogNewNode(nodeParams, nodeName)
         hasInput = nodeParams.hasInput ~= false,         -- 是否显示左侧输入端口
         hasOutput = nodeParams.hasOutput ~= false,       -- 是否显示右侧输出端口
         hasSecondOutput = nodeParams.hasSecondOutput or false, -- 是否有第二个输出点（双分支：满足/不满足）
+        outputLabels = nodeParams.outputLabels,          -- 双输出端口显示标签（可选，缺省 {"满足","不满足"}；「抉择」用 {"效果一","效果二"}）
         hasInputs = nodeParams.hasInputs or false,       -- 是否显示多个输入端口（保留）
         hasOutputs = nodeParams.hasOutputs or false,     -- 是否显示多个输出端口（保留）
         inputTypes = nodeParams.inputTypes or {},        -- 输入端口类型列表
@@ -5263,6 +5849,38 @@ function LogNewNode(nodeParams, nodeName)
                 local numberType = INE.GetDataTypeById("n")
                 if numberType then
                     table.insert(nodeTemplate.availableInputTypes, numberType)
+                end
+            end
+        end
+
+        -- 检查是否有文本槽组件（<>），自动添加文本类型输入支持（2026-10-04 新增）
+        local function checkTextSlot(components)
+            for _, comp in ipairs(components) do
+                if comp.type == "textslot" then
+                    return true
+                elseif comp.type == "if" then
+                    for _, branch in ipairs(comp.branches) do
+                        if checkTextSlot(branch.components) then
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
+        end
+
+        if checkTextSlot(configResult.components) then
+            local hasTextType = false
+            for _, inputType in ipairs(nodeTemplate.availableInputTypes) do
+                if inputType.id == "t" then
+                    hasTextType = true
+                    break
+                end
+            end
+            if not hasTextType then
+                local textType = INE.GetDataTypeById("t")
+                if textType then
+                    table.insert(nodeTemplate.availableInputTypes, textType)
                 end
             end
         end

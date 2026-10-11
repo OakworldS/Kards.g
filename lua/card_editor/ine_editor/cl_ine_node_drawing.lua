@@ -55,13 +55,16 @@ function INE:UpdateDataPortPositions(editor, node, portType)
     if portType == "output" then
         local selectedPorts = node.selectedOutputTypes or {}
         local portCount = #selectedPorts
-        -- 是否有"增加数据点"按钮（有可用类型时才有按钮）
-        local hasButton = node.availableOutputTypes and #node.availableOutputTypes > 0
+        -- 是否有"增加数据点"按钮（有可用类型时才有按钮；开始点数据端口固定，不提供增删按钮）
+        local hasButton = node.availableOutputTypes and #node.availableOutputTypes > 0 and not node.isStartNode
 
         node._outputDataPortPositions = node._outputDataPortPositions or {}
 
-        -- 计算数据点位置（与节点底边重合，水平居中排列）
+        -- 计算数据点位置（普通节点与底边重合；开始点数据端口垂直居中，与其他开始点的端口位置一致）
         local portsY = nodeY + nodeH
+        if node.isStartNode then
+            portsY = nodeY + nodeH / 2
+        end
         local totalWidth
         if portCount > 0 then
             totalWidth = portCount * (portR * 2 + portSpacing) + (hasButton and (buttonSize + portSpacing) or 0)
@@ -69,6 +72,10 @@ function INE:UpdateDataPortPositions(editor, node, portType)
             totalWidth = hasButton and buttonSize or 0
         end
         local startX = nodeX + nodeW / 2 - totalWidth / 2 + portR
+        -- 数据源开始点（钳击对象）：数据点固定在左边缘（y 轴）上，与标题文本对齐
+        if node.isStartNode then
+            startX = nodeX
+        end
 
         -- 更新数据点位置
         for i, portData in ipairs(selectedPorts) do
@@ -162,8 +169,8 @@ end
 function INE:DrawDataPorts(editor, node)
     local selectedPorts = node.selectedOutputTypes or {}
     local portCount = #selectedPorts
-    -- 是否有"增加数据点"按钮（有可用类型时才绘制按钮）
-    local hasButton = node.availableOutputTypes and #node.availableOutputTypes > 0
+    -- 是否有"增加数据点"按钮（有可用类型时才绘制按钮；开始点数据端口固定，不绘制增删按钮）
+    local hasButton = node.availableOutputTypes and #node.availableOutputTypes > 0 and not node.isStartNode
     -- 无可用类型且无已选端口时无需绘制；
     -- 有已选端口即使无可用类型也绘制（如"新建变量"节点的动态输出点，无添加按钮）
     if not hasButton and portCount == 0 then return end
@@ -180,8 +187,11 @@ function INE:DrawDataPorts(editor, node)
     -- 存储数据点位置用于点击检测
     node._outputDataPortPositions = node._outputDataPortPositions or {}
 
-    -- 计算数据点位置（与节点底边重合，水平居中排列）
+    -- 计算数据点位置（普通节点与底边重合；开始点数据端口垂直居中，与其他开始点的端口位置一致）
     local portsY = nodeY + nodeH
+    if node.isStartNode then
+        portsY = nodeY + nodeH / 2
+    end
     -- 总宽度 = 数据点 + 按钮（按钮始终在数据点右侧；无可用类型时不占按钮空间）
     local totalWidth
     if portCount > 0 then
@@ -190,6 +200,10 @@ function INE:DrawDataPorts(editor, node)
         totalWidth = hasButton and buttonSize or 0
     end
     local startX = nodeX + nodeW / 2 - totalWidth / 2 + portR
+    -- 数据源开始点（钳击对象）：数据点固定在左边缘（y 轴）上，与标题文本对齐
+    if node.isStartNode then
+        startX = nodeX
+    end
 
     -- 绘制已选择的数据点
     for i, portData in ipairs(selectedPorts) do
@@ -320,21 +334,23 @@ function INE:DrawDataPorts(editor, node)
         node._dataPortDropdownRect = rect
     end
 
-    -- 检测鼠标悬停在数据点上，显示名称提示
-    for i, posData in ipairs(node._outputDataPortPositions or {}) do
-        if self:IsPointInCircle(mouseX, mouseY, posData.x, posData.y, posData.radius + 2 * scale) then
-            local tipText = posData.data and (posData.data.name or posData.data.id) or "?"
-            local tipFont = self:GetScaledFont("SourceHan_Heavy", 12, scale)
-            surface.SetFont(tipFont)
-            local textW = surface.GetTextSize(tipText)
-            local tipPadding = 4 * scale
-            local tipX = mouseX + 10 * scale
-            local tipY = mouseY - 10 * scale - 16 * scale
-            local tipW = textW + tipPadding * 2
-            local tipH = 16 * scale + tipPadding * 2
-            draw.RoundedBox(3, tipX, tipY, tipW, tipH, Color(30, 30, 40, 230))
-            draw.SimpleText(tipText, tipFont, tipX + tipPadding, tipY + tipH / 2, Color(255, 255, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-            break
+    -- 检测鼠标悬停在数据点上，显示名称提示（数据源开始点除外：标题已居中显示在节点上，悬停提示冗余）
+    if not node.isStartNode then
+        for i, posData in ipairs(node._outputDataPortPositions or {}) do
+            if self:IsPointInCircle(mouseX, mouseY, posData.x, posData.y, posData.radius + 2 * scale) then
+                local tipText = posData.data and (posData.data.name or posData.data.id) or "?"
+                local tipFont = self:GetScaledFont("SourceHan_Heavy", 12, scale)
+                surface.SetFont(tipFont)
+                local textW = surface.GetTextSize(tipText)
+                local tipPadding = 4 * scale
+                local tipX = mouseX + 10 * scale
+                local tipY = mouseY - 10 * scale - 16 * scale
+                local tipW = textW + tipPadding * 2
+                local tipH = 16 * scale + tipPadding * 2
+                draw.RoundedBox(3, tipX, tipY, tipW, tipH, Color(30, 30, 40, 230))
+                draw.SimpleText(tipText, tipFont, tipX + tipPadding, tipY + tipH / 2, Color(255, 255, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                break
+            end
         end
     end
 end
@@ -557,29 +573,24 @@ function INE:DrawNode(editor, node)
         end
     end
 
-    -- 开始点绘制：文字居中或分布在端口两侧（端口由 DrawNodePorts 在最后层绘制）
+    -- 开始点绘制：文字分布在端口两侧（端口由 DrawNodePorts 在最后层绘制）
+    -- 数据源开始点（钳击对象）的数据端口同样位于垂直居中，与普通开始点的端口位置一致
     if node.isStartNode then
         local title = node.data.title or node.name or "开始点"
         local startNodeFont = self:GetScaledFont("SourceHan_Heavy", 20, editor.canvasScale)
         local centerX = nodeX
         local centerY = nodeY + nodeH / 2
 
-        if node.name == "data_start_point" then
-            -- 数据源开始点：无执行输出端口，文字居中绘制
-            draw.SimpleText(title, startNodeFont, centerX, centerY, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        else
-            -- 普通开始点：文字分布在输出端口两侧
-            -- 左侧显示第一个字符，右侧显示其余文字
-            local firstChar = utf8.sub(title, 1, 1)
-            local restChars = utf8.sub(title, 2)
-            local gap = 8 * editor.canvasScale
+        -- 左侧显示第一个字符，右侧显示其余文字
+        local firstChar = utf8.sub(title, 1, 1)
+        local restChars = utf8.sub(title, 2)
+        local gap = 8 * editor.canvasScale
 
-            if firstChar ~= "" then
-                draw.SimpleText(firstChar, startNodeFont, centerX - gap, centerY, Color(200, 200, 200), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
-            end
-            if restChars ~= "" then
-                draw.SimpleText(restChars, startNodeFont, centerX + gap, centerY, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-            end
+        if firstChar ~= "" then
+            draw.SimpleText(firstChar, startNodeFont, centerX - gap, centerY, Color(200, 200, 200), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        end
+        if restChars ~= "" then
+            draw.SimpleText(restChars, startNodeFont, centerX + gap, centerY, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         end
         return
     end
@@ -721,13 +732,17 @@ function INE:DrawNodePorts(editor, node)
             local portBotY = nodeY + nodeH * 2 / 3 - portR
             local labelFont = self:GetScaledFont("SourceHan_Heavy", 11, editor.canvasScale)
             local labelGap = 4 * editor.canvasScale
+            -- 端口标签（node.outputLabels 优先：如「抉择」的双效果端口为 {"效果一","效果二"}；
+            -- 缺省保持 condition / loop / event_monitor 的「满足/不满足」语义）
+            local labelTop = (node.outputLabels and node.outputLabels[1]) or "满足"
+            local labelBot = (node.outputLabels and node.outputLabels[2]) or "不满足"
 
             -- 满足分支（上）
             draw.RoundedBox(portR, portX, portTopY, portR * 2, portR * 2, Color(100, 255, 100))
-            draw.SimpleText("满足", labelFont, portX - labelGap, portTopY + portR, Color(144, 238, 144), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(labelTop, labelFont, portX - labelGap, portTopY + portR, Color(144, 238, 144), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
             -- 不满足分支（下）
             draw.RoundedBox(portR, portX, portBotY, portR * 2, portR * 2, Color(255, 100, 100))
-            draw.SimpleText("不满足", labelFont, portX - labelGap, portBotY + portR, Color(255, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(labelBot, labelFont, portX - labelGap, portBotY + portR, Color(255, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
 
             -- 输出点选中高亮
             if isOutputSelected then
@@ -877,8 +892,14 @@ function INE:DrawConnection(editor, fromNode, toNode, fromPort)
 end
 
 --[[
-    判断节点是否为特殊"回合"节点（等待奇数回合 或 回合结束）
-    即：输出连接线需要渐变效果的回合节点
+    判断节点是否为特殊"回合"节点（输出连接线需要渐变效果的回合节点）
+    渐变条件（2026-08-14 用户规格，与 turn.json 模板结构对应）：
+      - 等待分支 {友方、敌方、任意}'回合'{开始、结束}[]'次'：
+          敌方回合开始（归属=敌方且时相=开始）
+          友方回合结束（归属=友方且时相=结束）
+          任意回合（归属=任意 且 次数为奇数）——仅"任意"需奇数
+      - 使分支 {友方、敌方}{回合结束、跳过回合}：
+          友方跳过回合、友方回合结束（归属=友方，动作任意）
     
     @param  node  {table}   节点实例
     @return {boolean} 是否为特殊回合节点
@@ -910,8 +931,8 @@ function INE:IsSpecialTurnNode(node)
     local val1 = options1[select1]
     
     if val1 == "等待" then
-        -- 动态查找"等待"分支内的number组件ID
-        local numId = nil
+        -- 动态查找"等待"分支内的 select（归属、时相）与 number（次数）组件ID
+        local ownerSelectId, phaseSelectId, numId = nil, nil, nil
         if ifId and parsedConfig.components then
             for _, comp in ipairs(parsedConfig.components) do
                 if comp.type == "if" and comp.branches then
@@ -919,23 +940,37 @@ function INE:IsSpecialTurnNode(node)
                         -- "等待"分支条件为"等待"
                         if branch.condition == "等待" and branch.components then
                             for _, bc in ipairs(branch.components) do
-                                if bc.type == "number" then
+                                if bc.type == "select" then
+                                    if not ownerSelectId then
+                                        ownerSelectId = bc.id
+                                    elseif not phaseSelectId then
+                                        phaseSelectId = bc.id
+                                    end
+                                elseif bc.type == "number" then
                                     numId = bc.id
-                                    break
                                 end
                             end
                         end
-                        if numId then break end
                     end
                 end
-                if numId then break end
             end
         end
+        local ownerVal = data[ownerSelectId] or 1
+        local phaseVal = data[phaseSelectId] or 1
         local numVal = data[numId or "number_1"] or 0
-        return numVal % 2 == 1
+        local optionsOwner = {"友方", "敌方", "任意"}
+        local optionsPhase = {"开始", "结束"}
+        local owner = optionsOwner[ownerVal]
+        local phase = optionsPhase[phaseVal]
+        -- 敌方回合开始 / 友方回合结束：渐变（不要求次数）
+        if owner == "敌方" and phase == "开始" then return true end
+        if owner == "友方" and phase == "结束" then return true end
+        -- 任意回合：仅次数为奇数时渐变
+        if owner == "任意" and numVal % 2 == 1 then return true end
+        return false
     elseif val1 == "使" then
-        -- 动态查找"使"分支内的select组件ID（{回合结束、跳过回合}）
-        local innerSelectId = nil
+        -- 动态查找"使"分支内的两个 select 组件ID：归属 {友方、敌方}、动作 {回合结束、跳过回合}
+        local ownerSelectId, actSelectId = nil, nil
         if ifId and parsedConfig.components then
             for _, comp in ipairs(parsedConfig.components) do
                 if comp.type == "if" and comp.branches then
@@ -944,20 +979,23 @@ function INE:IsSpecialTurnNode(node)
                         if branch.condition == "使" and branch.components then
                             for _, bc in ipairs(branch.components) do
                                 if bc.type == "select" then
-                                    innerSelectId = bc.id
-                                    break
+                                    if not ownerSelectId then
+                                        ownerSelectId = bc.id
+                                    elseif not actSelectId then
+                                        actSelectId = bc.id
+                                    end
                                 end
                             end
                         end
-                        if innerSelectId then break end
                     end
                 end
-                if innerSelectId then break end
             end
         end
-        local select2 = data[innerSelectId or "select_2"] or 1
-        local options2 = {"回合结束", "跳过回合"}
-        return options2[select2] == "回合结束"
+        local ownerVal = data[ownerSelectId] or 1
+        local optionsOwner = {"友方", "敌方"}
+        local owner = optionsOwner[ownerVal]
+        -- 友方跳过回合 / 友方回合结束：渐变（归属=友方，动作任意）
+        return owner == "友方"
     end
     return false
 end

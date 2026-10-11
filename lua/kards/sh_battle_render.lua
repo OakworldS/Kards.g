@@ -48,6 +48,22 @@ KARDS.BattleRender.ActiveAnims = KARDS.BattleRender.ActiveAnims or {}
 -- 演示状态（DemoState.cards = 演示创建的卡牌对象列表）
 KARDS.BattleRender.DemoState = KARDS.BattleRender.DemoState or {}
 
+-- 阵亡卡牌实体延迟销毁时长（秒，2026-09-26 缺口 C）：
+-- 正式版此处会播死亡特效并立即销毁卡牌对象，仅留特效在播放；测试版无特效，
+-- 故按 1 秒延迟销毁，让阵亡在画面上可被观察到。撤退 / 回手 / 洗入等其它离场立即销毁。
+KARDS.BattleRender.FieldDeathRemoveDelay = 1.0
+
+-- 按牌桌清理全部渲染状态（2026-08-18 规划 D8）：牌桌销毁/EntityRemoved 兜底调用，
+-- 阻止 CardEnts 强引用卡牌对象阻止 GC，与 TableID 键随 EntIndex 递增永不回收。
+-- 缺省牌桌 "default"（演示 kards_battle_demo 用）不在清理范围。
+function KARDS.BattleRender:DestroyTable(tableID)
+    if not tableID or tableID == "default" then return end
+    self.TableEnts[tableID] = nil
+    self.CardEnts[tableID] = nil
+    self.ReuseEnts[tableID] = nil
+    self.ActiveAnims[tableID] = nil
+end
+
 -- 模型关键词匹配表（display_name / model_id 包含任一关键词即命中）
 local ModelKeywords = {
     table = { "table", "kards_table", "wooden" },
@@ -190,6 +206,7 @@ function KARDS.BattleRender:SpawnTable(tableID, modelID, scale, pos)
     if not modelID then
         return nil, "非法模型 ID"
     end
+    if not SERVER then return nil, "仅服务端可创建实体（规划 D11 realm 纪律）" end
     local ent = ents.Create("sent_pmx_static_imported")
     if not IsValid(ent) then
         return nil, "创建实体失败（sent_pmx_static_imported）"
@@ -248,6 +265,7 @@ function KARDS.BattleRender:SpawnCard(tableID, card, modelID, scale, pos, ang)
     -- 3D 变换字段（缺省自动补齐 0，与 AnimateCard 行为一致）
     if not card.pos then card.pos = { x = 0, y = 0, z = 0 } end
     if not card.ang then card.ang = { p = 0, y = 0, r = 0 } end
+    if not SERVER then return nil, "仅服务端可创建实体（规划 D11 realm 纪律）" end
     local ent = ents.Create("sent_pmx_static_imported")
     if not IsValid(ent) then
         return nil, "创建实体失败（sent_pmx_static_imported）"
@@ -290,7 +308,18 @@ function KARDS.BattleRender:SpawnCard(tableID, card, modelID, scale, pos, ang)
         ent:SetNWString("Kards_CardDescription", "")
         ent:SetNWBool("Kards_CardIsCommand", (card.GetType and card:GetType()) == "command" or (card.GetType and card:GetType()) == "headquarter")
         ent:SetNWBool("Kards_CardIsHeadquarter", (card.GetType and card:GetType()) == "headquarter")
-        ent:SetNWBool("Kards_CardHasKeywords", (card.GetKeywords and #(card:GetKeywords() or {}) > 0) or false)
+        -- 可见词条计数（次词条如海军不显示、不计入布局，见 KARDS.CardInterface.IsHiddenKeyword）
+        local hasVisibleKw = false
+        if card.GetKeywords then
+            for _, kw in ipairs(card:GetKeywords() or {}) do
+                local kwId = type(kw) == "table" and kw[1] or kw
+                if not (KARDS.CardInterface and KARDS.CardInterface.IsHiddenKeyword and KARDS.CardInterface.IsHiddenKeyword(kwId)) then
+                    hasVisibleKw = true
+                    break
+                end
+            end
+        end
+        ent:SetNWBool("Kards_CardHasKeywords", hasVisibleKw)
         -- 词条显示文本（KARDS.CardEditor.Data.BuildKeywordsText 共享函数构建，sh_card_data.lua 定义；
         -- 客户端 cl_card_text_overlay.lua 以 3D2D 文字绘制词条）
         ent:SetNWString("Kards_CardKeywords",
@@ -378,7 +407,8 @@ end
 
     订阅注册式效果框架的 CardEnter / CardLeave 事件（见 sh_effect_registry.lua）：
       CardEnter  进入战场 → SpawnCard 生成实体并绑定 card → 实体
-      CardLeave  离开战场 → 移除 CardEnts 中该卡绑定实体
+      CardLeave  离开战场 → 摘除 CardEnts 中该卡绑定实体；载荷 reason == "death"
+                 时延迟 FieldDeathRemoveDelay 秒销毁实体，其余立即销毁
     由牌桌在 StartBattle 后调用（BindBattleEvents(tableID)），实现「渲染表生命周期
     集中管理」——战斗系统只负责触发事件，渲染层自取所需。订阅条目随 StartBattle 的
     EffectRegistry.Clear(tableID) 一并清理（同牌桌重复调用幂等，同 ID 覆盖）。
@@ -397,18 +427,22 @@ function KARDS.BattleRender:BindBattleEvents(tableID, spawnOpts)
         if reuse then
             self.ReuseEnts[tableID][card] = nil
             if IsValid(reuse) then
-                reuse:SetNWBool("Kards_IsFieldCard", true)
-                reuse:SetNWInt("Kards_DeckSlot",
-                    (card.GetOwner and card:GetOwner() == "P2") and 2 or 1)
-                local ctype = card.GetType and card:GetType() or ""
-                reuse:SetNWBool("Kards_CardIsCommand",
-                    ctype == "command" or ctype == "headquarter")
-                -- 攻击/防御/花费 NW（未来 overlay AddEntity 用；复用卡当前走 AddLocal，
-                -- 同步无副作用，亦供敌方客户端朝向/属性展示）
-                reuse:SetNWInt("Kards_CardAttack", (card.GetStat and card:GetStat("attack")) or 0)
-                reuse:SetNWInt("Kards_CardDefense", (card.GetStat and card:GetStat("defense")) or 0)
-                reuse:SetNWInt("Kards_CardCost", (card.GetCost and card:GetCost()) or 0)
-                reuse:SetNWInt("Kards_CardActionCost", (card.GetActionCost and card:GetActionCost()) or 0)
+                -- SetNW 仅服务端有效（realm 门控 2026-08-18 规划 D11）；本分支由
+                -- CardEnter 事件驱动（服务端数据层），客户端不会进入
+                if SERVER then
+                    reuse:SetNWBool("Kards_IsFieldCard", true)
+                    reuse:SetNWInt("Kards_DeckSlot",
+                        (card.GetOwner and card:GetOwner() == "P2") and 2 or 1)
+                    local ctype = card.GetType and card:GetType() or ""
+                    reuse:SetNWBool("Kards_CardIsCommand",
+                        ctype == "command" or ctype == "headquarter")
+                    -- 攻击/防御/花费 NW（未来 overlay AddEntity 用；复用卡当前走 AddLocal，
+                    -- 同步无副作用，亦供敌方客户端朝向/属性展示）
+                    reuse:SetNWInt("Kards_CardAttack", (card.GetStat and card:GetStat("attack")) or 0)
+                    reuse:SetNWInt("Kards_CardDefense", (card.GetStat and card:GetStat("defense")) or 0)
+                    reuse:SetNWInt("Kards_CardCost", (card.GetCost and card:GetCost()) or 0)
+                    reuse:SetNWInt("Kards_CardActionCost", (card.GetActionCost and card:GetActionCost()) or 0)
+                end
             end
             return
         end
@@ -418,18 +452,31 @@ function KARDS.BattleRender:BindBattleEvents(tableID, spawnOpts)
             spawnOpts and spawnOpts.modelID, spawnOpts and spawnOpts.scale,
             spawnOpts and spawnOpts.pos, spawnOpts and spawnOpts.ang)
     end
-    local function removeCard(card)
+    -- 离场移除（2026-09-26 缺口 C）：载荷携带 reason（SimRemoveFromField 传 "death"
+    -- / "remove"，SimRetreat 传 "retreat"，SimReturnToHand 传 "return_to_hand"）。
+    -- 阵亡走延迟销毁（测试版无死亡特效，延 1 秒便于观察）；其余立即销毁。
+    -- 无论哪条路径都先摘除 CardEnts 映射：延迟闭包持有旧实体引用，若同卡在这 1 秒内
+    -- 重新入场并新建实体，旧实体的延迟销毁不会误伤新实体。
+    local function removeCard(payload)
+        local card = (type(payload) == "table") and payload.card or payload
+        local reason = (type(payload) == "table") and payload.reason or nil
         local ents = self.CardEnts[tableID]
         local ent = ents and ents[card]
-        if IsValid(ent) then
+        if ents then ents[card] = nil end
+        if not IsValid(ent) then return end
+        if reason == "death" then
+            local delay = self.FieldDeathRemoveDelay
+            timer.Simple(delay, function()
+                if IsValid(ent) then ent:Remove() end
+            end)
+        else
             ent:Remove()
-            ents[card] = nil
         end
     end
     KARDS.EffectRegistry.Register(tableID, KARDS.EffectRegistry.EVENTS.CardEnter,
         "render_card_enter", { handler = function(payload) spawnCard(payload.card) end })
     KARDS.EffectRegistry.Register(tableID, KARDS.EffectRegistry.EVENTS.CardLeave,
-        "render_card_leave", { handler = function(payload) removeCard(payload.card) end })
+        "render_card_leave", { handler = function(payload) removeCard(payload) end })
 end
 
 --[[
@@ -575,6 +622,8 @@ end
 
 -- 每帧驱动：活跃动画采样（ApplyNow 写回 card.pos/ang）→ 同步卡牌实体变换
 hook.Add("Think", "kards_battle_render_drive", function()
+    if not SERVER then return end -- realm 门控（2026-08-18 规划 D11）：实体创建/SetPos/SetAngles
+    -- 为服务端权威，客户端 CardEnts/ActiveAnims 均为空表（无本地注册），跳过整个钩子
     local BR = KARDS.BattleRender
     -- 1. 驱动活跃动画（真实时间模式下 ApplyNow 按秒渐变，写回 card.pos/ang；
     --    ActiveAnims 按 tableID 分表，遍历全部牌桌的动画）

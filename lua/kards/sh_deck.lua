@@ -194,6 +194,24 @@ function KARDS.Deck:InsertRandom(tableID, player, card)
 end
 
 --[[
+    将卡牌放到卡组顶（数组末项 = 牌堆顶，见本文件 GetDeck 约定，2026-10-04）
+
+    用于「返回卡组顶」动作（亡计：返回卡组顶并使其算作海军）。仅负责入堆顶，
+    来源区（手牌/战场）的移出由调用方（战斗骨架或节点动作）先行处理。
+
+    @param tableID string 牌桌唯一标识符
+    @param player  string 玩家标识
+    @param card    table  卡牌句柄
+    @return boolean 是否成功（牌桌/卡组不存在返回 false）
+]]
+function KARDS.Deck:PutOnTop(tableID, player, card)
+    local deck = self:GetDeck(tableID, player)
+    if not deck then return false end
+    table.insert(deck, card) -- 末项 = 堆顶
+    return true
+end
+
+--[[
     抽牌：从牌堆顶（数组第一项）依次取 count 张加入手牌；
     抽牌时卡组已空 → 士气伤害（第一次 1，第二次 2，以此类推，计数按玩家递增）；
     手牌已达上限（MAX_HAND=9）→ 爆牌：抽到的牌不进手牌（手牌无法增加），

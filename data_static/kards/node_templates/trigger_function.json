@@ -1,0 +1,15 @@
+{
+    "type": "trigger_function",
+    "color": [140, 80, 200],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "触发函数",
+        "en": "Trigger Function"
+    },
+    "configs": {
+        "zh-CN": "e{触发一次、保持触发、停止保持触发、拦截一次、保持拦截}if 拦截一次 then'，拦截'{打出指令、激活反制、部署单位、移动、攻击、撤退、交战、战斗、抽取、弃牌、召唤、控制、伤害、属性变更、移除、返回手牌}end if 保持拦截 then'，拦截'{打出指令、激活反制、部署单位、移动、攻击、撤退、交战、战斗、抽取、弃牌、召唤、控制、伤害、属性变更、移除、返回手牌}end # '到' {$} '，效果图标' {主动效果、被动效果、无、@combat_keywords} (e目标、t效果图标类型)",
+        "en": "e{Trigger Once、Keep Triggering、Stop Trigger、Intercept Once、Keep Intercepting}if Intercept Once then', Intercept '{Play Command、Activate Counter、Deploy Unit、Move、Attack、Retreat、Engage、Fight、Draw、Discard、Summon、Control、Damage、Stat Change、Remove、Return To Hand}end if Keep Intercepting then', Intercept '{Play Command、Activate Counter、Deploy Unit、Move、Attack、Retreat、Engage、Fight、Draw、Discard、Summon、Control、Damage、Stat Change、Remove、Return To Hand}end # 'To' {$} ', Effect Icon' {Active Effect、Passive Effect、None、@combat_keywords} (eTarget、tEffectIconType)"
+    },
+    "base": "e{5}if 4 then{16}end if 5 then{16}end#{1}{1}(e目标、t效果图标类型)"
+}

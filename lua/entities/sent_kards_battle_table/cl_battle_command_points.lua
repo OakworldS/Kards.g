@@ -22,7 +22,9 @@
 KARDS = KARDS or {}
 
 -- ====================================================================
--- 指挥点 HUD 面板（2026-08-10）：对战开始后左下角（友方）/左上角（敌方）常驻，2026-08-11 起均向屏幕 y 中线平移 CP_MID_SHIFT。
+-- 指挥点 HUD 面板（2026-08-10）：对战开始后左下角（友方）/左上角（敌方）常驻；
+-- 2026-10-10 起自角落玩家头像向屏幕 y 中线让位（角落原位置改为玩家头像，见
+-- cl_battle_player_panel.lua）。
 --   面板结构：非软边正方形底（#101010 填充 + #B9B7AD 描边），左半点数大文字
 --   （#CC8027），右半分数——分割线上方 K（#CC8027）、下方槽数（#7D7D7D）。
 --   动画（点数或槽数变化触发）：数字平滑滚动（十位数缩小字体）+ 矩形描边颜色
@@ -46,7 +48,9 @@ local CP_FILL        = Color(16, 16, 16)     -- #101010 底填充
 local CP_NUM_COLOR   = Color(204, 128, 39)   -- #CC8027 点数 / K 文字
 local CP_SLOT_COLOR  = Color(125, 125, 125)  -- #7D7D7D 槽数文字与分割线
 local CP_W, CP_H = 50, 50                    -- 面板尺寸（px，正方形底；面积=150×150 的 1/3）
-local CP_PAD, CP_MID_SHIFT = 40, 40          -- 距屏幕边缘内边距（px）/ 向 y 中线平移距离（px，2026-08-11，可调）
+local CP_PAD = 40                            -- 距屏幕边缘内边距（px）
+local CP_AVATAR = 50                         -- 角落玩家头像边长（px，与指挥点面板同尺寸，2026-10-10）
+local CP_AVATAR_GAP = 10                     -- 头像与指挥点面板之间的间距（px，2026-10-10）
 local CP_SCROLL_DUR = 0.3                    -- 数字滚动时长（秒，点数滚动固定）
 -- 槽数滚动时长按变动值线性增长（变动值越大时长越久，2026-08-10）：基准 + 每单位
 -- 变动额外时长，封顶防过大；曲线 easeInCubic（先慢后快，与点数 easeOutCubic 相对）
@@ -61,8 +65,9 @@ local CP_BORDER_OUT_DUR = 0.3                -- 描边淡出（滚动结束后�
 
 -- 指挥点面板工具函数（HUDPaint 绘制 / Think 推进共用）：
 
--- 颜色线性插值（t 0..1）
-local function CPLerp(t, a, b)
+-- 颜色线性插值（t 0..1；共享工具挂 KARDS 命名空间，收敛 cl_card_text_overlay.lua
+-- 同实现 LerpColors，阶段五 P1）
+function KARDS.ColorLerp(t, a, b)
     return Color(
         math.floor(a.r + (b.r - a.r) * t),
         math.floor(a.g + (b.g - a.g) * t),
@@ -80,14 +85,27 @@ local function CPSlotsFont(v)
     return v >= 10 and "SourceHan_Heavy_24" or "SourceHan_Heavy_28"
 end
 
--- 面板矩形：数据槽位 slot（1/2）→ 屏幕位置（友方 = 左下角向中线平移，敌方 = 左上角向中线平移）。
+-- 角落玩家头像边长（供 cl_battle_player_panel.lua 创建头像面板，2026-10-10）
+KARDS.CPAvatarSize = CP_AVATAR
+
+-- 角落玩家头像矩形：数据槽位 slot（1/2）→ 屏幕位置（友方 = 左下角，敌方 = 左上角）。
+-- 原为指挥点面板所在位置，2026-10-10 面板上移让位后由玩家头像占用；绘制见
+-- cl_battle_player_panel.lua。仅在 HUDPaint 内计算（ScrH() 此时有效）。
+function KARDS.CPAvatarRect(slot)
+    local y = (slot == KARDS.BattleState.inTable.slot)
+        and (ScrH() - CP_PAD - CP_AVATAR)  -- 友方：左下角
+        or  CP_PAD                         -- 敌方：左上角
+    return { x = CP_PAD, y = y, w = CP_AVATAR, h = CP_AVATAR }
+end
+
+-- 面板矩形：自角落头像向屏幕 y 中线让位（友方在头像上方，敌方在头像下方，2026-10-10）。
 -- 仅在 HUDPaint 内计算（ScrH() 此时有效；Think 不依赖矩形坐标）。
 local function CPPanelRect(slot)
-    local x = CP_PAD
+    local av = KARDS.CPAvatarRect(slot)
     local y = (slot == KARDS.BattleState.inTable.slot)
-        and (ScrH() - CP_PAD - CP_H - CP_MID_SHIFT) -- 友方：底部上移（向中线）
-        or  (CP_PAD + CP_MID_SHIFT)                 -- 敌方：顶部下移（向中线）
-    return { x = x, y = y, w = CP_W, h = CP_H }
+        and (av.y - CP_AVATAR_GAP - CP_H)          -- 友方：头像上方（向中线）
+        or  (av.y + CP_AVATAR + CP_AVATAR_GAP)     -- 敌方：头像下方（向中线）
+    return { x = CP_PAD, y = y, w = CP_W, h = CP_H }
 end
 
 -- 指挥点复位（退出牌桌 / 新对局 reset 块调用，原 cl_init.lua reset 块中
@@ -140,6 +158,88 @@ end)
 --   基准（新滚动 from 的起点），视觉中间帧由绘制端数字带实时计算。
 --   绘制见 KardsCommandPointsHUD（HUDPaint）。仅对局内推进；离开对局清空防残留。
 -- ====================================================================
+-- 推进单个槽位的滚动/描边动画（KardsCommandPointsHUDThink per-slot 主体，
+-- 阶段五 P1 提级：Think 精简为守卫 + 双槽循环分发）
+local function AdvanceCPSlot(slot, now)
+    -- 1. 变化检测（显示目标 = 进行中滚动 target，无滚动则当前显示值）
+    local anim = cpScroll[slot]
+    local curPointsTarget = (anim and anim.points and anim.points.target) or displayCP[slot]
+    local curSlotsTarget = (anim and anim.slots and anim.slots.target) or displayCS[slot]
+    local changed = false
+    if KARDS.BattleState.commandPoints[slot] ~= curPointsTarget then
+        if not anim then anim = {} end
+        anim.points = { from = displayCP[slot], target = KARDS.BattleState.commandPoints[slot], start = now, dur = CP_SCROLL_DUR }
+        changed = true
+    end
+    if commandSlots[slot] ~= curSlotsTarget then
+        if not anim then anim = {} end
+        -- 槽数滚动时长按变动值确定（CPSlotsDur：变动值越大时长越久）
+        anim.slots = { from = displayCS[slot], target = commandSlots[slot], start = now,
+            dur = CPSlotsDur(math.abs(commandSlots[slot] - displayCS[slot])) }
+        changed = true
+    end
+    if anim then cpScroll[slot] = anim end
+
+    -- 2. 变化触发描边淡入（该槽尚无描边动画时）
+    if changed and not cpBorder[slot] then
+        cpBorder[slot] = { phase = "in", from = CP_BORDER_IDLE, to = CP_BORDER_HOT,
+            start = now, dur = CP_BORDER_IN_DUR, cur = CP_BORDER_IDLE }
+    end
+
+    -- 3. 滚动推进（点数 / 槽数各自独立；结束定格目标值并移除）
+    local ap = anim and anim.points
+    if ap then
+        local t = (now - ap.start) / ap.dur
+        if t >= 1 then
+            displayCP[slot] = ap.target
+            anim.points = nil
+        else
+            local e = t ^ 3 -- 慢后快（与绘制卷帘 easeInCubic 一致，2026-08-11）
+            displayCP[slot] = ap.from + (ap.target - ap.from) * e
+        end
+    end
+    local as = anim and anim.slots
+    if as then
+        local t = (now - as.start) / as.dur
+        if t >= 1 then
+            displayCS[slot] = as.target
+            anim.slots = nil
+        else
+            local e = t ^ 3 -- easeInCubic（先慢后快，2026-08-10 槽数滚动）
+            displayCS[slot] = as.from + (as.target - as.from) * e
+        end
+    end
+    -- 无进行中滚动：移除空动画表
+    if anim and not anim.points and not anim.slots then
+        cpScroll[slot] = nil
+    end
+
+    -- 4. 描边推进：淡入完成定格高亮色；点数与槽数滚动全部结束 → 淡出回默认色
+    local bd = cpBorder[slot]
+    if bd then
+        local t = (now - bd.start) / bd.dur
+        if t >= 1 then
+            bd.cur = bd.to
+            if bd.phase == "out" then
+                cpBorder[slot] = nil -- 淡出完成：恢复默认描边
+            else
+                bd.phase = "hold" -- 淡入完成：停留高亮，等待滚动全部结束
+            end
+        else
+            bd.cur = KARDS.ColorLerp(t, bd.from, bd.to)
+        end
+        if bd.phase ~= "out" and not cpScroll[slot] then
+            bd.phase = "out"
+            bd.from = bd.cur
+            bd.to = CP_BORDER_IDLE
+            bd.start = now
+            bd.dur = CP_BORDER_OUT_DUR
+        end
+    end
+end
+
+-- 指挥点 HUD 面板动画驱动（2026-08-10，Think）：推进数字滚动与矩形描边颜色动画。
+--   （机制说明见上方注释，per-slot 推进逻辑在 AdvanceCPSlot）仅对局内推进；离开对局清空防残留。
 hook.Add("Think", "KardsCommandPointsHUDThink", function()
     if not KARDS.BattleState.inTable or not KARDS.BattleState.battleStarted then
         cpScroll, cpBorder = {}, {}
@@ -147,86 +247,13 @@ hook.Add("Think", "KardsCommandPointsHUDThink", function()
     end
     local now = CurTime()
     for slot = 1, 2 do
-        -- 1. 变化检测（显示目标 = 进行中滚动 target，无滚动则当前显示值）
-        local anim = cpScroll[slot]
-        local curPointsTarget = (anim and anim.points and anim.points.target) or displayCP[slot]
-        local curSlotsTarget = (anim and anim.slots and anim.slots.target) or displayCS[slot]
-        local changed = false
-        if KARDS.BattleState.commandPoints[slot] ~= curPointsTarget then
-            if not anim then anim = {} end
-            anim.points = { from = displayCP[slot], target = KARDS.BattleState.commandPoints[slot], start = now, dur = CP_SCROLL_DUR }
-            changed = true
-        end
-        if commandSlots[slot] ~= curSlotsTarget then
-            if not anim then anim = {} end
-            -- 槽数滚动时长按变动值确定（CPSlotsDur：变动值越大时长越久）
-            anim.slots = { from = displayCS[slot], target = commandSlots[slot], start = now,
-                dur = CPSlotsDur(math.abs(commandSlots[slot] - displayCS[slot])) }
-            changed = true
-        end
-        if anim then cpScroll[slot] = anim end
-
-        -- 2. 变化触发描边淡入（该槽尚无描边动画时）
-        if changed and not cpBorder[slot] then
-            cpBorder[slot] = { phase = "in", from = CP_BORDER_IDLE, to = CP_BORDER_HOT,
-                start = now, dur = CP_BORDER_IN_DUR, cur = CP_BORDER_IDLE }
-        end
-
-        -- 3. 滚动推进（点数 / 槽数各自独立；结束定格目标值并移除）
-        local ap = anim and anim.points
-        if ap then
-            local t = (now - ap.start) / ap.dur
-            if t >= 1 then
-                displayCP[slot] = ap.target
-                anim.points = nil
-            else
-                local e = t ^ 3 -- 慢后快（与绘制卷帘 easeInCubic 一致，2026-08-11）
-                displayCP[slot] = ap.from + (ap.target - ap.from) * e
-            end
-        end
-        local as = anim and anim.slots
-        if as then
-            local t = (now - as.start) / as.dur
-            if t >= 1 then
-                displayCS[slot] = as.target
-                anim.slots = nil
-            else
-                local e = t ^ 3 -- easeInCubic（先慢后快，2026-08-10 槽数滚动）
-                displayCS[slot] = as.from + (as.target - as.from) * e
-            end
-        end
-        -- 无进行中滚动：移除空动画表
-        if anim and not anim.points and not anim.slots then
-            cpScroll[slot] = nil
-        end
-
-        -- 4. 描边推进：淡入完成定格高亮色；点数与槽数滚动全部结束 → 淡出回默认色
-        local bd = cpBorder[slot]
-        if bd then
-            local t = (now - bd.start) / bd.dur
-            if t >= 1 then
-                bd.cur = bd.to
-                if bd.phase == "out" then
-                    cpBorder[slot] = nil -- 淡出完成：恢复默认描边
-                else
-                    bd.phase = "hold" -- 淡入完成：停留高亮，等待滚动全部结束
-                end
-            else
-                bd.cur = CPLerp(t, bd.from, bd.to)
-            end
-            if bd.phase ~= "out" and not cpScroll[slot] then
-                bd.phase = "out"
-                bd.from = bd.cur
-                bd.to = CP_BORDER_IDLE
-                bd.start = now
-                bd.dur = CP_BORDER_OUT_DUR
-            end
-        end
+        AdvanceCPSlot(slot, now)
     end
 end)
 
 -- ====================================================================
--- 指挥点 HUD 面板绘制（2026-08-10，HUDPaint）：左下角友方 / 左上角敌方（均向 y 中线平移）。
+-- 指挥点 HUD 面板绘制（2026-08-10，HUDPaint）：左下角友方 / 左上角敌方（自角落
+--   玩家头像向 y 中线让位，2026-10-10）。
 --   非软边正方形底：#101010 填充 + #B9B7AD 描边（指挥点/槽数变化时描边渐变为
 --   #CC8027，滚动结束后淡出恢复，见 KardsCommandPointsHUDThink）；
 --   左半点数大文字（#CC8027，十位数缩小字体）；右半分数——分割线上方

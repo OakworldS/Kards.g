@@ -167,10 +167,23 @@ local TriggerActs = {
         local modifier = (op == 2) and "increase" or (op == 3) and "decrease" or "set"
         local ok = false
         for _, t in ipairs(targets) do
-            if t and KARDS.NodeParser.SetCardField(t, "attack", amount, modifier) then
-                local change = (op == 2) and ("+" .. amount) or (op == 3) and ("-" .. amount) or ("=" .. amount)
-                KARDS.NodeParser.PushStatChange(ctx, t, change)
-                ok = true
+            if t then
+                local old = t:GetStat("attack") or 0
+                if KARDS.NodeParser.SetCardField(t, "attack", amount, modifier) then
+                    local change = (op == 2) and ("+" .. amount) or (op == 3) and ("-" .. amount) or ("=" .. amount)
+                    KARDS.NodeParser.PushStatChange(ctx, t, change)
+                    -- 2026-08-12（t4 3D2D 数值同步）：SetCardField 直接改数据层属性，
+                    -- 不经 SimDealDamage/SimFight → 按桌触发回调刷新战场实体 NW
+                    -- （牌桌实体注册，见 table_battledeck.lua OnBattleStatsChanged）
+                    KARDS.Battle:NotifyStatsChangedByTable(ctx.tableID, t)
+                    -- 2026-08-13（stat_change.ogg 播放时机）：属性与伤害节点「攻击」分支 →
+                    -- 触发属性变化音效（客户端播 stat_change.ogg，见 sh_battle_combat.lua
+                    -- NotifyStatSound / table_battledeck.lua BroadcastStatChangeSound）
+                    KARDS.Battle:NotifyStatSound(ctx.tableID)
+                    -- 飘字（2026-08-14）：节点「攻击」分支 → 设为/减少白色、增加绿色
+                    KARDS.Battle:NotifyStatFXByTable(ctx.tableID, t, "attack", (t:GetStat("attack") or 0) - old, modifier, "node")
+                    ok = true
+                end
             end
         end
         local outAttack, outDefense = TriggerStatOutNames(node, "攻击力", "防御力")
@@ -192,9 +205,18 @@ local TriggerActs = {
                 ok = true
             else
                 local modifier = (op == 3) and "increase" or (op == 4) and "decrease" or "set"
+                local old = t:GetStat("defense") or 0
                 if KARDS.NodeParser.SetCardField(t, "defense", amount, modifier) then
                     local change = (op == 3) and ("+" .. amount) or (op == 4) and ("-" .. amount) or ("=" .. amount)
                     KARDS.NodeParser.PushStatChange(ctx, t, change)
+                    -- 2026-08-12（t4 3D2D 数值同步）：同 modifyAttack，SetCardField 直接改
+                    -- 数据层属性 → 按桌触发回调刷新战场实体 NW
+                    KARDS.Battle:NotifyStatsChangedByTable(ctx.tableID, t)
+                    -- 2026-08-13（stat_change.ogg 播放时机）：属性与伤害节点「防御」分支
+                    -- （非「受到」）→ 触发属性变化音效；「受到」走 SimDealDamage 不触发
+                    KARDS.Battle:NotifyStatSound(ctx.tableID)
+                    -- 飘字（2026-08-14）：节点「防御」分支（非「受到」）→ 设为/减少白色、增加绿色
+                    KARDS.Battle:NotifyStatFXByTable(ctx.tableID, t, "defense", (t:GetStat("defense") or 0) - old, modifier, "node")
                     ok = true
                 end
             end

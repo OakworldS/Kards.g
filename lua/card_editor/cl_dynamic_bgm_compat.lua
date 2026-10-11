@@ -16,7 +16,6 @@ Compat.OriginalIdleMaxVolume = nil
 Compat.OriginalCombatMaxVolume = nil
 Compat.OriginalMasterVolume = nil
 Compat.IsFadedOut = false
-Compat.FadeStartTime = 0
 Compat.FadeDuration = 1.5
 
 -- Editor track state
@@ -26,6 +25,65 @@ Compat.EditorTrackChannel = nil
 Compat.CurrentTrackIndex = 0 -- 用于循环播放的索引
 Compat.CurrentTrackName = nil -- 当前播放曲目的音乐名（文件名 <序号>.<音乐名>.ogg 解析，纯数字文件名为 nil）
 Compat.TrackLoading = false -- sound.PlayFile 正在异步加载/等待回调中，Think 不应抢跑切歌
+
+-- 平滑缓动（提示出入场透明度 GetBGMMessageAlpha 与悬停简介淡入淡出共用，2026-08-15 编辑器重构 7.5-4）
+local function BGMHoverSmoothstep(t)
+    t = math.Clamp(t, 0, 1)
+    return t * t * (3 - 2 * t)
+end
+
+-- ===== BGM 播放模式（右键曲目列表顶部"模式"按键，2026-08-14） =====
+-- random 随机选择（当前风格内随机）/ random_all 跨列表随机选择（所有风格随机）
+-- loop 循环列表（当前风格内顺序循环）/ loop_all 跨列表循环（所有风格顺序循环）/ single 单曲循环（循环当前曲目）
+-- 玩家选择的模式持久记忆：garrysmod/data/kards_bgm_playmode.txt
+local PlayModeFile = "kards_bgm_playmode.txt"
+Compat.PlayMode = "random"
+Compat.PlayModeOrder = { "random", "random_all", "loop", "loop_all", "single" }
+Compat.PlayModeNames = {
+    random = "随机选择",
+    random_all = "跨列表随机选择",
+    loop = "循环列表",
+    loop_all = "跨列表循环",
+    single = "单曲循环"
+}
+
+-- 载入持久记忆的播放模式（仅在模式合法时采用）；顶层调用一次（2026-08-15 编辑器重构 7.5-4）
+local function InitPlayMode()
+    local savedMode = file.Read(PlayModeFile, "DATA")
+    if savedMode then
+        savedMode = string.Trim(savedMode)
+        if Compat.PlayModeNames[savedMode] then
+            Compat.PlayMode = savedMode
+        end
+    end
+end
+InitPlayMode()
+
+-- 设置播放模式并持久记忆（无效模式忽略并返回 false）
+function Compat.SetPlayMode(mode)
+    if not Compat.PlayModeNames[mode] then return false end
+    if Compat.PlayMode ~= mode then
+        Compat.PlayMode = mode
+        file.Write(PlayModeFile, mode)
+    end
+    return true
+end
+
+-- 循环到下一个播放模式（"模式"按键点击用），返回新模式
+function Compat.CyclePlayMode()
+    local order = Compat.PlayModeOrder
+    local currentIdx = 1
+    for i, m in ipairs(order) do
+        if m == Compat.PlayMode then currentIdx = i break end
+    end
+    Compat.SetPlayMode(order[(currentIdx % #order) + 1])
+    return Compat.PlayMode
+end
+
+-- 当前播放模式的中文显示名
+function Compat.GetPlayModeName()
+    return Compat.PlayModeNames[Compat.PlayMode] or Compat.PlayMode
+end
 
 -- Country music configurations
 -- tracks 由 RefreshCountryTracks() 自动扫描 sound/editor/ 目录填充：
@@ -79,6 +137,15 @@ Compat.CountryMusic = {
     }
 }
 
+-- 确保国家条目存在（RefreshCountryTracks / RegisterCountry / RegisterTrack 共用缺省创建，2026-08-15 编辑器重构 7.5-4）
+-- color 仅在新建时应用（已存在条目不覆盖）；返回条目
+local function EnsureCountryEntry(countryId, color)
+    if not Compat.CountryMusic[countryId] then
+        Compat.CountryMusic[countryId] = { tracks = {}, color = color or nil }
+    end
+    return Compat.CountryMusic[countryId]
+end
+
 -- 扫描 sound/editor/ 目录，按 国家文件夹/<序号>.<音乐名>.ogg 结构自动登记背景音乐
 -- 每个子文件夹名即国家 id；文件名解析：<数字序号>.<音乐名>.ogg（如 1.La Parisienne.ogg）
 -- 序号用于排序/循环定位，音乐名用于提示展示；纯数字 <数字>.ogg 亦兼容（音乐名为 nil）
@@ -106,9 +173,7 @@ function Compat.RefreshCountryTracks()
         end
         table.sort(tracks, function(a, b) return a.n < b.n end)
 
-        if not Compat.CountryMusic[folder] then
-            Compat.CountryMusic[folder] = { tracks = {}, color = nil }
-        end
+        EnsureCountryEntry(folder)
         -- tracks 保存结构数组 { n, path, name }；保留该国家已注册的外部曲目（registered 标记），
         -- 避免外部模组注册的曲目被目录扫描重建清除
         local existingTracks = Compat.CountryMusic[folder].tracks
@@ -219,12 +284,12 @@ function Compat.GetBGMMessageAlpha(m, age)
     local alpha = 0
     if age < m.enterDur and m.enterDur > 0 then
         local t = math.min(age / m.enterDur, 1)
-        alpha = m.maxAlpha * t * t * (3 - 2 * t)
+        alpha = m.maxAlpha * BGMHoverSmoothstep(t)
     elseif age < m.enterDur + m.holdDur then
         alpha = m.maxAlpha
     elseif m.exitDur > 0 then
         local t = math.min((age - m.enterDur - m.holdDur) / m.exitDur, 1)
-        alpha = m.maxAlpha * (1 - t * t * (3 - 2 * t))
+        alpha = m.maxAlpha * (1 - BGMHoverSmoothstep(t))
     end
     if m.flash then
         -- 2Hz 渐变闪烁：alpha 在 0~max 之间正弦起伏
@@ -246,6 +311,15 @@ function Compat.DrawBGMMessages()
     local spacing = 8
     local marginX = 24
     local bottomMargin = 20
+    local rightX = win.x + win.width - marginX
+    local baseY = win.y + win.height - bottomMargin
+
+    -- 歌词独立槽（与提示并存）：固定占最底部一行，提示堆叠在其上方（歌词见文末同步/解析）
+    local lyricText, lyricAlpha = Compat.GetLyricDisplay()
+    local lyricVisible = lyricText and lyricText ~= "" and lyricAlpha > 0
+    if lyricVisible then
+        draw.SimpleText(lyricText, font, rightX, baseY, Color(255, 255, 255, lyricAlpha), TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
+    end
 
     -- 过滤过期（含 play 立即消失）
     local valid = {}
@@ -261,8 +335,8 @@ function Compat.DrawBGMMessages()
     -- 排序：旧的在上方，新的在底部
     table.sort(valid, function(a, b) return a.createdAt < b.createdAt end)
 
-    -- 目标位置：自底向上堆叠（右下角）
-    local cursorY = win.y + win.height - bottomMargin
+    -- 目标位置：自底向上堆叠（右下角）；歌词占位时提示整体上移一行
+    local cursorY = baseY - (lyricVisible and (lineH + spacing) or 0)
     for i, m in ipairs(valid) do
         m.targetY = cursorY
         cursorY = cursorY - lineH - spacing
@@ -280,13 +354,98 @@ function Compat.DrawBGMMessages()
         end
     end
 
-    -- 绘制（右对齐，文本底边在 currentY）
-    local rightX = win.x + win.width - marginX
+    -- 绘制（右对齐，文本底边在 currentY；rightX 见函数开头）
     for i, m in ipairs(valid) do
         local age = now - m.createdAt
         local alpha = Compat.GetBGMMessageAlpha(m, age)
         draw.SimpleText(m.fullText, font, rightX, m.currentY, Color(m.color.r, m.color.g, m.color.b, alpha), TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
     end
+end
+
+-- ===== BGM 歌词（编辑器窗口右下角独立槽，2026-10-05）=====
+-- 数据源：data_static/kards/bgm_lyrics/<国家>/<序号>.<音乐名>.txt（LRC 原文），与音频
+-- sound/editor/<国家>/<序号>.<音乐名>.ogg 路径镜像。gmad 只放行 data_static/ 下的 .json/.txt
+-- （.lrc 会被白名单拒绝并导致整包失败），故歌词以 .txt 承载 LRC 文本。
+-- 时间轴：播放位置取 Compat.EditorTrackChannel:GetTime()（秒），在 Think 中逐帧比对时间戳，
+-- 不依赖 SysTime 累加，天然跟随暂停与切歌。
+Compat.LyricLines = nil -- 解析后的行数组 { { t = 秒, text = 行文本 }, ... }（按 t 升序）
+Compat.LyricIndex = 0 -- 当前应显示的行号（0 = 未到第一行）
+Compat.LyricChangeTime = nil -- 当前行切换时刻（SysTime），用于淡入
+Compat.LyricFadeIn = 0.4 -- 行切换淡入时长（秒）
+Compat.LyricMaxAlpha = 220 -- 歌词最大透明度
+
+-- 解析 LRC 文本：支持 [mm:ss.xx]/[mm:ss.xxx]/[mm:ss] 时间戳、一行多时间戳、
+-- 元数据标签（ti/ar/al/by/offset 等非时间标签忽略）
+function Compat.ParseLRC(content)
+    local lines = {}
+    for rawLine in string.gmatch(content, "[^\r\n]+") do
+        local stamps = {}
+        local rest = rawLine
+        while true do
+            local tag, after = string.match(rest, "^%[([^%]]*)%](.*)$")
+            if not tag then break end
+            rest = after
+            local mm, ss = string.match(tag, "^(%d+):(%d+%.?%d*)$")
+            if mm and ss then
+                stamps[#stamps + 1] = tonumber(mm) * 60 + tonumber(ss)
+            end
+        end
+        local text = string.Trim(rest)
+        for _, t in ipairs(stamps) do
+            lines[#lines + 1] = { t = t, text = text }
+        end
+    end
+    table.sort(lines, function(a, b) return a.t < b.t end)
+    return lines
+end
+
+-- 按当前曲目路径加载歌词：sound/editor/<国家>/<file>.ogg → data_static/kards/bgm_lyrics/<国家>/<file>.txt
+-- 无对应文件或解析为空则视为无歌词（外部注册曲目通常无歌词）
+function Compat.LoadLyricForTrack(trackPath)
+    Compat.LyricLines = nil
+    Compat.LyricIndex = 0
+    Compat.LyricChangeTime = nil
+    if not trackPath then return end
+    local rel = trackPath:match("^sound/editor/(.+)$")
+    if not rel then return end
+    rel = rel:gsub("%.ogg$", "")
+    local content = file.Read("data_static/kards/bgm_lyrics/" .. rel .. ".txt", "GAME")
+    if not content then return end
+    local lines = Compat.ParseLRC(content)
+    if #lines > 0 then
+        Compat.LyricLines = lines
+    end
+end
+
+-- 歌词行推进（Think 每帧）：按播放位置定位最后一条已到达的时间戳
+function Compat.UpdateLyric()
+    local lines = Compat.LyricLines
+    if not lines or #lines == 0 then return end
+    local ch = Compat.EditorTrackChannel
+    if not IsValid(ch) then return end
+    if not ch.GetTime then return end -- 通道无 GetTime（异常实现）时跳过，避免逐帧报错
+    local t = ch:GetTime()
+    if not t then return end
+    local idx = 0
+    for i = 1, #lines do
+        if lines[i].t <= t then idx = i else break end
+    end
+    if idx ~= Compat.LyricIndex then
+        Compat.LyricIndex = idx
+        Compat.LyricChangeTime = SysTime()
+    end
+end
+
+-- 当前歌词行的显示文本与透明度（空行=间奏不显示；行切换淡入）
+function Compat.GetLyricDisplay()
+    local lines = Compat.LyricLines
+    local idx = Compat.LyricIndex
+    if not lines or not idx or idx < 1 then return nil, 0 end
+    local line = lines[idx]
+    if not line or line.text == "" then return nil, 0 end
+    local age = SysTime() - (Compat.LyricChangeTime or 0)
+    local alpha = Compat.LyricMaxAlpha * BGMHoverSmoothstep(math.Clamp(age / Compat.LyricFadeIn, 0, 1))
+    return line.text, math.floor(alpha + 0.5)
 end
 
 -- ===== 国家按钮悬停简介（常驻5国按钮行左侧空白区：风格名称："简介源文本"）=====
@@ -301,34 +460,8 @@ Compat.BGMHoverEnterCharFade = 0.15 -- 每字符自身淡入时长（秒）
 Compat.BGMHoverExitDur = 0.3 -- 出场集体淡出时长（秒）
 Compat.BGMHoverMaxWidth = 560 -- 文本最大宽度，超出按字符截断
 
--- 平滑缓动（入场/出场透明度用）
-local function BGMHoverSmoothstep(t)
-    t = math.Clamp(t, 0, 1)
-    return t * t * (3 - 2 * t)
-end
-
--- UTF-8 安全逐字符拆分（兼容中英文混排；一个汉字占 3 字节需按字节数判断）
-local function BGMHoverSplitChars(text)
-    local chars = {}
-    local len = #text
-    local i = 1
-    while i <= len do
-        local b = text:byte(i)
-        local n = 1
-        if b < 0x80 then
-            n = 1
-        elseif b < 0xE0 then
-            n = 2
-        elseif b < 0xF0 then
-            n = 3
-        elseif b < 0xF8 then
-            n = 4
-        end
-        chars[#chars + 1] = text:sub(i, i + n - 1)
-        i = i + n
-    end
-    return chars
-end
+-- UTF-8 安全逐字符拆分（兼容中英文混排；统一委托 Core.Utils.SplitUTF8Chars，见 sh_utils.lua）
+local BGMHoverSplitChars = KARDS.CardEditor.Core.Utils.SplitUTF8Chars
 
 -- 每帧绘制悬停简介（HUDPaint，编辑器打开即生效）：覆盖主行常驻 5 国按钮与扩展面板按钮
 function Compat.DrawBGMHoverTooltip()
@@ -492,9 +625,7 @@ function Compat.RegisterCountry(countryId, data)
             color = data.color or Color(120, 120, 120)
         })
     end
-    if not Compat.CountryMusic[countryId] then
-        Compat.CountryMusic[countryId] = { tracks = {}, color = data.color or nil }
-    end
+    EnsureCountryEntry(countryId, data.color)
     -- 背景音效音量倍率（外部模组播放其音乐时可调低编辑器背景音效，默认 1 原音量）
     Compat.CountryMusic[countryId].backgroundVolume = data.backgroundVolume or 1
 end
@@ -509,9 +640,7 @@ function Compat.RegisterTrack(countryId, trackPath, trackName)
         Compat.ShowBGMMessage("注册曲目格式不规范：路径无效（" .. tostring(trackPath) .. "）", "error")
         return
     end
-    if not Compat.CountryMusic[countryId] then
-        Compat.CountryMusic[countryId] = { tracks = {}, color = nil }
-    end
+    EnsureCountryEntry(countryId)
     local data = Compat.CountryMusic[countryId]
     -- 防重复：同路径只注册一次
     for _, t in ipairs(data.tracks) do
@@ -542,6 +671,10 @@ function Compat.SafeStopChannel()
     Compat.EditorTrackChannel = nil
     Compat.CurrentEditorTrack = nil
     Compat.CurrentTrackName = nil
+    -- 清空歌词状态（曲目停止）
+    Compat.LyricLines = nil
+    Compat.LyricIndex = 0
+    Compat.LyricChangeTime = nil
 end
 
 -- Check whether the dynamic_BGM addon is present and functional.
@@ -549,83 +682,101 @@ function Compat.IsAvailable()
     return _G.DynamicBGM ~= nil and _G.DynamicBGM.Config ~= nil
 end
 
--- Fade out dynamic_BGM track volumes to zero over Compat.FadeDuration seconds.
-function Compat.FadeOut()
-    if not Compat.IsAvailable() then
-        return
+-- 参数化通用音量渐变（FadeOut / FadeIn 共用，2026-08-15 编辑器重构 7.5-4）：
+--   fadeOut=true  淡出：先保存原始配置，渐变到 0
+--   fadeOut=false 淡入：从当前值渐变回原始值，完成后清空保存的原始配置
+-- 渐变起点语义与重构前一致：淡出固定用保存的原始值、淡入每帧读当前值
+local function FadeVolumes(fadeOut)
+    if not Compat.IsAvailable() then return end
+    -- 淡出中再次淡出 / 非淡出状态下淡入：忽略
+    if fadeOut == Compat.IsFadedOut then return end
+
+    if fadeOut then
+        -- Save original configuration values
+        Compat.OriginalIdleMaxVolume = _G.DynamicBGM.Config.MaxIdleVolume
+        Compat.OriginalCombatMaxVolume = _G.DynamicBGM.Config.MaxCombatVolume
+        Compat.OriginalMasterVolume = _G.DynamicBGM.Config.MasterVolume
     end
+    Compat.IsFadedOut = fadeOut
+    local fadeStart = CurTime()
+    local hookName = fadeOut and "KARDS_DynamicBGM_FadeOut" or "KARDS_DynamicBGM_FadeIn"
 
-    if Compat.IsFadedOut then
-        return
-    end
-
-    -- Save original configuration values
-    Compat.OriginalIdleMaxVolume = _G.DynamicBGM.Config.MaxIdleVolume
-    Compat.OriginalCombatMaxVolume = _G.DynamicBGM.Config.MaxCombatVolume
-    Compat.OriginalMasterVolume = _G.DynamicBGM.Config.MasterVolume
-
-    Compat.IsFadedOut = true
-    Compat.FadeStartTime = CurTime()
-
-    hook.Add("Think", "KARDS_DynamicBGM_FadeOut", function()
-        if not Compat.IsFadedOut then
-            hook.Remove("Think", "KARDS_DynamicBGM_FadeOut")
+    hook.Add("Think", hookName, function()
+        -- 中途状态被反向操作（淡入中又淡出等）：终止本渐变
+        if Compat.IsFadedOut ~= fadeOut then
+            hook.Remove("Think", hookName)
             return
         end
 
-        local elapsed = CurTime() - Compat.FadeStartTime
-        local progress = math.Clamp(elapsed / Compat.FadeDuration, 0, 1)
+        local progress = math.Clamp((CurTime() - fadeStart) / Compat.FadeDuration, 0, 1)
+        local cfg = _G.DynamicBGM.Config
 
-        -- Gradually modify the configuration values that dynamic_BGM uses
-        _G.DynamicBGM.Config.MaxIdleVolume = Lerp(progress, Compat.OriginalIdleMaxVolume, 0)
-        _G.DynamicBGM.Config.MaxCombatVolume = Lerp(progress, Compat.OriginalCombatMaxVolume, 0)
-        _G.DynamicBGM.Config.MasterVolume = Lerp(progress, Compat.OriginalMasterVolume, 0)
+        -- 淡出：原始值 → 0；淡入：当前值 → 原始值（当前值每帧读取，语义同重构前）
+        cfg.MaxIdleVolume = Lerp(progress, fadeOut and Compat.OriginalIdleMaxVolume or cfg.MaxIdleVolume, fadeOut and 0 or Compat.OriginalIdleMaxVolume)
+        cfg.MaxCombatVolume = Lerp(progress, fadeOut and Compat.OriginalCombatMaxVolume or cfg.MaxCombatVolume, fadeOut and 0 or Compat.OriginalCombatMaxVolume)
+        cfg.MasterVolume = Lerp(progress, fadeOut and Compat.OriginalMasterVolume or cfg.MasterVolume, fadeOut and 0 or Compat.OriginalMasterVolume)
 
         if progress >= 1 then
-            hook.Remove("Think", "KARDS_DynamicBGM_FadeOut")
+            hook.Remove("Think", hookName)
+            -- 淡入完成后清空保存的原始配置
+            if not fadeOut then
+                Compat.OriginalIdleMaxVolume = nil
+                Compat.OriginalCombatMaxVolume = nil
+                Compat.OriginalMasterVolume = nil
+            end
         end
     end)
 end
 
+-- Fade out dynamic_BGM track volumes to zero over Compat.FadeDuration seconds.
+function Compat.FadeOut()
+    FadeVolumes(true)
+end
+
 -- Fade in dynamic_BGM track volumes back to original saved levels.
 function Compat.FadeIn()
-    if not Compat.IsAvailable() then
-        return
-    end
-
-    if not Compat.IsFadedOut then
-        return
-    end
-
-    Compat.IsFadedOut = false
-    local fadeStart = CurTime()
-
-    hook.Add("Think", "KARDS_DynamicBGM_FadeIn", function()
-        if Compat.IsFadedOut then
-            hook.Remove("Think", "KARDS_DynamicBGM_FadeIn")
-            return
-        end
-
-        local elapsed = CurTime() - fadeStart
-        local progress = math.Clamp(elapsed / Compat.FadeDuration, 0, 1)
-
-        -- Gradually restore the configuration values
-        _G.DynamicBGM.Config.MaxIdleVolume = Lerp(progress, _G.DynamicBGM.Config.MaxIdleVolume, Compat.OriginalIdleMaxVolume)
-        _G.DynamicBGM.Config.MaxCombatVolume = Lerp(progress, _G.DynamicBGM.Config.MaxCombatVolume, Compat.OriginalCombatMaxVolume)
-        _G.DynamicBGM.Config.MasterVolume = Lerp(progress, _G.DynamicBGM.Config.MasterVolume, Compat.OriginalMasterVolume)
-
-        if progress >= 1 then
-            hook.Remove("Think", "KARDS_DynamicBGM_FadeIn")
-            Compat.OriginalIdleMaxVolume = nil
-            Compat.OriginalCombatMaxVolume = nil
-            Compat.OriginalMasterVolume = nil
-        end
-    end)
+    FadeVolumes(false)
 end
 
 -- Stop any playing editor track
 function Compat.StopEditorTrack()
     Compat.SafeStopChannel()
+end
+
+-- 启动循环检查 Think hook（PlayEditorTrack / PlaySpecificTrack 共用，2026-08-15 编辑器重构 7.5-4）：
+-- 编辑器关闭/国家失效时停止；异步加载中不抢跑；channel 失效或播放完毕则自动切下一首
+local function StartTrackLoopHook()
+    hook.Add("Think", "KARDS_EditorTrack_Loop", function()
+        -- 检查编辑器是否还开着
+        if not KARDS.CardEditor.Canvas or not KARDS.CardEditor.Canvas.Enabled then
+            Compat.StopEditorTrack()
+            return
+        end
+
+        -- 检查是否还有效的country
+        if not Compat.CurrentCountry or Compat.CurrentCountry == "none" then
+            Compat.StopEditorTrack()
+            return
+        end
+
+        -- sound.PlayFile 正在异步加载中，等待回调后再决定下一步（防止加载慢的外部音乐被抢跑丢弃）
+        if Compat.TrackLoading then
+            return
+        end
+
+        -- 检查当前channel
+        if not IsValid(Compat.EditorTrackChannel) then
+            -- channel无效了，重新播放
+            Compat.PlayNextTrack()
+            return
+        end
+
+        -- 检查是否播放完了（0 = stopped, 1 = playing, 2 = paused）
+        if Compat.EditorTrackChannel:GetState() == 0 then
+            -- 播放完了，播放下一首
+            Compat.PlayNextTrack()
+        end
+    end)
 end
 
 -- Play a country-specific editor track (循环版)
@@ -664,52 +815,16 @@ function Compat.PlayEditorTrack(country)
     -- 播放第一首
     Compat.PlayNextTrack()
 
-    -- 添加Think hook，检查是否播放完并循环
-    hook.Add("Think", "KARDS_EditorTrack_Loop", function()
-        -- 检查编辑器是否还开着
-        if not KARDS.CardEditor.Canvas or not KARDS.CardEditor.Canvas.Enabled then
-            Compat.StopEditorTrack()
-            return
-        end
-
-        -- 检查是否还有效的country
-        if not Compat.CurrentCountry or Compat.CurrentCountry == "none" then
-            Compat.StopEditorTrack()
-            return
-        end
-
-        -- sound.PlayFile 正在异步加载中，等待回调后再决定下一步（防止加载慢的外部音乐被抢跑丢弃）
-        if Compat.TrackLoading then
-            return
-        end
-
-        -- 检查当前channel
-        if not IsValid(Compat.EditorTrackChannel) then
-            -- channel无效了，重新播放
-            Compat.PlayNextTrack()
-            return
-        end
-
-        -- 检查是否播放完了
-        local state = Compat.EditorTrackChannel:GetState()
-        -- 0 = stopped, 1 = playing, 2 = paused
-        if state == 0 then
-            -- 播放完了，播放下一首
-            Compat.PlayNextTrack()
-        end
-    end)
+    -- 启动循环检查 Think hook（编辑器关闭/播放完毕自动切歌）
+    StartTrackLoopHook()
 end
 
--- 播放下一首（内部使用）
-function Compat.PlayNextTrack()
-    if not Compat.CurrentCountry or Compat.CurrentCountry == "none" then
-        return
-    end
-
+-- 按当前 CurrentTrackIndex 播放曲目（内部）：停止旧 channel + 播放 + 回调验证 + 切换提示
+-- PlayNextTrack（随机选曲）与 PlaySpecificTrack（右键曲目列表点选）共用本函数
+local function PlayCurrentTrack()
+    if not Compat.CurrentCountry or Compat.CurrentCountry == "none" then return end
     local countryData = Compat.CountryMusic[Compat.CurrentCountry]
-    if not countryData or not countryData.tracks or #countryData.tracks == 0 then
-        return
-    end
+    if not countryData or not countryData.tracks or #countryData.tracks == 0 then return end
 
     -- 先停止旧的channel
     if IsValid(Compat.EditorTrackChannel) then
@@ -717,19 +832,17 @@ function Compat.PlayNextTrack()
     end
     Compat.EditorTrackChannel = nil
 
-    -- 随机选择下一首（trackCount > 1 时避免与当前曲目重复）
-    local trackCount = #countryData.tracks
-    local prevIndex = Compat.CurrentTrackIndex
-    Compat.CurrentTrackIndex = math.random(1, trackCount)
-    if trackCount > 1 then
-        while Compat.CurrentTrackIndex == prevIndex do
-            Compat.CurrentTrackIndex = math.random(1, trackCount)
-        end
+    -- 索引越界兜底（如 PlayEditorTrack 初始化索引 0 后直接进入 single 模式时，tracks[0] 为 nil）
+    if Compat.CurrentTrackIndex < 1 or Compat.CurrentTrackIndex > #countryData.tracks then
+        Compat.CurrentTrackIndex = 1
     end
     local trackData = countryData.tracks[Compat.CurrentTrackIndex]
+    if not trackData then return end
     local trackPath = trackData.path
     Compat.CurrentEditorTrack = trackPath
     Compat.CurrentTrackName = trackData.name or nil
+    -- 歌词加载：镜像路径 data_static/kards/bgm_lyrics/<国家>/<序号>.<音乐名>.txt（2026-10-05）
+    Compat.LoadLyricForTrack(trackPath)
 
     -- 切换提示：仅"一曲到末尾而切换"时显示（由"选择风格"发起的初次播放不发，改由 play 提示承载）
     if Compat.IsInitialPlay then
@@ -785,6 +898,145 @@ function Compat.PlayNextTrack()
     end)
 end
 
+-- 所有风格曲目的扁平位置列表（跨列表模式用）：按国家 id 排序，跨列表顺序稳定
+local function GetAllTracksFlat()
+    local ids = {}
+    for countryId, countryData in pairs(Compat.CountryMusic) do
+        if countryId ~= "none" and countryData.tracks and #countryData.tracks > 0 then
+            table.insert(ids, countryId)
+        end
+    end
+    table.sort(ids)
+    local all = {}
+    for _, countryId in ipairs(ids) do
+        for i = 1, #Compat.CountryMusic[countryId].tracks do
+            table.insert(all, { country = countryId, index = i })
+        end
+    end
+    return all
+end
+
+-- 在扁平列表中找到当前曲目（country, index）的位置；找不到返回 nil
+local function FindFlatPos(country, index, all)
+    for pos, entry in ipairs(all) do
+        if entry.country == country and entry.index == index then
+            return pos
+        end
+    end
+    return nil
+end
+
+-- 按播放模式计算"下一首"目标，返回 newCountry, newIndex（列表无效时返回原值）
+local function StepNext(country, index)
+    local mode = Compat.PlayMode
+    local trackCount = Compat.CountryMusic[country] and #Compat.CountryMusic[country].tracks or 0
+    if trackCount == 0 then return country, index end
+
+    if mode == "loop" then
+        -- 循环列表：当前风格内顺序下一首（wrap）
+        return country, (index % trackCount) + 1
+    elseif mode == "single" then
+        -- 单曲循环：始终重复当前曲目（自动切歌也重复）
+        return country, index
+    elseif mode == "random_all" or mode == "loop_all" then
+        -- 跨列表模式：目标可能落在其他风格
+        local all = GetAllTracksFlat()
+        if #all <= 1 then return country, index end
+        if mode == "loop_all" then
+            local pos = FindFlatPos(country, index, all)
+            if not pos then return country, index end
+            local entry = all[(pos % #all) + 1]
+            return entry.country, entry.index
+        else
+            -- 跨列表随机：随机挑选，避免与当前曲目重复
+            local entry
+            repeat
+                entry = all[math.random(#all)]
+            until not (entry.country == country and entry.index == index)
+            return entry.country, entry.index
+        end
+    end
+    -- random（默认）：当前风格内随机，避免与当前曲目重复
+    if trackCount <= 1 then return country, index end
+    local newIndex
+    repeat
+        newIndex = math.random(trackCount)
+    until newIndex ~= index
+    return country, newIndex
+end
+
+-- 按播放模式计算"上一首"目标，返回 newCountry, newIndex（列表无效时返回原值）
+local function StepPrev(country, index)
+    local mode = Compat.PlayMode
+    local trackCount = Compat.CountryMusic[country] and #Compat.CountryMusic[country].tracks or 0
+    if trackCount == 0 then return country, index end
+
+    if mode == "random_all" or mode == "loop_all" then
+        -- 跨列表模式：跨风格顺序上一首（wrap）
+        local all = GetAllTracksFlat()
+        if #all <= 1 then return country, index end
+        local pos = FindFlatPos(country, index, all)
+        if not pos then return country, index end
+        local entry = all[((pos - 2) % #all) + 1]
+        return entry.country, entry.index
+    end
+    -- 其余模式（random / loop / single）：当前风格内顺序上一首（wrap）
+    return country, ((index - 2) % trackCount) + 1
+end
+
+-- 播放下一首（按播放模式；曲目自动切换与"下一首"按键共用）
+function Compat.PlayNextTrack()
+    if not Compat.CurrentCountry or Compat.CurrentCountry == "none" then
+        return
+    end
+
+    local countryData = Compat.CountryMusic[Compat.CurrentCountry]
+    if not countryData or not countryData.tracks or #countryData.tracks == 0 then
+        return
+    end
+
+    local newCountry, newIndex = StepNext(Compat.CurrentCountry, Compat.CurrentTrackIndex)
+    Compat.CurrentCountry = newCountry
+    Compat.CurrentTrackIndex = newIndex
+
+    PlayCurrentTrack()
+end
+
+-- 播放上一首（按播放模式；"上一首"按键用）
+function Compat.PlayPrevTrack()
+    if not Compat.CurrentCountry or Compat.CurrentCountry == "none" then
+        return
+    end
+
+    local countryData = Compat.CountryMusic[Compat.CurrentCountry]
+    if not countryData or not countryData.tracks or #countryData.tracks == 0 then
+        return
+    end
+
+    local newCountry, newIndex = StepPrev(Compat.CurrentCountry, Compat.CurrentTrackIndex)
+    Compat.CurrentCountry = newCountry
+    Compat.CurrentTrackIndex = newIndex
+
+    PlayCurrentTrack()
+end
+
+-- 播放指定曲目（编辑器 BGM 曲目列表面板右键点选，2026-08-14）：
+-- 按索引播放指定曲目，随后由循环 hook 按该风格随机播放其余曲目（与"选择风格"行为一致）
+function Compat.PlaySpecificTrack(country, index)
+    local countryData = Compat.CountryMusic[country]
+    if not countryData or not countryData.tracks or #countryData.tracks == 0 then return false end
+    if not countryData.tracks[index] then return false end
+    Compat.SafeStopChannel()
+    Compat.CurrentCountry = country
+    Compat.CurrentTrackIndex = index
+    Compat.IsInitialPlay = true
+    PlayCurrentTrack()
+
+    -- 启动循环检查 Think hook（与 PlayEditorTrack 同款）
+    StartTrackLoopHook()
+    return true
+end
+
 -- Select a country and play its music
 function Compat.SelectCountry(countryId)
     Compat.CurrentCountry = countryId
@@ -816,6 +1068,11 @@ hook.Add("KARDS_EditorClosed", "KARDS_DynamicBGM_Compat", function()
     Compat.StopEditorTrack()
 end)
 
+-- 歌词同步：编辑器打开且曲目播放时逐帧推进歌词行（时间取自播放通道，见 Compat.UpdateLyric）
+hook.Add("Think", "KARDS_EditorLyric_Sync", function()
+    Compat.UpdateLyric()
+end)
+
 KARDS.CardEditor:Log("dynamic_BGM compatibility module initialized")
 
 -- 加载时自动扫描登记 sound/editor/ 目录下的全部背景音乐
@@ -841,10 +1098,8 @@ end
 -- 主模组 BGM 相关模块（Canvas + compat）已就绪，通知外部模组可安全注册
 hook.Run("KARDS_CardEditorReady")
 
--- 每帧绘制 BGM 专属提示（内部检查编辑器是否打开）
-hook.Add("HUDPaint", "KARDS_BGM_Messages_Draw", function()
-    Compat.DrawBGMMessages()
-    Compat.DrawBGMHoverTooltip()
-end)
+-- BGM 专属提示与风格按钮悬停简介的绘制改由卡牌编辑器 DrawEditor 在内容绘制完成后调用
+--（canvas_editor/effect_editor/cl_canvas_editor.lua 的 KARDS.CardEditor.Canvas.DrawEditor 末尾），
+-- 以保证处于编辑器窗口最上层；此前独立 HUDPaint 钩子注册早于编辑器绘制钩子，绘制被窗口覆盖而不可见（2026-10-04 修复）
 
 end

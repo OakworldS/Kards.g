@@ -1,0 +1,99 @@
+{
+	"runtime_no_cull": true,
+	"scale": 10,
+	"build_id": "6268c8d60104",
+	"model_id": "basic_card_xx",
+	"flip_v": true,
+	"material_count": 3,
+	"manifest_hash": "b0a9b4532b05",
+	"source_name_en": "basic_card_20",
+	"pmx_bone_count": 0,
+	"axis_preset": "x,-z,y",
+	"bounds": {
+		"mins": [
+			-60.000005,
+			-89.99999,
+			-0.75
+		],
+		"maxs": [
+			59.999995,
+			90.00001,
+			33.050003
+		]
+	},
+	"mesh_file": "pmx_static_importer/models/basic_card_xx/mesh.json",
+	"winding_flipped_baked": false,
+	"source_name_local": "basic_card_20",
+	"source_format": "glb",
+	"source_file": "basic_card_20.glb",
+	"vertex_count": 4320,
+	"pmx_morph_count": 0,
+	"triangle_count": 2800,
+	"static_only_warning": false,
+	"submeshes": [
+		{
+			"no_cull": true,
+			"double_sided": true,
+			"pmx_double_sided": true,
+			"diffuse": [
+				0.8,
+				0.8,
+				0.8,
+				1
+			],
+			"vertex_count": 2040,
+			"alpha": 1,
+			"triangle_count": 680,
+			"translucent": false,
+			"index": 0,
+			"image_path": "data/kards_deckpile/usa/front.png",
+			"texture_source": "generated-diffuse-color",
+			"name": "front",
+			"safe_name": "mat_000_front"
+		},
+		{
+			"no_cull": true,
+			"double_sided": true,
+			"pmx_double_sided": true,
+			"diffuse": [
+				0.8,
+				0.8,
+				0.8,
+				1
+			],
+			"vertex_count": 2040,
+			"alpha": 1,
+			"triangle_count": 680,
+			"translucent": false,
+			"index": 1,
+			"image_path": "data/kards_deckpile/usa/back.png",
+			"texture_source": "generated-diffuse-color",
+			"name": "back",
+			"safe_name": "mat_001_back"
+		},
+		{
+			"no_cull": true,
+			"double_sided": true,
+			"pmx_double_sided": true,
+			"diffuse": [
+				0.8,
+				0.8,
+				0.8,
+				1
+			],
+			"vertex_count": 4320,
+			"alpha": 1,
+			"triangle_count": 1440,
+			"translucent": false,
+			"index": 2,
+			"image_path": "pmx_static_importer/basic_card_xx/mat_000_front_fallback_3ca38990.png",
+			"texture_source": "generated-diffuse-color",
+			"name": "side",
+			"safe_name": "mat_002_side"
+		}
+	],
+	"safe_display_name": "basic_card_xx",
+	"display_name": "Basic Card XX",
+	"render_vertex_count": 8400,
+	"format": 2
+}

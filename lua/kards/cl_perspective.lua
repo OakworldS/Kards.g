@@ -97,6 +97,20 @@ function P:IsHandSlotCard(ent)
     return IsValid(ent) and ent:GetNWBool("Kards_IsHandSlotCard", false)
 end
 
+-- 由「方向向量 v + 期望右侧向量 r」重建角度（roll 修正：角度 Forward 对齐 v 后，
+-- 再按 r 补偿 roll——Angle() 生成的 Right 与期望 r 对齐，阶段五 P5 收敛
+-- cl_init.lua HandFanPos 同款公式）
+-- @param v Vector 方向向量（卡面长轴，角度 Forward）
+-- @param r Vector 期望的右侧向量（卡面宽轴）
+-- @return Angle
+local function AngleFromBasis(v, r)
+    local total = v:Angle()
+    local r0 = total:Right()
+    total.roll = total.roll + math.deg(math.atan2(v:Cross(r0):Dot(r), r0:Dot(r)))
+    return total
+end
+P.AngleFromBasis = AngleFromBasis -- 挂载供 cl_init.lua HandFanPos 复用（阶段五 P5）
+
 -- 绕卡面内长轴（Right）翻转 180°（卡面朝上 ⇄ 朝下，扇形张开形态保持）：
 -- 平行于长轴的分量不变、垂直分量取反（f→−f、r→r、u→−u），再按
 -- init.lua CreateHandCardSlots 同款公式重建角度（(−f):Angle() + roll 修正）。
@@ -105,10 +119,7 @@ end
 local function FlipCardFace(base)
     local f = base:Forward() * -1
     local r = base:Right()
-    local total = f:Angle()
-    local r0 = total:Right()
-    total.roll = total.roll + math.deg(math.atan2(f:Cross(r0):Dot(r), r0:Dot(r)))
-    return total
+    return AngleFromBasis(f, r)
 end
 
 --[[

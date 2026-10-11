@@ -4,7 +4,6 @@
 KARDS.CardEditor.Core = KARDS.CardEditor.Core or {}
 
 -- 工具函数（定义于 sh_utils.lua）
--- 网络管理（定义于 sh_network.lua）
 
 -- 卡牌管理
 KARDS.CardEditor.Core.CardManager = {
@@ -112,7 +111,7 @@ KARDS.CardEditor.Core.TriggerManager = {
 
 -- 初始化
 function KARDS.CardEditor.Core:Initialize()
-    KARDS.CardEditor:Log("Core initialized", "DEBUG")
+    KARDS.CardEditor:Log("Core initialized")
 end
 
 -- 当 Lua 初始化时执行

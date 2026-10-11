@@ -25,11 +25,13 @@ KS.TurnAction = {
 
     -- 标记已移动（移动至前线成功后调用）
     MarkMoved = function(st, card)
+        st.TurnAction.Moved = st.TurnAction.Moved or {} -- 惰性初始化（未 BeginTurn 直接行动时子表可能缺失）
         st.TurnAction.Moved[card] = true
     end,
 
     -- 标记已攻击（SimAttack / SimEngage 攻击结算后调用）
     MarkAttacked = function(st, card)
+        st.TurnAction.Attacked = st.TurnAction.Attacked or {} -- 惰性初始化（未 BeginTurn 直接行动时子表可能缺失）
         st.TurnAction.Attacked[card] = true
     end,
 

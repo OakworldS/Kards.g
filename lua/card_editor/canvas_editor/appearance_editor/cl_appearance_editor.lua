@@ -178,6 +178,14 @@ function KARDS.CardEditor.Canvas.CreateControls()
     extendBtn.DoClick = function()
         KARDS.CardEditor.Canvas.ToggleBGMMenu()
     end
+    extendBtn.DoRightClick = function()
+        -- 右键：在鼠标处展开当前播放风格的曲目列表面板
+        local bgmCompat = KARDS.CardEditor.Compat and KARDS.CardEditor.Compat.DynamicBGM
+        local bgmCountry = bgmCompat and bgmCompat.CurrentCountry or "none"
+        if bgmCountry and bgmCountry ~= "none" then
+            KARDS.CardEditor.Canvas.OpenBGMPlaylist(bgmCountry)
+        end
+    end
     KARDS.CardEditor.Canvas.BGMExtendButton = extendBtn
     table.insert(KARDS.CardEditor.Canvas.CountryButtons, extendBtn)
 
@@ -220,6 +228,12 @@ function KARDS.CardEditor.Canvas.CreateControls()
         countryBtn.DoClick = function()
             -- 切换编辑器 BGM 国家风格（不改变卡牌国家）
             KARDS.CardEditor.Canvas.SelectEditorBGM(country.id)
+        end
+        countryBtn.DoRightClick = function()
+            -- 右键：在鼠标处展开该国家风格的曲目列表面板（"无"风格无曲目，不弹出）
+            if country.id ~= "none" then
+                KARDS.CardEditor.Canvas.OpenBGMPlaylist(country.id)
+            end
         end
         table.insert(KARDS.CardEditor.Canvas.CountryButtons, countryBtn)
     end
@@ -390,6 +404,15 @@ function KARDS.CardEditor.Canvas.UpdateControlsFromAppearance()
         }
         KARDS.CardEditor.Canvas.CardAppearance.veteranAppearance = va
     end
+
+    -- 序列化兼容：旧版本保存的卡牌缺少 convertTarget 字段，补默认空字符串（不换卡）
+    -- （与 cl_canvas_editor.lua CardAppearance.convertTarget 一致）
+    if not KARDS.CardEditor.Canvas.CardAppearance.convertTarget then
+        KARDS.CardEditor.Canvas.CardAppearance.convertTarget = ""
+    end
+    -- 换卡/重置时收起可能展开的转换目标卡列表
+    KARDS.CardEditor.Canvas._convertTargetExpanded = false
+
     local vds = KARDS.CardEditor.Canvas._vetDescInputState
     if vds then
         vds.text = va.specialEffect or ""
@@ -408,15 +431,29 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
     local isLeftPressed = isLeftDown and not lastLeft
     KARDS.CardEditor.Canvas._AppearanceLastLeft = isLeftDown
 
-    -- BGM 展开面板打开时，面板区域内的点击由 vgui 按钮处理：
-    -- 抑制本帧自定义点击检测，防止点击扩展国家按钮时穿透到下方总控台（如误设卡牌类型）
+    -- BGM 展开面板/曲目列表面板打开时，面板区域内的点击由 vgui 按钮处理：
+    -- 抑制本帧自定义点击检测，防止点击 BGM 菜单交互时穿透到下方总控台（如误设卡牌类型）
     if isLeftPressed then
-        local bgmPanel = KARDS.CardEditor.Canvas.BGMMenuPanel
-        if IsValid(bgmPanel) then
-            local px, py = bgmPanel:GetPos()
-            local pw, ph = bgmPanel:GetSize()
-            if mx >= px and mx <= px + pw and my >= py and my <= py + ph then
-                isLeftPressed = false
+        -- 任一 BGM 全屏遮罩有效（曲目列表/展开面板）→ 整帧抑制：遮罩拦截外部点击，不穿透总控台
+        if IsValid(KARDS.CardEditor.Canvas.BGMTrackListMask) or IsValid(KARDS.CardEditor.Canvas.BGMMenuMask) then
+            isLeftPressed = false
+        else
+            local bgmPanel = KARDS.CardEditor.Canvas.BGMMenuPanel
+            if IsValid(bgmPanel) then
+                local px, py = bgmPanel:GetPos()
+                local pw, ph = bgmPanel:GetSize()
+                if mx >= px and mx <= px + pw and my >= py and my <= py + ph then
+                    isLeftPressed = false
+                end
+            end
+            -- BGM 曲目列表面板（右键菜单）同款抑制
+            local trackPanel = KARDS.CardEditor.Canvas.BGMTrackListPanel
+            if isLeftPressed and IsValid(trackPanel) then
+                local px, py = trackPanel:GetPos()
+                local pw, ph = trackPanel:GetSize()
+                if mx >= px and mx <= px + pw and my >= py and my <= py + ph then
+                    isLeftPressed = false
+                end
             end
         end
     end
@@ -465,14 +502,27 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
     -- 总部模式：仅显示 属性/历史/插图/描述 四个书签
     local isHQ = app.cardType == "headquarter"
     local HQBookmarkIds = { attr = true, history = true, illustration = true, description = true }
+    -- 伤害倍率仅单位卡可配置（2026-08-16：指令/反制/总部不参与攻击倍率）
+    -- 修复（2026-10-04）：「单位卡」判定原写作 `app.cardType == "unit"`，而 app.cardType 的
+    -- 实际取值是 infantry/tank/artillery/fighter/bomber（"unit" 是编辑器模式名，不是卡牌类型，
+    -- 见 cl_canvas_editor.lua 默认外观注释与类型选择器 cl_ca_appearance_editors.lua），
+    -- 条件恒为假导致「伤害」书签无论何种卡牌都不显示；改为与其它处一致的 5 种单位类型判定
+    local isUnitCard = app.cardType == "infantry" or app.cardType == "tank"
+        or app.cardType == "artillery" or app.cardType == "fighter" or app.cardType == "bomber"
     -- 总部模式下若当前选中的书签被过滤，自动切到「属性」
     if isHQ and not HQBookmarkIds[KARDS.CardEditor.Canvas.SelectedBookmark] then
         KARDS.CardEditor.Canvas.SelectedBookmark = "attr"
     end
+    -- 非单位卡当前停在「伤害」书签 → 自动切走（书签已隐藏，本帧即生效）
+    if not isUnitCard and KARDS.CardEditor.Canvas.SelectedBookmark == "damage" then
+        KARDS.CardEditor.Canvas.SelectedBookmark = "attr"
+    end
+    selectedId = KARDS.CardEditor.Canvas.SelectedBookmark
     -- 构建可见书签列表（元素：{ bm, stateIdx }，stateIdx 指向 animStates 原索引）
     local visibleBookmarks = {}
     for i, bm in ipairs(bookmarks) do
-        if not (isHQ and not HQBookmarkIds[bm.id]) then
+        if not (isHQ and not HQBookmarkIds[bm.id])
+            and (isUnitCard or bm.id ~= "damage") then
             table.insert(visibleBookmarks, { bm = bm, stateIdx = i })
         end
     end
@@ -555,6 +605,15 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
 
         -- 点击选择书签
         if isLeftPressed and isHovered then
+            if KARDS.CardEditor.Canvas.SelectedBookmark ~= bm.id then
+                -- 切换书签时关闭共享透明输入框（否则其在其它书签页隐形残留并截获键盘，2026-10-04）
+                local uiState = KARDS.CardEditor.Canvas._uiInputState
+                if uiState then
+                    uiState.active = false
+                    uiState.id = nil
+                    uiState.onCommit = nil
+                end
+            end
             KARDS.CardEditor.Canvas.SelectedBookmark = bm.id
         end
     end
@@ -599,6 +658,9 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
     elseif selectedId == "manage" then
         DrawManageEditArea(trX, trY, editW, trH, app, mx, my, isLeftPressed, dt)
     end
+
+    -- 不稳定警告悬停提示：在页面内容全部绘制完成后统一绘制，保证最高层不被遮挡（2026-10-05）
+    KARDS.CardEditor.Canvas.DrawPendingUnstableWarnTooltip()
 
     -- ===== 透明 DTextEntry 生命周期管理辅助函数 =====
     local function manageTransparentEntry(cfg)
@@ -850,7 +912,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
             local rh = 76
             local vetTitleH = 28
             local vetSectionH = vetTitleH + 10 + rh * 2
-            local vetStartY = trY + trH - 15 - vetSectionH
+            local vetStartY = trY + trH - 15 - 172 - 20 - vetSectionH -- 与绘制端 sepY 对齐（底部条 172 + 间距 20，2026-10-04）
             local sepY = vetStartY
             local vetRow1Y = sepY + vetTitleH + 6
             return trX + 15 + sw + 6, vetRow1Y + 34, 36, 20
@@ -871,7 +933,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
             local rh = 76
             local vetTitleH = 28
             local vetSectionH = vetTitleH + 10 + rh * 2
-            local vetStartY = trY + trH - 15 - vetSectionH
+            local vetStartY = trY + trH - 15 - 172 - 20 - vetSectionH -- 与绘制端 sepY 对齐（底部条 172 + 间距 20，2026-10-04）
             local sepY = vetStartY
             local vetRow1Y = sepY + vetTitleH + 6
             return trX + 15 + cw + 12 + sw + 6, vetRow1Y + 34, 36, 20
@@ -892,7 +954,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
             local rh = 76
             local vetTitleH = 28
             local vetSectionH = vetTitleH + 10 + rh * 2
-            local vetStartY = trY + trH - 15 - vetSectionH
+            local vetStartY = trY + trH - 15 - 172 - 20 - vetSectionH -- 与绘制端 sepY 对齐（底部条 172 + 间距 20，2026-10-04）
             local sepY = vetStartY
             local vetRow1Y = sepY + vetTitleH + 6
             local vetRow2Y = vetRow1Y + rh
@@ -912,11 +974,12 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
         getPos = function()
             local a_ = KARDS.CardEditor.Canvas.CardAppearance
             local isVet_ = a_ and (a_.cardType == "infantry" or a_.cardType == "tank" or a_.cardType == "artillery" or a_.cardType == "fighter" or a_.cardType == "bomber") and table.HasValue(a_.keywords or {}, "can_elevate_to_veteran")
+            -- 与绘制端 descTextY（anchorY + 60 + 26）对齐，高度同 descInputH（trH - 226，2026-10-04）
             if isVet_ then
                 local halfW = math.floor((editW - 30 - 12) / 2)
-                return trX + 15, cy + 15 + 26, halfW, trH - 70
+                return trX + 15, cy + 15 + 60 + 26, halfW, trH - 226
             end
-            return trX + 15, cy + 15 + 26, editW - 30, trH - 50
+            return trX + 15, cy + 15 + 60 + 26, editW - 30, trH - 226
         end,
         getText = function()
             local s = KARDS.CardEditor.Canvas._descInputState; return s and s.text or ""
@@ -963,7 +1026,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
         isActive = isVet and (selectedId == "description") and (KARDS.CardEditor.Canvas._vetDescInputState or {}).active,
         getPos = function()
             local halfW = math.floor((editW - 30 - 12) / 2)
-            return trX + 15 + halfW + 12, cy + 15 + 26, halfW, trH - 70
+            return trX + 15 + halfW + 12, cy + 15 + 60 + 26, halfW, trH - 226
         end,
         getText = function()
             local s = KARDS.CardEditor.Canvas._vetDescInputState; return s and s.text or ""
@@ -1071,15 +1134,17 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
                         local cp = self:GetCaretPos()
                         if cp ~= nil then us.caretPos = cp end
                     end
-                    if us.text and us.text ~= "" then
-                        StartImageDownload(us.text)
-                    end
                 end
             end
             entry.OnKeyCodeTyped = function(self, keyCode)
+                local us = KARDS.CardEditor.Canvas._urlInputState
                 if keyCode == KEY_ESCAPE then
-                    local us = KARDS.CardEditor.Canvas._urlInputState
                     if us then us.active = false end
+                elseif keyCode == KEY_ENTER then
+                    -- 回车提交时才下载（2026-10-04：原先每键入一个字符即发起下载，产生大量失败请求与残缺 URL）
+                    if us and us.text and us.text ~= "" then
+                        StartImageDownload(us.text)
+                    end
                 end
             end
         end,

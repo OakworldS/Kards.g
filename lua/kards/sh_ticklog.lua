@@ -44,6 +44,15 @@ _G.KARDS_TickTiming = nil
 
 -- 各牌桌实例表：Instances[tableID] = { Ticks, TickCount, PushTiming }
 KARDS.TickLog.Instances = KARDS.TickLog.Instances or {}
+
+-- 推进一刻完成后的校验钩子（2026-09-26 缺口 F）：由战斗层注入，本模块保持纯 Lua
+-- 不反向依赖；Push 末尾经 type(self.OnPushed) == "function" 判定后以
+-- (tableID, inst) 调用（注册见 sh_battle_unit.lua 的 VerifyFrontlineExclusive）
+KARDS.TickLog.OnPushed = nil
+-- 节点一刻合并状态（2026-09-27）：BatchDepth[tableID] = 节点执行嵌套深度；
+-- BatchPending[tableID] = 该节点执行期间收集的载荷列表（EndBatch 合并为一刻）
+KARDS.TickLog.BatchDepth = {}
+KARDS.TickLog.BatchPending = {}
 -- 当前激活牌桌 ID
 KARDS.TickLog.ActiveTableID = nil
 
@@ -51,7 +60,7 @@ KARDS.TickLog.ActiveTableID = nil
 KARDS.TickLog.OpTypes = {
     -- 9.1 打出与部署
     play_command = true,
-    counter = true, -- 触发反制（SimPlayCard 拦截时 play_command+counter 刻，event_monitor「触发反制」）
+    counter = true, -- 触发反制（任一操作被拦截时，收尾 KARDS.Battle:InterceptOperation 推 {操作类型,"counter"} 刻）
     deploy = true,
     activate_counter = true,
     -- 9.2 战场操作
@@ -214,6 +223,63 @@ function KARDS.TickLog:IsValidChange(change)
 end
 
 --[[
+    节点一刻合并（2026-09-27 用户规格：一个节点只能推一刻；指向、循环等纯数据处理节点不推刻）
+
+    用法：节点执行前后调用 BeginBatch / EndBatch（接入点见 sh_node_parser.lua ExecuteBaseNode）。
+    节点执行期间数据层 Sim* 的 Push 只把载荷收进 BatchPending；EndBatch 把载荷合并为一刻：
+      发起者     = 首个载荷的发起者卡牌
+      操作类型   = 各载荷操作类型的去重并集（保持出现顺序）
+      受影响     = 各载荷受影响项按顺序拼接
+      资源变化   = 各载荷资源变化按顺序拼接
+      发起者变更 = 首个非空
+    期间没有任何载荷（纯数据节点）则不推刻。嵌套按深度计数，内层结束即自行合并收刻。
+
+    @param tableID string 牌桌唯一标识符
+]]
+function KARDS.TickLog:BeginBatch(tableID)
+    local d = (self.BatchDepth[tableID] or 0) + 1
+    self.BatchDepth[tableID] = d
+    if d == 1 then
+        self.BatchPending[tableID] = {}
+    end
+end
+
+-- 结束节点执行：外层结束（深度归零）时把收集到的载荷合并为一刻；无载荷则不推刻
+function KARDS.TickLog:EndBatch(tableID)
+    local d = (self.BatchDepth[tableID] or 0) - 1
+    if d < 0 then d = 0 end
+    self.BatchDepth[tableID] = d
+    if d > 0 then return end
+    local pending = self.BatchPending[tableID]
+    self.BatchPending[tableID] = nil
+    if not pending or #pending == 0 then return end
+    self:MergeBatch(tableID, pending)
+end
+
+-- 合并载荷列表为一刻（入参载荷均已通过 Push 校验）
+function KARDS.TickLog:MergeBatch(tableID, pending)
+    local first = pending[1]
+    local opTypes, seen = {}, {}
+    for _, p in ipairs(pending) do
+        for _, op in ipairs(p.opTypes or {}) do
+            if not seen[op] then
+                seen[op] = true
+                opTypes[#opTypes + 1] = op
+            end
+        end
+    end
+    local targets, changes, initiatorChange = {}, {}, nil
+    for _, p in ipairs(pending) do
+        for _, t in ipairs(p.targets or {}) do targets[#targets + 1] = t end
+        for _, rc in ipairs(p.resourceChanges or {}) do changes[#changes + 1] = rc end
+        if initiatorChange == nil and p.initiatorChange ~= nil then
+            initiatorChange = p.initiatorChange
+        end
+    end
+    self:AppendTick(tableID, first.initiatorCard, opTypes, targets, initiatorChange, changes)
+end
+
+--[[
     推进一刻（追加到指定牌桌时间刻数组末尾）
 
     刻度条目三段式（战斗系统规划.md 第 3 节）：
@@ -279,6 +345,39 @@ function KARDS.TickLog:Push(tableID, initiatorCard, initiatorOpTypes, targets, i
         end
     end
 
+    -- 节点一刻合并（2026-09-27 用户规格：一个节点只能推一刻）：节点执行期间不直接收刻，
+    -- 先把载荷收进待合并表，由 EndBatch 合并为一刻（见 MergeBatch）。逐卡调用数据层 Sim*
+    -- 的多卡操作因此只推一刻；指向、循环这类不做战场操作的节点期间没有载荷，于是不推刻。
+    local batch = self.BatchPending[tableID]
+    if (self.BatchDepth[tableID] or 0) > 0 and batch then
+        batch[#batch + 1] = {
+            initiatorCard = initiatorCard,
+            opTypes = iOpTypes,
+            targets = targets, -- 已规范化（t[2] 数组化），直接并入合并刻
+            initiatorChange = initiatorChange,
+            resourceChanges = resourceChanges or {},
+        }
+        return true
+    end
+    return self:AppendTick(tableID, initiatorCard, iOpTypes, targets, initiatorChange, resourceChanges)
+end
+
+--[[
+    追加一刻（Push 与节点合并共用；入参已通过校验）
+
+    @param tableID         string 牌桌唯一标识符（不存在则自动创建）
+    @param initiatorCard   table 发起者卡牌句柄
+    @param iOpTypes        table 规范化后的发起者操作类型数组
+    @param targets         table 规范化后的受影响项列表
+    @param initiatorChange string|nil 发起者自身经受的数值变更
+    @param resourceChanges table|nil 玩家资源变化列表
+    @return boolean
+]]
+function KARDS.TickLog:AppendTick(tableID, initiatorCard, iOpTypes, targets, initiatorChange, resourceChanges)
+    local inst = self.Instances[tableID]
+    if not inst then
+        inst = self:Create(tableID) -- 容错：未 Create 的牌桌自动创建并激活
+    end
     local initiator = { initiatorCard, iOpTypes }
     if initiatorChange ~= nil then
         table.insert(initiator, initiatorChange)
@@ -290,6 +389,11 @@ function KARDS.TickLog:Push(tableID, initiatorCard, initiatorOpTypes, targets, i
     table.insert(inst.Ticks, tick)
     inst.TickCount = #inst.Ticks
     SyncGlobalView(tableID, inst)
+    -- 推进一刻完成后的校验钩子（2026-09-26 缺口 F）：由战斗层注入（sh_battle_unit.lua
+    -- 注册 VerifyFrontlineExclusive），本模块保持纯 Lua 不反向依赖战斗/场域模块
+    if type(self.OnPushed) == "function" then
+        self.OnPushed(tableID, inst)
+    end
     return true
 end
 

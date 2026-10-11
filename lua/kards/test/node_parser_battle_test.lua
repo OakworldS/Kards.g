@@ -11,8 +11,8 @@
     （以后新增 base 节点均按此模式测试）。
 
     场景清单：
-      action 组合（22）：
-        获得 17 项：
+      action 组合（23）：
+        获得 18 项：
           RunActionGainTest
             1 撤退（目标从战线回支援阵线）
             2 移动(到前线)（目标从支援阵线入前线）
@@ -31,6 +31,7 @@
             15 触发关键字效果（记录 trigger 刻）
             16 返回手牌（目标离场入所有者手牌）
             17 召唤单位（对象槽单位加入本方支援阵线）
+            18 升为老兵（套用老兵外观并触发「升级」开始点）
         取消 4 项：RunActionCancelTest（解除压制/解除抑制/解除控制/解除免疫）
         被消灭 1 项：RunActionDestroyTest
       card 组合（16）：友方/敌方 × 8 分支（抽取/复制/弃掉/开发/选择/爆牌/洗切卡组/洗入）
@@ -134,10 +135,10 @@ local function AssertTrue(cond, label)
 end
 
 -- ====================================================================
--- 常量：模板 base 结构串（与 lua/node_templates/action.json / card.json 一致）
+-- 常量：模板 base 结构串（与 data_static/kards/node_templates/action.json / card.json 一致）
 -- ====================================================================
-local ACTION_BASE = "e{1}{3} if 1 then {17} if 2 then {1} end if 3 then {1} end if 4 then [lib] end if 5 then [0] end if 6 then {1}{1} end if 7 then end if 8 then {1}{2} end elseif 9 then {4} elseif 10 then end"
-local CARD_BASE = "e{2}{8} if 1 then [lib]{4} if 2 then {1} else {4} end elseif 4 then [lib]{4} if 5 then else end elseif 7 then [lib]{4} if 8 then else end elseif 10 then [lib]{1} elseif 11 then [lib] elseif 12 then [lib] elseif 13 then {2} if 14 then {2}[lib] else [lib] end end(e影响的卡牌)"
+local ACTION_BASE = "e{1}{3} if 1 then {18} if 2 then {1} end if 3 then {1} end if 4 then [lib] end if 5 then [0] end if 6 then {1}{1} end if 7 then end if 8 then {1}{2} end elseif 9 then {4} elseif 10 then end"
+local CARD_BASE = "e{2}{8} if 1 then [lib]{4} if 2 then {1} else {4} end elseif 4 then [lib]{4} if 5 then else end elseif 7 then [lib]{5} if 8 then {2} if 9 then [lib] end else end elseif 11 then [lib]{1} elseif 12 then [lib] elseif 13 then [lib] elseif 14 then {4} if 15 then {2}[lib] elseif 16 then {1}[lib] elseif 17 then {1}[lib] else {2}[lib] end end(e影响的卡牌)"
 local COMMAND_BASE = "{3}{2}{3}[lib](n结果)"
 local CONDITION_BASE = "e{2} if 1 then {2}[lib+5]{5}[lib] end if 2 then {1}{1} end(n比较结果、p布尔值、p是否有关键字)"
 local EVENT_MONITOR_BASE = "{2}{8} if 1 then [0] elseif 2 then {2} if 3 then {5}{4} if 4 then [0] else [0] end else {1} end elseif 7 then elseif 8 then {3} if 9 then [0] end elseif 10 then {1}[0] elseif 11 then {2} end(t事件类型、e事件目标、p触发事件)"
@@ -149,7 +150,7 @@ local REGISTER_HOOK_BASE = "{2}if 1 then {3}{3}{3}[0]{2} else {2}if 2 then {2}{5
 local TARGET_SELECTOR_BASE = "e{5} if 1 then {1}[0] end if 2 then [0] end {3}{3} if 3 then {6} end(e选中的卡牌)"
 local TRIGGER_FUNCTION_BASE = "e{5}#{1}{1}(e目标、t效果图案类型)"
 local TRIGGER_BASE = "e{1}{3} if 1 then {3}[0] end if 2 then {4}[0] end if 3 then [0] end(n攻击力、n防御力)"
-local TURN_BASE = "{2} if 1 then {3}{2}[0] elseif 2 then {2} end"
+local TURN_BASE = "{2} if 1 then {3}{2}[0] elseif 2 then {2}{2} end"
 
 -- ====================================================================
 -- 测试辅助（战斗搭建 / 节点 / 指令 / 校验）
@@ -255,6 +256,20 @@ local function HasTickOp(tid, card, opType)
     return false
 end
 
+-- 是否存在任意发起者的指定操作类型的刻（发起者不固定，如 scry/develop 刻的发起者是选中卡）
+local function HasAnyTickOp(tid, opType)
+    for i = 1, KARDS.TickLog:Count(tid) do
+        local tick = KARDS.TickLog:GetTick(tid, i)
+        local initiator = tick and tick[1]
+        if initiator then
+            for _, op in ipairs(initiator[2] or {}) do
+                if op == opType then return true end
+            end
+        end
+    end
+    return false
+end
+
 -- action 通用场景：双方支援阵线各部署 1 单位（P2 单位带情报词条供情报场景），推进 P1 回合
 -- @return tid, u1(P1 单位), u2(P2 单位)
 local function SetupActionField()
@@ -269,7 +284,7 @@ local function SetupActionField()
 end
 
 -- ====================================================================
--- action 获得分支：17 项动作
+-- action 获得分支：18 项动作
 -- ====================================================================
 local function RunActionGainTest()
     -- 1 撤退
@@ -293,8 +308,14 @@ local function RunActionGainTest()
     end
 
     -- 3 交战（与对象槽单位交战，目标防御 -攻击力）
+    -- （2026-08-15 调整：攻击者 u1 不部署、模拟直接行动——部署在支援阵线的单位受
+    -- attack_range 限制（支援阵线单位不能攻击敌方支援阵线目标，见 sh_battle_combat.lua）；
+    -- 未部署的攻击者不受距离检查，与守护/烟幕等场景的既有模式一致）
     do
-        local tid, u1, u2 = SetupActionField()
+        local tid = NewBattle()
+        local u1 = MakeUnit("A_E1", "P1", { unitType = "infantry", attack = 3, defense = 5 })
+        local u2 = MakeUnit("A_E2", "P2", { unitType = "fighter", attack = 2, defense = 6 })
+        KARDS.Battle:SimDeploy(u2, 3)
         AssertTrue(PlayCommand(MakeCommandCard("cmd_engage", MakeBaseNode("action", ACTION_BASE, {
             ["select_2"] = 1, ["select_3"] = 3, ["select_4"] = u2,
         })), { u1 }), "action 交战：P1 打出指令生效")
@@ -356,6 +377,42 @@ local function RunActionGainTest()
             ["select_2"] = 1, ["select_3"] = 9,
         })), { u2 }), "action 转换：P1 打出指令生效")
         AssertTrue(HasTickOp(tid, u2, "convert"), "action 转换：记录 convert 刻")
+    end
+
+    -- 9b 转换（指定「转换目标卡」：整体换卡，阵线与槽位不变）
+    -- 目标卡数据来自编辑器存档，测试用桩替代文件读取，避免依赖具体卡文件存在
+    do
+        local tid = NewBattle()
+        local u1 = MakeUnit("A_P1", "P1", { unitType = "infantry", attack = 3, defense = 5 })
+        local u2 = MakeUnit("A_P2", "P2", { unitType = "fighter", attack = 2, defense = 6,
+            convertTarget = "test_convert_target" })
+        KARDS.Battle:SimDeploy(u1, 3)
+        KARDS.Battle:SimDeploy(u2, 3)
+        KARDS.Battle:SimBeginTurn("P1")
+        local line, slot = KARDS.Battlefield:FindCardSlot(tid, u2)
+        AssertTrue(line ~= nil and slot ~= nil, "action 转换指定目标卡 前置：目标已在场")
+        local oldLine, oldSlot = line, slot
+        local SaveSystem = KARDS.CardEditor and KARDS.CardEditor.SaveSystem
+        local savedGetCardInfo = SaveSystem and SaveSystem.GetCardInfo
+        if SaveSystem then
+            SaveSystem.GetCardInfo = function()
+                return { cardAppearance = {
+                    cardType = "tank", attack = 4, defense = 5, cost = 2, actionCost = 1,
+                } }
+            end
+        end
+        local ok = PlayCommand(MakeCommandCard("cmd_convert_target", MakeBaseNode("action", ACTION_BASE, {
+            ["select_2"] = 1, ["select_3"] = 9,
+        })), { u2 })
+        if SaveSystem and savedGetCardInfo then SaveSystem.GetCardInfo = savedGetCardInfo end
+        AssertTrue(ok, "action 转换指定目标卡：P1 打出指令生效")
+        local newCard = oldLine[oldSlot]
+        AssertTrue(newCard ~= nil and newCard ~= u2, "action 转换指定目标卡：原槽位换为新卡")
+        AssertEqual(newCard:GetOwner(), "P2", "action 转换指定目标卡：新卡归属为原归属方")
+        AssertEqual(newCard:GetStat("attack"), 4, "action 转换指定目标卡：新卡按目标卡数据重置攻击 4")
+        AssertEqual(newCard:GetStat("defense"), 5, "action 转换指定目标卡：新卡按目标卡数据重置防御 5")
+        AssertEqual(ZoneOf(tid, u2), nil, "action 转换指定目标卡：旧卡不再在场")
+        AssertTrue(HasTickOp(tid, newCard, "convert"), "action 转换指定目标卡：记录 convert 刻")
     end
 
     -- 10 修复（目标防御 +1）
@@ -432,6 +489,40 @@ local function RunActionGainTest()
             ["select_2"] = 1, ["select_3"] = 17, ["select_8"] = u3, ["select_9"] = 1,
         })), {}), "action 召唤单位：P1 打出指令生效")
         AssertEqual(ZoneOf(tid, u3), "support", "action 召唤单位：目标加入本方支援阵线")
+    end
+
+    -- 18 升为老兵（套用老兵外观并触发「升级」开始点）
+    do
+        local tid = NewBattle()
+        local u1 = MakeUnit("A_VET", "P1", {
+            unitType = "infantry", attack = 2, defense = 3, cost = 1, actionCost = 1,
+            keywords = { "can_elevate_to_veteran" },
+            veteranAppearance = { attack = 6, defense = 7, cost = 2, actionCost = 0,
+                quality = "special", keywords = { "veteran" } },
+        })
+        -- 2026-08-15 调整：部署需支付 1 指挥点（readme 7.1 操作），开局 0 点 → 先补给 1 点
+        KARDS.CommandPoints:AddSlot(tid, "P1")
+        KARDS.CommandPoints:BeginTurn(tid, "P1")
+        AssertTrue(KARDS.Battle:SimDeploy(u1, 3), "action 升为老兵 前置：目标部署成功")
+        AssertTrue(PlayCommand(MakeCommandCard("cmd_vet", MakeBaseNode("action", ACTION_BASE, {
+            ["select_2"] = 1, ["select_3"] = 18,
+        })), { u1 }), "action 升为老兵：P1 打出指令生效")
+        AssertEqual(u1:GetStat("attack"), 6, "action 升为老兵：攻击重置为老兵外观 6")
+        AssertEqual(u1:GetStat("defense"), 7, "action 升为老兵：防御重置为老兵外观 7")
+        AssertEqual(u1:GetCost(), 2, "action 升为老兵：费用重置为老兵外观 2")
+        AssertEqual(u1:GetActionCost(), 0, "action 升为老兵：行动花费重置为 0")
+        AssertTrue(u1:IsVeteran(), "action 升为老兵：目标标记为老兵")
+        AssertTrue(u1:HasKeyword("veteran"), "action 升为老兵：目标词条替换为老兵")
+        AssertTrue(not u1:CanElevateToVeteran(), "action 升为老兵：升级后不再可升为老兵")
+        AssertTrue(HasTickOp(tid, u1, "veteran"), "action 升为老兵：记录 veteran 刻")
+        -- 返回手牌回退：恢复为初始非老兵状态（可再次升级）
+        AssertTrue(KARDS.Battle:SimReturnToHand(u1), "action 升为老兵：老兵返回手牌成功")
+        AssertEqual(u1:GetStat("attack"), 2, "action 升为老兵回退：攻击恢复为初始 2")
+        AssertEqual(u1:GetStat("defense"), 3, "action 升为老兵回退：防御恢复为初始 3")
+        AssertEqual(u1:GetCost(), 1, "action 升为老兵回退：费用恢复为初始 1")
+        AssertEqual(u1:GetActionCost(), 1, "action 升为老兵回退：行动花费恢复为初始 1")
+        AssertTrue(not u1:IsVeteran(), "action 升为老兵回退：清除老兵标记")
+        AssertTrue(u1:CanElevateToVeteran(), "action 升为老兵回退：恢复可升为老兵词条")
     end
 end
 
@@ -546,30 +637,49 @@ local function RunCardSideTest(side, target)
         AssertEqual(KARDS.Deck:DeckSize(tid, target), 5, "card 复制(" .. sideLabel .. ")：卡组不变 5")
     end
 
-    -- 3 弃掉：卡组 -1
+    -- 3 弃掉·卡组顶：卡组 -1（select_7 位置 2=卡组顶）
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_discard", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 3, ["number_3"] = 1, ["select_7"] = 1,
+            ["select_1"] = side, ["select_2"] = 3, ["number_3"] = 1, ["select_7"] = 2,
         }))
         GiveHand(tid, "P1", cmd)
         AssertTrue(PlayCommand(cmd), "card 弃掉(" .. sideLabel .. ")：P1 打出指令生效")
         AssertEqual(KARDS.Deck:DeckSize(tid, target), 4, "card 弃掉(" .. sideLabel .. ")：卡组 5 - 1 = 4")
     end
 
-    -- 4 开发：从开发池对象组变量（{$}，如「卡组中·任意国籍·单位·任意」）随机 3 选 1 加入手牌
-    --   （readme 7.2.1：开发 = 从特定卡池随机 3 张选 1 加入手牌；H5 修复：卡组 -1、手牌 +1）
+    -- 3b 弃掉·手中·第 N 张（select_7=1 手中 + select_8=2 第 + number_4 序数）：
+    --    无玩家选择回调时按数值序数直接弃该方手牌第 N 张（卡组不变）
+    do
+        local tid = SetupCardField()
+        local extra = MakeUnit("C_DISC_" .. side, target, { attack = 1, defense = 1 })
+        GiveHand(tid, target, extra) -- 先放入目标方手牌（index 1），供序数定位
+        local cmd = MakeCommandCard("cmd_discard_hand", MakeBaseNode("card", CARD_BASE, {
+            ["select_1"] = side, ["select_2"] = 3, ["select_7"] = 1, ["select_8"] = 2, ["number_4"] = 1,
+        }))
+        GiveHand(tid, "P1", cmd)
+        local handBefore = KARDS.Deck:HandSize(tid, target)
+        AssertTrue(PlayCommand(cmd), "card 弃掉·手中·第 N 张(" .. sideLabel .. ")：P1 打出指令生效")
+        AssertEqual(KARDS.Deck:HandSize(tid, target), handBefore - 1,
+            "card 弃掉·手中·第 N 张(" .. sideLabel .. ")：手牌 -1")
+        AssertEqual(KARDS.Deck:DeckSize(tid, target), 5,
+            "card 弃掉·手中·第 N 张(" .. sideLabel .. ")：卡组不变 5")
+    end
+
+    -- 4 开发：从开发池对象组变量（{$}，如「卡组中单位」）随机 3 选 1 加入手牌
+    --   （readme 7.2.1：开发 = 从特定卡池随机 3 张选 1 加入手牌；2026-10-02 用户规格：
+    --    加入手牌的是「复制一份」，卡组原卡保留、卡组余量不变）
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_develop", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 4, ["number_4"] = 1,
-            ["select_8"] = "卡组中·任意国籍·单位·任意",
+            ["select_1"] = side, ["select_2"] = 4, ["number_5"] = 1,
+            ["select_9"] = "卡组中单位",
         }))
         GiveHand(tid, "P1", cmd)
         AssertTrue(PlayCommand(cmd), "card 开发(" .. sideLabel .. ")：P1 打出指令生效")
-        -- 目标方卡组 4 单位全部匹配开发池（国籍任意/类型单位/单位类型任意），开发 1 张入该方手牌
+        -- 开发池「卡组中单位」= 目标方卡组 4 单位；开发 1 张复制入手，卡组余量不变
         local handBonus = (side == 1) and 1 or 0 -- 友方手牌含指令卡；敌方手牌为空
-        AssertEqual(KARDS.Deck:DeckSize(tid, target), 4, "card 开发(" .. sideLabel .. ")：卡组 5 - 1 = 4")
+        AssertEqual(KARDS.Deck:DeckSize(tid, target), 5, "card 开发(" .. sideLabel .. ")：卡组不变 5")
         AssertEqual(KARDS.Deck:HandSize(tid, target), 1 + handBonus, "card 开发(" .. sideLabel .. ")：手牌 +1")
         -- develop 刻发起者 = 开发出的卡（非指令卡），扫描任意刻的 develop 操作
         local hasDevelop = false
@@ -585,23 +695,24 @@ local function RunCardSideTest(side, target)
         AssertTrue(hasDevelop, "card 开发(" .. sideLabel .. ")：记录 develop 刻")
     end
 
-    -- 5 选择（观星）：不改状态，记录 scry 刻
+    -- 5 选择（观星）：从卡组顶 count 张选 1 张加入手牌，其余按序回卡组底
+    --   （2026-09-26 语义重写：卡组 -1、手牌 +1；scry 刻发起者 = 选中的卡）
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_scry", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 5, ["number_5"] = 2,
+            ["select_1"] = side, ["select_2"] = 5, ["number_6"] = 2,
         }))
         GiveHand(tid, "P1", cmd)
         AssertTrue(PlayCommand(cmd), "card 选择(" .. sideLabel .. ")：P1 打出指令生效")
-        AssertEqual(KARDS.Deck:DeckSize(tid, target), 5, "card 选择(" .. sideLabel .. ")：卡组不变 5")
-        AssertTrue(HasTickOp(tid, cmd, "scry"), "card 选择(" .. sideLabel .. ")：记录 scry 刻")
+        AssertEqual(KARDS.Deck:DeckSize(tid, target), 4, "card 选择(" .. sideLabel .. ")：卡组 -1（顶 2 选 1 入手）")
+        AssertTrue(HasAnyTickOp(tid, "scry"), "card 选择(" .. sideLabel .. ")：记录 scry 刻")
     end
 
     -- 6 爆牌：卡组 -2
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_burn", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 6, ["number_6"] = 2,
+            ["select_1"] = side, ["select_2"] = 6, ["number_7"] = 2,
         }))
         GiveHand(tid, "P1", cmd)
         AssertTrue(PlayCommand(cmd), "card 爆牌(" .. sideLabel .. ")：P1 打出指令生效")
@@ -623,7 +734,7 @@ local function RunCardSideTest(side, target)
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_shuffleinto", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 8, ["select_9"] = 1, ["select_10"] = 1, ["number_7"] = 1,
+            ["select_1"] = side, ["select_2"] = 8, ["select_10"] = 1, ["select_11"] = 1, ["number_8"] = 1,
         }))
         GiveHand(tid, "P1", cmd)
         if side == 2 then
@@ -639,7 +750,7 @@ local function RunCardSideTest(side, target)
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_si_spechand", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 8, ["select_9"] = 1, ["select_10"] = 2, ["number_7"] = 1,
+            ["select_1"] = side, ["select_2"] = 8, ["select_10"] = 1, ["select_11"] = 2, ["number_8"] = 1,
         }))
         GiveHand(tid, "P1", cmd)
         local keep = MakeUnit("C_KEEP_" .. side, target, { attack = 1, defense = 1 })
@@ -660,11 +771,11 @@ local function RunCardSideTest(side, target)
         AssertTrue(HandContains(tid, target, keep), "card 洗入·手牌中·指定的(" .. sideLabel .. ")：未指定牌 keep 保留在手牌")
     end
 
-    -- 8c 洗入·指定的 N 张牌：走通用指定操作 Specify.HandCard（注入 handPicker 选指定牌洗入）
+    -- 8c 洗入·指定的·手牌 N 张：走通用指定操作 Specify.HandCard（注入 handPicker 选指定牌洗入）
     do
         local tid = SetupCardField()
         local cmd = MakeCommandCard("cmd_si_spec", MakeBaseNode("card", CARD_BASE, {
-            ["select_1"] = side, ["select_2"] = 8, ["select_9"] = 2, ["number_8"] = 1,
+            ["select_1"] = side, ["select_2"] = 8, ["select_10"] = 2, ["select_13"] = 1, ["number_10"] = 1,
         }))
         GiveHand(tid, "P1", cmd)
         local spec = MakeUnit("C_SPEC2_" .. side, target, { attack = 3, defense = 3 })
@@ -679,6 +790,38 @@ local function RunCardSideTest(side, target)
         AssertEqual(KARDS.Deck:HandSize(tid, target), 0 + handBonus, "card 洗入·指定的(" .. sideLabel .. ")：手牌 -1")
         AssertEqual(KARDS.Deck:DeckSize(tid, target), 6, "card 洗入·指定的(" .. sideLabel .. ")：卡组 5 + 1 = 6")
         AssertTrue(not HandContains(tid, target, spec), "card 洗入·指定的(" .. sideLabel .. ")：指定牌已移出手牌")
+    end
+
+    -- 8d 洗入·指定的·场上：从该方支援阵线上的单位中洗入（缺省取候选前 N 张，无需注入）
+    do
+        local tid = SetupCardField()
+        local cmd = MakeCommandCard("cmd_si_specfield", MakeBaseNode("card", CARD_BASE, {
+            ["select_1"] = side, ["select_2"] = 8, ["select_10"] = 2, ["select_13"] = 2, ["number_10"] = 1,
+        }))
+        GiveHand(tid, "P1", cmd)
+        local fld = MakeUnit("C_FLD_" .. side, target, { attack = 3, defense = 3 })
+        AssertTrue(KARDS.Battle:SimDeploy(fld, 3), "card 洗入·指定的·场上(" .. sideLabel .. ")：前置部署成功")
+        AssertTrue(PlayCommand(cmd), "card 洗入·指定的·场上(" .. sideLabel .. ")：P1 打出指令生效")
+        AssertTrue(KARDS.Battlefield:FindCardZone(tid, fld) == nil,
+            "card 洗入·指定的·场上(" .. sideLabel .. ")：场上单位已离场")
+        AssertEqual(KARDS.Deck:DeckSize(tid, target), 6,
+            "card 洗入·指定的·场上(" .. sideLabel .. ")：卡组 5 + 1 = 6")
+    end
+
+    -- 8e 洗入·凭空生成：从开发池变量（{$}，池解析同 develop）克隆 N 张随机插入卡组，手牌不变
+    do
+        local tid = SetupCardField()
+        local cmd = MakeCommandCard("cmd_si_gen", MakeBaseNode("card", CARD_BASE, {
+            ["select_1"] = side, ["select_2"] = 8, ["select_10"] = 3,
+            ["select_12"] = "卡组中单位", ["number_9"] = 1,
+        }))
+        GiveHand(tid, "P1", cmd)
+        AssertTrue(PlayCommand(cmd), "card 洗入·凭空生成(" .. sideLabel .. ")：P1 打出指令生效")
+        local handBonus = (side == 1) and 1 or 0
+        AssertEqual(KARDS.Deck:HandSize(tid, target), 0 + handBonus,
+            "card 洗入·凭空生成(" .. sideLabel .. ")：手牌不变")
+        AssertEqual(KARDS.Deck:DeckSize(tid, target), 6,
+            "card 洗入·凭空生成(" .. sideLabel .. ")：卡组 5 + 1 = 6")
     end
 end
 
@@ -1594,6 +1737,49 @@ local function RunHeadquarterTest()
     end
 end
 
+-- HQ 摧毁判定测试（readme 7.1：总部防御 ≤0 即被摧毁 → 对局结束，摧毁敌方总部即胜利）：
+-- 覆盖单位攻击总部（SimAttack）路径——2026-08-13 修复：此前 SimAttack/SimEngage 结算
+-- 后未触发 HQ 摧毁判定（只有 SimFight / SimDealDamage / SimChangeHQDefense /
+-- ApplyMoraleHits 有收口），总部防御降到 -1 对局不结束。
+local function RunHQDestroyTest()
+    -- 1 单毁：炮兵攻击总部至 ≤0 → 对局结束，攻击方胜利
+    do
+        local tid = NewBattle()
+        local atk = MakeUnit("HQKILL_P1", "P1", { unitType = "artillery", attack = 30, defense = 5 })
+        KARDS.Battle:SimDeploy(atk, 3)   -- P1 炮兵部署支援阵线（炮兵不受攻击距离限制）
+        KARDS.Battle:SimBeginTurn("P1")  -- 推进回合使已部署单位可行动
+        local hq2 = KARDS.Battlefield:GetHQ(tid, "P2")
+        AssertEqual(KARDS.Battle:SimAttack(atk, hq2), true, "HQ 摧毁判定：P1 炮兵攻击 P2 总部（30 攻）")
+        AssertEqual(hq2:GetStat("defense"), -10, "HQ 摧毁判定：攻击后 P2 总部防御 ≤0（20 - 30）")
+        local go = KARDS.Battlefield:GetGameOver(tid)
+        AssertEqual(go and go.winner, "P1", "HQ 摧毁判定：胜利方 = 攻击方 P1")
+        AssertEqual(go and go.loser, "P2", "HQ 摧毁判定：失败方 = 总部被摧毁方 P2")
+    end
+    -- 2 双毁：双方总部先后被摧毁 → 最早被摧毁方失败（readme 7.1 注；对局停止后第二次
+    -- 判定被幂等短路，胜负不翻转）
+    do
+        local tid = NewBattle()
+        local atk1 = MakeUnit("HQKILL2_P1", "P1", { unitType = "artillery", attack = 30, defense = 5 })
+        local atk2 = MakeUnit("HQKILL2_P2", "P2", { unitType = "artillery", attack = 30, defense = 5 })
+        KARDS.Battle:SimDeploy(atk1, 3)
+        KARDS.Battle:SimDeploy(atk2, 3)
+        KARDS.Battle:SimBeginTurn("P1")
+        AssertEqual(KARDS.Battle:SimAttack(atk1, KARDS.Battlefield:GetHQ(tid, "P2")), true,
+            "双毁：P1 炮兵首毁 P2 总部")
+        local go = KARDS.Battlefield:GetGameOver(tid)
+        AssertEqual(go and go.winner, "P1", "双毁：首毁 P2 → P1 胜利")
+        AssertEqual(go and go.loser, "P2", "双毁：首毁 P2 → P2 失败")
+        KARDS.Battle:SimBeginTurn("P2")
+        AssertEqual(KARDS.Battle:SimAttack(atk2, KARDS.Battlefield:GetHQ(tid, "P1")), true,
+            "双毁：P2 炮兵再毁 P1 总部（对局已停止，伤害仍结算）")
+        AssertEqual(KARDS.Battlefield:GetHQ(tid, "P1"):GetStat("defense"), -10,
+            "双毁：P1 总部也被摧毁（20 - 30）")
+        local go2 = KARDS.Battlefield:GetGameOver(tid)
+        AssertEqual(go2 and go2.winner, "P1", "双毁：最早被摧毁方（P2）失败，胜负不翻转")
+        AssertEqual(go2 and go2.loser, "P2", "双毁：P2 保持失败")
+    end
+end
+
 -- loop 测试：循环双输出节点（hasSecondOutput）
 -- 编辑器使用方式：第一输出点（satisfied）→ 循环体节点；第二输出点（not_satisfied）→ 循环结束后的节点
 -- 执行语义：循环计数 > 0（未结束）→ 计数 -1，信号走第一输出点（继续循环）；= 0（已结束）→ 走第二输出点
@@ -2286,8 +2472,9 @@ local function RunTriggerFunctionTest()
     do
         local tid = NewBattle()
         -- 拦截函数：空函数子图（CallFunctionData 空函数返回 true → 视为已拦截）
+        -- select_2 = 1：拦截「打出指令」这一操作类型（拦截分支的操作类型选择器）
         local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
-            ["select_1"] = 4, ["funcslot_1"] = "拦截函数", ["select_2"] = 3, -- 拦截一次/函数/无
+            ["select_1"] = 4, ["funcslot_1"] = "拦截函数", ["select_2"] = 1, -- 拦截一次/函数/打出指令
         })
         local cmdI = MakeCommandCard("cmd_tf4_i", tf)
         cmdI.effect.variables = { f = { { name = "拦截函数", internalName = "KARDS.User.拦截函数",
@@ -2534,7 +2721,7 @@ local function RunTurnTest()
         AssertEqual(ZoneOf(tid, u1), "support", "turn 场景3：第 2 次开始 → 恢复执行（u1 回支援阵线）")
     end
 
-    -- 4 使-回合结束：立即结束当前回合（countdown 1 单位移除）+ 下游未挂起直接执行
+    -- 4 使-友方回合结束：立即结束效果拥有者（P1）回合（countdown 1 单位移除）+ 下游未挂起直接执行
     do
         local tid = NewBattle()
         local u1 = MakeUnit("u_tn4", "P1", { attack = 3, defense = 5 })
@@ -2544,7 +2731,7 @@ local function RunTurnTest()
         KARDS.Battle:SimBeginTurn("P1")
         KARDS.Battle:SimMoveToFrontline(u1)
         local tn = MakeBaseNode("turn", TURN_BASE, {
-            ["select_1"] = 2, ["select_4"] = 1, -- 使/回合结束
+            ["select_1"] = 2, ["select_4"] = 1, ["select_5"] = 1, -- 使/友方/回合结束
         }, { id = "tn4" })
         local retreat = MakeBaseNode("action", ACTION_BASE, {
             ["select_2"] = 1, ["select_3"] = 1,
@@ -2557,12 +2744,12 @@ local function RunTurnTest()
         AssertEqual(ZoneOf(tid, u2), nil, "turn 场景4：回合结束生效（countdown 1 单位被移除）")
     end
 
-    -- 5 使-跳过回合：结束当前回合 + 开始对手回合
+    -- 5 使-友方跳过回合：结束效果拥有者（P1）回合 + 开始其对手（P2）回合
     do
         local tid = NewBattle()
         KARDS.Battle:SimBeginTurn("P1") -- 回合数 1，当前回合玩家 P1
         local tn = MakeBaseNode("turn", TURN_BASE, {
-            ["select_1"] = 2, ["select_4"] = 2, -- 使/跳过回合
+            ["select_1"] = 2, ["select_4"] = 1, ["select_5"] = 2, -- 使/友方/跳过回合
         }, { id = "tn5" })
         AssertTrue(PlayCommand(MakeCommandCard("cmd_tn5", tn)), "turn 场景5：P1 打出「使-跳过回合」指令生效")
         AssertEqual(KARDS.Battle.TurnNumbers[tid], 2, "turn 场景5：跳过回合 → 对手回合开始（回合数 +1）")
@@ -2591,6 +2778,293 @@ local function RunTurnTest()
     end
 end
 
+-- 反制系统测试：激活登记与隐藏花费 / 回合校验 / 手动失活返还 / 到点自动失活 /
+-- 激活操作本身可被拦截 / 拦截命中自动打出 / 保持拦截型反制自动打出 /
+-- 反制卡拦截另一张反制的激活操作（KARDS.Counter 与 SimActivateCounter、
+-- SimDeactivateCounter、FireCounter，反制系统 M2/M4/M5）
+-- 依赖：KARDS.Counter（sh_counter.lua）、KARDS.CommandPoints 隐藏池、统一操作钩子
+local function RunCounterTest()
+    -- 构造反制卡（counter_command，花费 cost）；opts 可指定：
+    --   owner  归属方（默认 "P1"）
+    --   mode   附带「激活时」拦截效果链："once" 拦截一次（select_1=4, select_2）/ "keep" 保持拦截（select_1=5, select_3）
+    --   opType 拦截的操作类型选项索引（INTERCEPT_OPTYPES 顺序，默认 1 = 打出指令）
+    -- 不传 mode 则构造无效果的反制卡（仅用于激活状态与花费断言）
+    local function MakeCounterCard(id, cost, opts)
+        opts = opts or {}
+        local cc = KARDS.CardInterface.CreateMockCard(id, "counter_command", opts.owner or "P1", { cost = cost or 0 })
+        if opts.mode then
+            local vals = { ["funcslot_1"] = "拦截函数" }
+            if opts.mode == "keep" then
+                vals["select_1"] = 5 -- 保持拦截
+                vals["select_3"] = opts.opType or 1
+            else
+                vals["select_1"] = 4 -- 拦截一次
+                vals["select_2"] = opts.opType or 1
+            end
+            local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, vals)
+            cc.effect = {
+                nodes = { tf },
+                variables = { f = { { name = "拦截函数", internalName = "KARDS.User.拦截函数",
+                    functionData = { nodes = {}, connections = {}, dataConnections = {} } } } },
+                dataConnections = {},
+            }
+        end
+        return cc
+    end
+    -- 给指定玩家直接注入 N 指挥点（绕过回合补给；扣费断言需要确定基数；玩家缺省 P1）
+    local function GivePoints(tid, n, player)
+        player = player or "P1"
+        local cp = KARDS.CommandPoints:Get(tid)
+        cp.Slots[player] = n
+        cp.Points[player] = n
+    end
+
+    -- 1 激活：登记 + 支付 + 隐藏花费（对敌口径不变）+ activate_counter 刻
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a1", 2)
+        GiveHand(tid, "P1", cc)
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景1：P1 激活反制成功")
+        AssertTrue(KARDS.Counter:IsActive(tid, cc), "counter 场景1：登记为已激活")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 3, "counter 场景1：已扣花费（5 - 2 = 3）")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 2, "counter 场景1：花费计入隐藏池（2）")
+        AssertEqual(KARDS.CommandPoints:GetPublicPoints(tid, "P1"), 5, "counter 场景1：对敌方口径不变（隐藏，5）")
+        AssertTrue(HasTickOp(tid, cc, "activate_counter"), "counter 场景1：记录 activate_counter 刻")
+    end
+
+    -- 2 非本方回合拒绝激活（不扣费不入册）
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a2", 2)
+        GiveHand(tid, "P1", cc)
+        KARDS.Battle.CurTurnPlayer[tid] = "P2" -- 当前为 P2 回合
+        AssertEqual(KARDS.Battle:SimActivateCounter("P1", cc), false, "counter 场景2：非本方回合拒绝激活")
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景2：未登记激活")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 5, "counter 场景2：未扣花费（5）")
+    end
+
+    -- 3 手动失活：返还花费 + 隐藏池清零 + 移出登记；未激活失活返回 false
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a3", 2)
+        GiveHand(tid, "P1", cc)
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景3：P1 激活反制成功")
+        AssertTrue(KARDS.Battle:SimDeactivateCounter("P1", cc), "counter 场景3：手动失活成功")
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景3：移出激活登记")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 5, "counter 场景3：返还花费（3 + 2 = 5）")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景3：隐藏池清零")
+        AssertEqual(KARDS.Battle:SimDeactivateCounter("P1", cc), false, "counter 场景3：未激活失活返回 false")
+    end
+
+    -- 4 到点自动失活：他方回合结束不影响；激活当回合结束保留；跨过一个完整敌方回合后失活不返还
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a4", 2)
+        GiveHand(tid, "P1", cc)
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        KARDS.Battle.TurnNumbers[tid] = 1 -- 激活发生在第 1 回合
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景4：P1 激活反制成功")
+        KARDS.Counter:OnTurnEnd(tid, "P2") -- 他方回合结束
+        AssertTrue(KARDS.Counter:IsActive(tid, cc), "counter 场景4：他方回合结束不自动失活")
+        KARDS.Counter:OnTurnEnd(tid, "P1") -- 激活当回合结束（回合序号未变）
+        AssertTrue(KARDS.Counter:IsActive(tid, cc), "counter 场景4：激活当回合结束保留")
+        KARDS.Battle.TurnNumbers[tid] = 3 -- 已经历一个完整敌方回合
+        KARDS.Counter:OnTurnEnd(tid, "P1")
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景4：跨回合自动失活")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景4：自动失活隐藏池清零")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 3, "counter 场景4：自动失活不返还花费（3）")
+    end
+
+    -- 5 激活反制本身可被拦截（统一操作钩子 activate_counter）：被拦截则不支付不入册
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a5", 2)
+        GiveHand(tid, "P1", cc)
+        KARDS.EngineHooks.Register(tid, KARDS.EngineHooks.HookPoints.OnBeforeOperation, "hook_act_block",
+            function(args)
+                if args.opType == "activate_counter" then args.intercepted = true end
+                return args
+            end)
+        AssertEqual(KARDS.Battle:SimActivateCounter("P1", cc), false, "counter 场景5：激活操作被拦截（返回 false）")
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景5：被拦截后未登记激活")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 5, "counter 场景5：被拦截后未扣花费（5）")
+    end
+
+    -- 6 拦截命中自动打出（FireCounter）：已激活反制经 trigger_function 拦截钩子命中敌方打出指令 →
+    -- 移出手牌 + 公开隐藏花费 + 记录 counter 刻 + 通知牌桌实体按指令口径广播（回调）
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a6", 2, { mode = "once", opType = 1 }) -- 带「拦截一次·打出指令」效果链
+        GiveHand(tid, "P1", cc)
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景6：P1 激活拦截型反制")
+        -- 牌桌实体广播回调（数据层不直接依赖实体，见 sh_battle_combat.lua）
+        local played = { count = 0, card = nil, slot = nil }
+        KARDS.Battle:SetCounterPlayCallback(tid, function(card, slot)
+            played.count = played.count + 1
+            played.card = card
+            played.slot = slot
+        end)
+        -- P2 打出指令 → 命中已激活反制（拦截后指令效果不生效）
+        local vNode = MakeBaseNode("headquarter", HEADQUARTER_BASE, { ["select_1"] = 1, ["select_2"] = 1, ["number_1"] = 2 })
+        local v = KARDS.CardInterface.CreateMockCard("cmd_counter_v1", "command", "P2", { cost = 0 })
+        v.effect = { nodes = { vNode }, variables = {}, dataConnections = {} }
+        AssertEqual(KARDS.Battle:SimPlayCard("P2", v, {}), false, "counter 场景6：P2 指令被反制拦截（返回 false）")
+        AssertEqual(KARDS.Battlefield:GetHQ(tid, "P2"):GetStat("defense"), 20,
+            "counter 场景6：被拦截后指令效果未生效（P2 HQ 20）")
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景6：命中后移出激活登记")
+        AssertEqual(HandContains(tid, "P1", cc), false, "counter 场景6：命中后反制移出手牌")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景6：命中后隐藏花费公开清零")
+        AssertTrue(HasTickOp(tid, cc, "counter"), "counter 场景6：记录 counter 刻（发起者 = 反制卡）")
+        AssertEqual(played.count, 1, "counter 场景6：通知牌桌实体广播打出动画（回调 1 次）")
+        AssertEqual(played.card, cc, "counter 场景6：广播回调带反制卡")
+        AssertEqual(played.slot, 1, "counter 场景6：广播槽位为归属方 P1（1）")
+        KARDS.Battle.CounterPlayCallbacks[tid] = nil -- 清理回调（防跨场景残留）
+    end
+
+    -- 7 保持拦截型反制自动打出：与场景6同链路，但走「保持拦截」分支（select_1=5）；
+    -- 命中一次后反制被消费（FireCounter 移出手牌并注销钩子），后续敌方操作不再被拦
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5)
+        local cc = MakeCounterCard("counter_a7", 2, { mode = "keep", opType = 1 }) -- 保持拦截·打出指令
+        GiveHand(tid, "P1", cc)
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景7：P1 激活保持拦截型反制")
+        local played = { count = 0, slot = nil }
+        KARDS.Battle:SetCounterPlayCallback(tid, function(_, slot)
+            played.count = played.count + 1
+            played.slot = slot
+        end)
+        local function makeV(idd)
+            local vNode = MakeBaseNode("headquarter", HEADQUARTER_BASE, { ["select_1"] = 1, ["select_2"] = 1, ["number_1"] = 2 })
+            local v = KARDS.CardInterface.CreateMockCard(idd, "command", "P2", { cost = 0 })
+            v.effect = { nodes = { vNode }, variables = {}, dataConnections = {} }
+            return v
+        end
+        -- 第一次 P2 打出指令 → 命中保持拦截并自动打出反制
+        AssertEqual(KARDS.Battle:SimPlayCard("P2", makeV("cmd_counter_v7_1"), {}), false,
+            "counter 场景7：P2 指令被保持拦截（返回 false）")
+        AssertEqual(KARDS.Battlefield:GetHQ(tid, "P2"):GetStat("defense"), 20,
+            "counter 场景7：拦截后指令效果未生效（P2 HQ 20）")
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景7：命中后移出激活登记")
+        AssertEqual(HandContains(tid, "P1", cc), false, "counter 场景7：命中后反制移出手牌")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景7：命中后隐藏花费公开清零")
+        AssertTrue(HasTickOp(tid, cc, "counter"), "counter 场景7：记录 counter 刻")
+        AssertEqual(played.count, 1, "counter 场景7：广播回调 1 次")
+        AssertEqual(played.slot, 1, "counter 场景7：广播槽位为归属方 P1（1）")
+        -- 反制已被消费并注销钩子 → 第二次 P2 打出指令不被拦截，效果照常生效
+        AssertEqual(KARDS.Battle:SimPlayCard("P2", makeV("cmd_counter_v7_2"), {}), true,
+            "counter 场景7：反制消费后再次打出不被拦截（返回 true）")
+        AssertEqual(KARDS.Battlefield:GetHQ(tid, "P2"):GetStat("defense"), 22,
+            "counter 场景7：第二次指令生效（P2 HQ 20 → 22）")
+        AssertEqual(played.count, 1, "counter 场景7：反制消费后不再广播（仍 1 次）")
+        KARDS.Battle.CounterPlayCallbacks[tid] = nil -- 清理回调
+    end
+
+    -- 8 反制拦下另一张反制的激活操作（链式）：P1 的已激活反制 A 拦截「激活反制」操作，
+    -- P2 激活反制 B 时被 A 命中 → B 未入册未扣费、A 自动打出并消费
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5, "P1")
+        GivePoints(tid, 5, "P2")
+        local a = MakeCounterCard("counter_a8", 2, { owner = "P1", mode = "once", opType = 2 }) -- 拦截「激活反制」
+        local b = MakeCounterCard("counter_b8", 1, { owner = "P2" }) -- 无效果，仅待激活
+        GiveHand(tid, "P1", a)
+        GiveHand(tid, "P2", b)
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", a), "counter 场景8：P1 激活拦截型反制 A")
+        KARDS.Battle.CurTurnPlayer[tid] = "P2" -- 轮到 P2 激活自己的反制
+        AssertEqual(KARDS.Battle:SimActivateCounter("P2", b), false,
+            "counter 场景8：P2 激活被 A 拦截（返回 false）")
+        AssertEqual(KARDS.Counter:IsActive(tid, b), false, "counter 场景8：B 未登记激活")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P2"), 5, "counter 场景8：B 未扣花费（P2 5）")
+        AssertTrue(HandContains(tid, "P2", b), "counter 场景8：B 留在手牌")
+        AssertEqual(KARDS.Counter:IsActive(tid, a), false, "counter 场景8：A 命中后移出激活登记")
+        AssertEqual(HandContains(tid, "P1", a), false, "counter 场景8：A 命中后移出手牌")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景8：A 隐藏花费公开清零")
+        AssertTrue(HasTickOp(tid, a, "counter"), "counter 场景8：A 记录 counter 刻")
+    end
+end
+
+-- ====================================================================
+-- 单位效果拦截测试（拦截可随时使用：单位在场期间持续拦截，离场/回手自动注销）
+-- ====================================================================
+-- 单位在以「部署」开始点执行效果链时注册持续拦截（trigger_function 保持拦截，见
+-- sh_node_hooks.lua RegisterIntercept）。拦截归属本方（owner），只拦敌方发起的操作；
+-- 单位离场（SimRemoveFromField）/ 回手（SimReturnToHand）时经 EngineHooks.UnregisterByEntity
+-- 注销绑定该卡的钩子，拦截随之失效（2026-10-05 修复：此前只注销 EffectRegistry，引擎钩子残留）。
+-- 操作类型索引按 INTERCEPT_OPTYPES：抽取 = 9，弃牌 = 10。
+local function RunUnitInterceptTest()
+    -- 构造带「部署」开始点 + 保持拦截 的单位卡（owner 固定 P1；opTypeIndex 见上）
+    local function MakeInterceptUnit(id, opTypeIndex)
+        local u = MakeUnit(id, "P1", { attack = 1, defense = 5 })
+        local startNode = { type = "start", data = { title = "部署" } } -- 部署开始点
+        local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
+            ["select_1"] = 5, ["funcslot_1"] = "拦截函数", ["select_3"] = opTypeIndex, -- 保持拦截/函数/操作类型
+        })
+        u.effect = {
+            nodes = { startNode, tf },
+            variables = { f = { { name = "拦截函数", internalName = "KARDS.User.拦截函数",
+                functionData = { nodes = {}, connections = {}, dataConnections = {} } } } },
+            dataConnections = {},
+        }
+        return u
+    end
+
+    -- 1 单位部署注册保持拦截·抽取：敌方抽取被拦（返回空，手牌不增）
+    do
+        local tid = NewBattle()
+        local u = MakeInterceptUnit("u_itc1", 9) -- 抽取
+        AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景1：P1 部署拦截单位")
+        local before = #KARDS.Deck:GetHand(tid, "P2")
+        local drawn = KARDS.Battle:SimDraw("P2", 1)
+        AssertEqual(#drawn, 0, "unit 拦截场景1：P2 抽取被拦（返回空）")
+        AssertEqual(#KARDS.Deck:GetHand(tid, "P2"), before, "unit 拦截场景1：P2 手牌未增加")
+    end
+
+    -- 2 单位离场后拦截自动注销：离场前被拦，离场后不再被拦
+    do
+        local tid = NewBattle()
+        local u = MakeInterceptUnit("u_itc2", 9)
+        AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景2：P1 部署拦截单位")
+        AssertEqual(#KARDS.Battle:SimDraw("P2", 1), 0, "unit 拦截场景2：离场前抽取被拦")
+        AssertTrue(KARDS.Battle:SimRemoveFromField(u), "unit 拦截场景2：单位离场成功")
+        AssertEqual(#KARDS.Battle:SimDraw("P2", 1), 1, "unit 拦截场景2：离场后抽取不被拦（抽到 1 张）")
+    end
+
+    -- 3 单位回手后拦截自动注销
+    do
+        local tid = NewBattle()
+        local u = MakeInterceptUnit("u_itc3", 9)
+        AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景3：P1 部署拦截单位")
+        AssertEqual(#KARDS.Battle:SimDraw("P2", 1), 0, "unit 拦截场景3：回手前抽取被拦")
+        AssertTrue(KARDS.Battle:SimReturnToHand(u), "unit 拦截场景3：单位回手成功")
+        AssertEqual(#KARDS.Battle:SimDraw("P2", 1), 1, "unit 拦截场景3：回手后抽取不被拦（抽到 1 张）")
+    end
+
+    -- 4 单位拦截·弃牌（友方手牌无法被弃掉）：敌方弃我方手牌被拦（卡留手牌）；单位离场后不再被拦
+    do
+        local tid = NewBattle()
+        local u = MakeInterceptUnit("u_itc4", 10) -- 弃牌
+        AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景4：P1 部署拦截单位")
+        local hc = KARDS.CardInterface.CreateMockCard("hand_itc4", "command", "P1", { cost = 0 })
+        GiveHand(tid, "P1", hc)
+        AssertEqual(KARDS.Battle:SimDiscard("P2", hc), false, "unit 拦截场景4：P2 弃 P1 手牌被拦（返回 false）")
+        AssertTrue(HandContains(tid, "P1", hc), "unit 拦截场景4：被弃手牌留在手牌")
+        AssertTrue(KARDS.Battle:SimRemoveFromField(u), "unit 拦截场景4：单位离场成功")
+        AssertEqual(KARDS.Battle:SimDiscard("P2", hc), true, "unit 拦截场景4：离场后弃牌不被拦（返回 true）")
+        AssertEqual(HandContains(tid, "P1", hc), false, "unit 拦截场景4：弃牌成功，手牌移出")
+    end
+end
+
 -- ====================================================================
 -- 主入口
 -- ====================================================================
@@ -2612,6 +3086,7 @@ function RunNodeParserBattleTests()
     RunEventMonitorBranchTest()
     RunExtractTest()
     RunHeadquarterTest()
+    RunHQDestroyTest() -- HQ 摧毁判定（单位攻击总部至 ≤0 → 对局结束；双毁）
     RunLoopTest()
     RunPropertyTest()
     RunRegisterHookTest()
@@ -2619,6 +3094,8 @@ function RunNodeParserBattleTests()
     RunTriggerFunctionTest()
     RunTriggerTest()
     RunTurnTest()
+    RunCounterTest() -- 反制系统（激活/失活/到点失活/激活可被拦截/拦截命中自动打出/保持拦截自动打出/反制拦反制）
+    RunUnitInterceptTest() -- 单位效果拦截（单位在场持续拦截·抽取/弃牌；离场与回手自动注销引擎钩子）
     print("==============================================")
     -- 出现 FAIL 项时，在"测试完成"前将失败项重新打印一遍（便于从长输出中定位）
     if TestsFailed > 0 then

@@ -3,7 +3,7 @@
 
 KARDS = KARDS or {}
 KARDS.CardEditor = KARDS.CardEditor or {}
-KARDS.CardEditor.Version = "0.2.0"
+KARDS.CardEditor.Version = "0.5.0-alpha"
 
 -- ===== BGM 注册机制（全局 API，供外部音乐扩展模组注册新风格与曲目）=====
 -- 外部模组在 autorun 中调用 KARDS.CardEditor.RegisterBGMCountry / RegisterBGMTrack：
@@ -38,14 +38,9 @@ function KARDS.CardEditor.RegisterBGMTrack(countryId, trackPath, trackName)
     end
 end
 
--- 调试开关
-KARDS.CardEditor.Debug = CreateConVar("kards_editor_debug", "0", FCVAR_ARCHIVE, "Enable debug mode for Kards card editor")
-
 -- 日志函数
 function KARDS.CardEditor:Log(message, level)
-    level = level or "INFO"
-    if level == "DEBUG" and not self.Debug:GetBool() then return end
-    print("[KARDS Editor] " .. level .. ": " .. message)
+    print("[KARDS Editor] " .. (level or "INFO") .. ": " .. message)
 end
 
 -- 加载共享文件
@@ -61,9 +56,6 @@ local function LoadSharedFiles()
     -- 核心共享代码
     include("card_editor/sh_core.lua")
 
-    -- 网络管理
-    include("card_editor/sh_network.lua")
-
     -- 动画系统共享代码
     include("card_editor/sh_animation.lua")
 
@@ -75,8 +67,9 @@ local function LoadSharedFiles()
         KARDS.CardEditor:Log("Error loading sh_save_system.lua: " .. tostring(saveErr), "ERROR")
     end
 
-    -- 多语言支持
-    include("card_editor/sh_i18n.lua")
+    -- 版本历史与素材来源（关于页数据源，2026-10-05）
+    include("card_editor/sh_version_history.lua")
+    include("card_editor/sh_source_credits.lua")
 
     -- 全局变量库（战斗系统基础，需在其他战斗模块之前加载）
     include("kards/sh_varlib.lua")
@@ -96,6 +89,10 @@ local function LoadSharedFiles()
 
     -- 卡牌句柄接口约定 + Mock 实现（真实卡牌系统就绪后按接口替换，依赖倒置迁移）
     include("kards/sh_card_interface.lua")
+
+    -- 卡牌规模音效（部署/攻击/放置在场音效按「单位类型 × 规模」分配与级联回退；
+    -- 依赖 sh_card_interface.lua 的 UnitTypes，故紧随其后加载；re.md 阶段二 B4 拆分）
+    include("kards/sh_card_sounds.lua")
 
     -- 战场布局数据层（支援阵线/前线/总部/作弊检测，战斗系统规划第 11 节，纯 Lua）
     include("kards/sh_battlefield.lua")
@@ -122,6 +119,10 @@ local function LoadSharedFiles()
     include("kards/sh_battle_card.lua")
     include("kards/sh_battle_combat.lua")
 
+    -- 反制管理器（反制系统 M2：手中保持激活的反制状态、隐藏花费、跨回合存续与
+    -- 到点自动失活；依赖 EngineHooks / EffectRegistry / CommandPoints / Battle）
+    include("kards/sh_counter.lua")
+
     -- 节点解析系统（将节点编辑器数据结构翻译为战斗系统操作；首个解析器：设置变量节点，
     -- 依赖 VarLib/TickLog/CardInterface，故置于战斗骨架之后）
     include("kards/sh_node_parser.lua")
@@ -130,6 +131,7 @@ local function LoadSharedFiles()
     -- 均挂在 KARDS.NodeParser 命名空间，原文件入口 ExecuteBaseNode/ExecuteEffect 分派引用）
     include("kards/sh_node_semantics.lua")
     include("kards/sh_node_acts_field.lua")
+    include("kards/sh_node_acts_choice.lua")
     include("kards/sh_node_acts_condition.lua")
     include("kards/sh_node_acts_register.lua")
     include("kards/sh_node_hooks.lua")
@@ -152,6 +154,10 @@ local function LoadSharedFiles()
     -- 新建（固定空卡 + 材质接口）/ 删除（1 秒透明度淡出后销毁），统一相对 z 轴，纯 Lua 共享）
     include("kards/sh_child_system.lua")
 
+    -- 虚拟 3D2D 输入框通用模块（2026-09-05：在牌桌平面内渲染半透明输入框，
+    -- 所有玩家实时看到输入文本；作为通用方法供组卡搜索等场景使用，见 sh_3d2d_input.lua）
+    include("kards/sh_3d2d_input.lua")
+
     -- 牌桌卡牌 manifest 共享模块（re.md T-H2：收敛 init.lua / cl_init.lua 多份同构
     -- Ensure*Manifest 实现为单一「副本克隆 + image_path 改写」，两端仅保留薄包装调用）
     include("kards/sh_card_manifest.lua")
@@ -171,9 +177,6 @@ end
 local function LoadServerFiles()
     if SERVER then
         KARDS.CardEditor:Log("Loading server files...")
-
-        -- 服务端存储系统
-        include("card_editor/sv_storage.lua")
 
         -- 服务端动画系统
         include("card_editor/sv_animation.lua")
@@ -313,8 +316,26 @@ local function LoadClientFiles()
         KARDS.CardEditor:Log("Loading canvas_editor/appearance_editor/cl_ca_appearance_editors.lua...")
         include("card_editor/canvas_editor/appearance_editor/cl_ca_appearance_editors.lua")
 
-        -- 卡牌渲染系统
-        include("card_editor/cl_card_renderer.lua")
+        -- 纹理边界计算模块（本次从 cl_canvas_editor.lua 拆分）
+        include("card_editor/canvas_editor/effect_editor/cl_ca_texture_bounds.lua")
+
+        -- 卡牌离屏渲染模块（本次从 cl_canvas_editor.lua 拆分）
+        include("card_editor/canvas_editor/effect_editor/cl_ca_card_render.lua")
+
+        -- 变量弹窗与对象选择器模块（本次从 cl_canvas_editor.lua 拆分）
+        include("card_editor/canvas_editor/effect_editor/cl_ca_var_popups.lua")
+
+        -- BGM 扩展国家菜单模块（本次从 cl_canvas_editor.lua 拆分）
+        include("card_editor/canvas_editor/effect_editor/cl_ca_bgm_menu.lua")
+
+        -- 文件管理器与音效命名模块（本次从 cl_canvas_editor.lua 拆分）
+        include("card_editor/canvas_editor/effect_editor/cl_ca_file_manager.lua")
+
+        -- 关于页（2026-10-05）：版本时间线、开发者与鸣谢名单、素材来源弹窗
+        include("card_editor/canvas_editor/effect_editor/cl_ca_about_page.lua")
+
+        -- 卡牌渲染系统（cl_card_renderer.lua 已删，2026-08-15 编辑器重构 7.5-1 孤儿链清理）
+        -- 动态材质：canvas_editor/effect_editor/cl_canvas_editor.lua 统一管理
 
         -- dynamic_BGM 兼容性模块
         KARDS.CardEditor:Log("Loading dynamic_BGM compatibility module...")
@@ -336,6 +357,12 @@ local function LoadClientFiles()
         KARDS.CardEditor:Log("Loading kards/cl_battle_camera.lua...")
         include("kards/cl_battle_camera.lua")
 
+        -- 单位词条图标（2026-08-13：3D2D 上下文内右缘外侧竖排绘制，见
+        -- cl_battle_keyword_icons.lua；先于 cl_card_text_overlay.lua 加载，
+        -- 后者 DrawOverlay 的单位/总部分支调用 KARDS.KeywordIcons:Draw）
+        KARDS.CardEditor:Log("Loading kards/cl_battle_keyword_icons.lua...")
+        include("kards/cl_battle_keyword_icons.lua")
+
         -- 卡牌 3D2D 属性文字叠加层（客户端：编辑器 3D2D 文字卡生成 + 战场卡牌属性文字实时悬浮）
         KARDS.CardEditor:Log("Loading kards/cl_card_text_overlay.lua...")
         include("kards/cl_card_text_overlay.lua")
@@ -356,13 +383,9 @@ function KARDS.CardEditor:Initialize()
     LoadServerFiles()
     LoadClientFiles()
 
-    -- 注册网络消息
+    -- 注册网络消息（KARDS_Editor_SaveCard/LoadCard/DeleteCard/CardList 随 sv_storage.lua 删除，2026-08-15 编辑器重构 7.5-1）
     if SERVER then
         util.AddNetworkString("KARDS_Editor_Open")
-        util.AddNetworkString("KARDS_Editor_SaveCard")
-        util.AddNetworkString("KARDS_Editor_LoadCard")
-        util.AddNetworkString("KARDS_Editor_DeleteCard")
-        util.AddNetworkString("KARDS_Editor_CardList")
     end
 
     self:Log("Initialization complete")

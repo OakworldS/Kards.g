@@ -50,7 +50,11 @@ end
 function KARDS.Specify.Target(tableID, player, candidates, picker)
     if not candidates or #candidates == 0 then return nil end
     if type(picker) == "function" then
-        return picker(candidates) or candidates[1]
+        -- 严格失败：picker 显式返回 false 表示选定目标不合法（测试控制台指向非法
+        -- 槽位用），不回退候选首项；返回 nil 仍按缺省回退候选首项
+        local picked = picker(candidates)
+        if picked == false then return nil end
+        return picked or candidates[1]
     end
     return candidates[1]
 end

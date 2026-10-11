@@ -110,7 +110,9 @@ include("cl_battle_state.lua")
 -- 未实现职责占位文件（2026-08-11 拆分 A2）：各职责待开发（多为正式版标准职责），
 -- 当前为空文件，仅登记加载顺序；实现时代码写在对应文件内、挂 KARDS 命名空间
 --（各文件头注释写明职责与约定，本行注释随功能落地后删改）
-include("cl_battle_pick.lua")       -- 三选一交互（待实现）
+include("cl_battle_pick.lua")       -- 三选一交互（开发/观星候选卡展示与选择，2026-09-26 实现）
+include("cl_battle_choice.lua")     -- 抉择演出与二选一交互（中槽分裂 + 鼠标选卡，2026-10-04 实现）
+include("cl_battle_discard.lua")    -- 弃牌选择交互（手牌上移选择 + 确认按钮，2026-10-06 实现）
 include("cl_battle_front.lua")      -- 移到前线交互（待实现）
 include("cl_battle_chat.lua")       -- 纯固定文本聊天（待实现）
 include("cl_battle_settings.lua")   -- 设置（待实现）
@@ -118,21 +120,66 @@ include("cl_battle_surrender.lua")  -- 投降（待实现）
 include("cl_battle_history.lua")    -- 历史出牌回顾（待实现）
 
 -- 指挥点 HUD 面板（2026-08-11 拆分 B1：状态/常量/Think 推进/HUDPaint 绘制/net 接收器，
--- 导出 KARDS.CommandPointsReset / KARDS.CommandPointsApplyBroadcast）
+-- 导出 KARDS.CommandPointsReset / KARDS.CommandPointsApplyBroadcast；2026-10-10 起
+-- 面板自角落向中线让位，导出角落布局 KARDS.CPAvatarRect / KARDS.CPAvatarSize）
 include("cl_battle_command_points.lua")
+
+-- 对局内玩家头像面板（2026-10-10：先手揭晓结束后在角落（指挥点面板让位处）常驻展示
+-- 双方玩家头像 + 玩家名，头像淡入 / 名字向右滑动淡入，结算时淡出；
+-- 导出 KARDS.PlayerPanelIntro / Outro / Reset，见 cl_battle_player_panel.lua）
+include("cl_battle_player_panel.lua")
 
 -- HUD 三件套（2026-08-11 拆分 B1：卡堆悬停信息面板 / 结束回合按钮 / 手牌花费颜色）
 include("cl_battle_hud.lua")
 
+-- 提示系统（2026-08-12：屏幕中心 toast，textUnderground.png 底 + 白色文字，
+-- 淡入 1.5s / 停留 3s / 淡出 1.5s；多提示向上堆叠移出屏幕，导出 KARDS.BattleHint；
+-- 服务端操作失败原因经 KardsTableMsg 接收器转本系统）
+include("cl_battle_hint.lua")
+
 -- 单位操作交互（2026-08-11 拆分 C2：按下在场单位 → 松开按悬停目标发送操作请求；
 -- 判定/决策全在服务端战斗系统，导出 KARDS.UnitOpsReset）
 include("cl_battle_ops.lua")
+
+-- 隐蔽机制（2026-08-13：隐蔽部署背面朝上视觉/揭示翻面动画+音效/指令指向提示，
+-- 见 cl_battle_stealth.lua；导出 KARDS.Stealth）
+include("cl_battle_stealth.lua")
+
+-- 前线符号实体（2026-08-11：客户端实体渲染前线占领状态，数据源 frontlineOwnerSlot）
+include("cl_battle_frontline_symbol.lua")
+
+-- 对局结算（2026-08-13：总部被摧毁 → 震屏/肩后相机/模糊/胜负字样/继续/黑屏退出，
+-- 见 cl_battle_gameover.lua；导出 KARDS.GameOverReset）
+include("cl_battle_gameover.lua")
+
+-- 测试版不同步恢复（2026-09-13：服务端结构性分歧通知 → 模糊弹窗 + 「重启」软重进
+-- 快照本地重建，见 cl_battle_desync.lua；导出 KARDS.DrawActionButton / DesyncReset）
+include("cl_battle_desync.lua")
+
+-- 伪用户控制台彩色输出接收（2026-09-13：管理测试用 kards_fakeuser_* 指令输出，
+-- 服务端 AddCSLuaFile 下发，本处 include 注册 net.Receive MsgC 打印）
+include("cl_fakeuser_console.lua")
+
+-- 战斗 BGM（2026-08-14：对局开始仅在场玩家收到 KardsBattleBGM，本地随机风格/曲目
+-- 循环播放；导出 KARDS.PlayBattleBGM / KARDS.StopBattleBGM）
+include("cl_battle_bgm.lua")
 
 -- 当前槽位提示状态：{ ent = 牌桌实体, slot = 槽位编号 }（进入后置 nil）
 local slotHint = nil
 
 -- 当前宽面提示状态：ent = 牌桌实体（玩家在宽边 x 侧中段，可切换组卡/对战模式；进入后置 nil）
 local wideHint = nil
+
+-- 远程手牌悬停（2026-08-14，KardsHandHover 广播接收端登记）：remoteHandHover[slot]
+-- = 对方/其他玩家悬停的该槽手牌实体（无悬停 nil）。对方+观战者据此把该卡 z 抬升
+-- 为手牌中最高（需求 2/3），KardsRealHandFacing 每帧消费；声明置于文件顶部——顶部
+-- net.Receive 复位块（KardsTableExited / KardsTableBattleStart）与手牌钩子共用，
+-- Lua 词法作用域：引用须在声明之后，声明在后会被当作全局变量（nil）访问而报错
+-- （2026-08-15 实测 cl_init.lua:898 attempt to index global 'remoteHandHover'）。
+local remoteHandHover = { [1] = nil, [2] = nil }
+-- 已发送悬停实体（悬停变化时广播，避免每帧发送）；kards_switch 切身份时随悬停
+-- 重新检测自然覆盖，无需按槽位区分。
+local lastSentHover = nil
 
 -- 当前进入状态：{ ent = 牌桌实体, slot = 槽位编号 }（进入后非 nil，接管 HUD/摄像头）
 -- 2026-08-11 已迁移至 KARDS.BattleState.inTable（cl_battle_state.lua）
@@ -150,6 +197,16 @@ local pendingReveal = nil
 -- 秒启动（见 KardsFirstTurnRevealStart），先于序列结束；KardsTableBattleStart
 -- 收到时重置，防止上一场残留导致本场不触发
 local hqRevealStarted = false
+-- 总部对局开始动画中的活跃 HQ 集合（re.md 重构：动画本身由 KARDS.AnimPlayer 关键帧
+-- 播放器驱动，组名 "hqReveal"；本表仅保留 { ent, slot } 供 InHQRevealAnim 遍历判定 +
+-- 全部完成时播放一次 hq_end 收尾音效；每场对局最多两个：本方 + 敌方）。声明置于文件
+-- 顶部——顶部 net.Receive 复位块（KardsTableExited / KardsTableBattleStart）与动画
+-- 驱动共用，Lua 词法作用域先例同 remoteHandHover（2026-08-15）。
+local hqReveals = {}
+-- B 修复（2026-08-12，2026-08-15 桥接修正）：每场对局复位 per-modelID 去重表的
+-- 函数。定义在 cl_battle_material.lua（KARDS.KardsResetPerMatchDedup）——GMod
+-- include 独立编译执行，不共享本文件词法作用域，故经 KARDS 命名空间访问；
+-- 本文件 KardsTableBattleStart 回调经 KARDS.KardsResetPerMatchDedup 调用。
 -- 清理头像面板（新对局 / 退出牌桌 / 序列结束）
 local function ClearRevealPanels()
     if not KARDS.BattleState.reveal then return end
@@ -246,15 +303,91 @@ local PileYaw = { [1] = -135, [2] = 45 }
 --（KardsTableExited / KardsTableBattleStart）与引用钩子（KardsDragCardThink /
 -- KardsRealHandFacing / net 接收）均在本声明之后，Lua 词法作用域要求声明在前
 --（声明在后会被当作全局 nil 访问而报错，2026-08-10 实测）
--- 拖拽中的卡：{ ent, slot, idx, zFrom, start }（2026-08-11 已迁移至 KARDS.BattleState.dragCard）
+-- 拖拽中的卡：{ ent, slot, idx }（2026-08-11 已迁移至 KARDS.BattleState.dragCard）
 -- 鼠标左键上一帧状态（上升沿拿起 / 下降沿松手）（2026-08-11 已迁移至 KARDS.BattleState.prevDragLeft）
 -- 支援阵线布局：KARDS.BattleState.fieldLayouts[slot][ent] = 槽位 index（2026-08-11 已迁移至 KARDS.BattleState.fieldLayouts）
 -- 战场位置动画（re.md 重构：由 KARDS.AnimPlayer 关键帧播放器驱动，组名——
--- 战场复位 "fieldRepos" / 松手回手牌 "dragReturn" / 打出飞行 "dragFlight"）
+-- 战场复位 "fieldRepos" / 松手回手牌 "dragReturn" / 部署飞行 "deployFlight"（源卡半程
+-- + 小模型后半程，2026-08-12 起））
 -- 等待服务端确认的打出实体（确认前冻结位置，防重复打出）（2026-08-11 已迁移至 KARDS.BattleState.pendingPlayEnt）
 -- 已结束本方回合（点击按钮置位；对方回合开始广播回本方时复位，期间禁止拿起手牌）（2026-08-11 已迁移至 KARDS.BattleState.endedTurn）
 -- 双方指挥点（服务端 KardsCommandPoints 广播；手牌花费 3D2D 文字颜色黄/灰判定）
 -- 2026-08-11 已迁移至 KARDS.BattleState.commandPoints（cl_battle_state.lua）
+
+-- ====================================================================
+-- 共享工具（2026-08-15 拆分 C2）：手牌计数/忙判定/命中测试/候选场/局部 y 轴——
+-- 由 cl_init.lua 多段与拆分文件共用，统一挂 KARDS 命名空间；定义置于文件前部，
+-- 早于全部使用段（含 C1 拆分文件的 include 点）。运行时引用 KARDS.BattleState /
+-- KARDS.AnimPlayer / KARDS.RayCardHit（KardsRealHandFacing 等使用段均晚于其定义）。
+-- ====================================================================
+
+--- 某槽当前手牌张数（真实手牌，含拖拽中/动画中）
+-- 2026-10-03 联机排查 NEW-12：槽位越界时返回 0（上游接收器漏检时不因索引 nil 报错）
+function KARDS.HandCount(slot)
+    local map = KARDS.BattleState.realHandCards[slot]
+    if not map then return 0 end
+    local n = 0
+    for e in pairs(map) do
+        if IsValid(e) then n = n + 1 end
+    end
+    return n
+end
+
+--- 手牌是否处于「不可交互」状态（2026-08-15 C2 统一 3 处组名不一致的跳过列表）：
+--- 待打出确认 / 拖拽中 / 抽牌（deckDraw）/ 返回手牌（dragReturn）/ 重排（handRepos）/
+--- 调度转手牌（mulliganToHand）动画中的卡位置/角度由对应钩子接管，悬停/拿起跳过
+function KARDS.IsHandBusy(ent)
+    if not IsValid(ent) then return true end
+    if ent == KARDS.BattleState.pendingPlayEnt then return true end
+    if KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == ent then return true end
+    return KARDS.AnimPlayer:Active(ent, "mulliganToHand", "deckDraw", "dragReturn", "handRepos")
+end
+
+--- 手牌命中测试（2026-08-15 C2 收敛拿起/悬停/预览 3 处内联）：射线命中某槽真实手牌
+--- 卡面矩形（RayCardHit）的实体——重叠扇形卡取最先命中（t 最小）＝视觉最上层卡。
+--- @param pos Vector 视线起点；dir Vector 视线方向；slot number 槽位（1/2）
+--- @param skipBusy boolean 是否跳过 IsHandBusy 的卡（悬停/拿起 true；预览 false 保持原行为）
+--- @return Entity|nil 命中的手牌实体
+function KARDS.HandHitTest(pos, dir, slot, skipBusy)
+    local bestT, hit = math.huge, nil
+    for ent in pairs(KARDS.BattleState.realHandCards[slot]) do
+        if IsValid(ent) and (not skipBusy or not KARDS.IsHandBusy(ent)) then
+            local h, t = KARDS.RayCardHit(pos, dir, ent, KARDS.HandHitHalfW, KARDS.HandHitHalfL)
+            if h and t < bestT then bestT, hit = t, ent end
+        end
+    end
+    return hit
+end
+
+--- 候选场列表（2026-08-15 C2 收敛 GetPointingTarget / PointingFailReason /
+--- cl_battle_stealth.HitStealthTarget 3 处内联）：双方支援阵线 + 占领方前线
+---（归属槽 1/2；无主 0 不加入——前线无主时无单位可指）
+--- @return table 布局表数组（fieldLayouts[1] / fieldLayouts[2] / 前线布局）
+function KARDS.FieldCandidates()
+    local BS = KARDS.BattleState
+    local fields = {}
+    for slot = 1, 2 do
+        fields[#fields + 1] = BS.fieldLayouts[slot]
+        if BS.frontlineOwnerSlot == slot then
+            fields[#fields + 1] = BS.frontlineLayout
+        end
+    end
+    return fields
+end
+
+--- 实体自身 +y 轴方向（父局部系；2026-08-15 C2 收敛悬停提升/预览偏移/占位卡悬停
+--- 3 处内联——GMod 无 WorldToLocalVector，用两次 WorldToLocal 点变换求差）
+--- @param ent Entity 实体
+--- @return Vector 局部 +y 方向向量（父局部坐标，供 SetLocalPos 使用）
+function KARDS.LocalYAxis(ent)
+    local yp = ent:LocalToWorld(Vector(0, 1, 0)) - ent:GetPos()
+    local parent = ent:GetParent()
+    if IsValid(parent) then
+        yp = parent:WorldToLocal(ent:LocalToWorld(Vector(0, 1, 0)))
+            - parent:WorldToLocal(ent:GetPos())
+    end
+    return yp
+end
 
 -- ====================================================================
 -- 指挥点 HUD 面板段（2026-08-11 拆分 B1：状态/常量/工具与 Think/HUDPaint 钩子、
@@ -272,13 +405,62 @@ local PileYaw = { [1] = -135, [2] = 45 }
 -- 退出牌桌时恢复原值；插件不存在则恒为 nil）
 local savedBGMPlayMode = nil
 
--- 重新调度/对局音效（sound/kards/，2026-08-10）：surface.PlaySound 相对路径不带
--- sound/ 前缀但必须带扩展名（缺 .ogg 会报 Failed to load sound）；文件名用英文
--- （sound.PlayFile 不支持非 ASCII 文件名，见 cl_dynamic_bgm_compat.lua），未接入的
--- 音效保持中文文件名以分辨哪些用了哪些没用
-function KARDS.PlayKardsSound(name)
-    surface.PlaySound("kards/" .. name .. ".ogg")
-end
+-- 牌桌音效（2026-08-15 C1 拆分：PlayKardsSound / PlayAimSound / StopAimSound /
+-- PlaySoundPath + KardsStatChangeSound / KardsEventSound 接收器已迁移至
+-- cl_battle_sound.lua；本 include 置于 savedBGMPlayMode 声明之后，词法访问不变）
+include("cl_battle_sound.lua")
+
+-- 被消灭单位延迟消失（2026-08-13 用户规格）：场上目标死亡（防御 ≤0）后不立即消失，
+-- 待「最晚飘字（数值变动特效，cl_card_text_overlay.lua Overlay.FX）结束 +0.5s」再消失。
+-- 服务端死亡时先刷新防御（≤0）NW（触发防御变动飘字）再广播本消息；此处登记待移除
+-- 实体，Think（KardsFieldDeathDelayedRemove）中等待防御 NW ≤0（死亡确认 + 飘字已
+-- 触发）后计算该实体在播飘字的最晚结束时间，延迟（最晚结束 +0.5s）后发
+-- KardsFieldDeathRemove 通知服务端移除（服务端 GuardRemove 幂等；兜底定时见
+-- table_battledeck.lua ScheduleFieldDeathRemove）。
+net.Receive("KardsFieldDeath", function()
+    local ent = net.ReadEntity()
+    local unitEnt = net.ReadEntity()
+    if not IsValid(ent) or not IsValid(unitEnt) then return end
+    KARDS.BattleState.fieldDeathPending = KARDS.BattleState.fieldDeathPending or
+        setmetatable({}, { __mode = "k" })
+    KARDS.BattleState.fieldDeathPending[unitEnt] = { table = ent, armed = false }
+end)
+
+hook.Add("Think", "KardsFieldDeathDelayedRemove", function()
+    local pending = KARDS.BattleState.fieldDeathPending
+    if not pending then return end
+    for unitEnt, info in pairs(pending) do
+        if not IsValid(unitEnt) then
+            pending[unitEnt] = nil -- 实体已消失（如对局结束）：清理登记
+        elseif not info.armed then
+            -- 防御 NW ≤0 = 死亡已确认且防御变动飘字已触发（服务端 SyncUnitNW 写入）
+            if unitEnt:GetNWInt("Kards_CardDefense", 99) <= 0 then
+                info.armed = true -- 本帧确认；下一帧计算（确保 UpdateStatFX 已触发 FX）
+            end
+        else
+            -- 计算该实体在播飘字的最晚结束时间（数值变动特效）
+            local latestEnd = 0
+            if KARDS.CardTextOverlay and KARDS.CardTextOverlay.FX then
+                for _, fx in ipairs(KARDS.CardTextOverlay.FX) do
+                    if fx.ent == unitEnt then
+                        latestEnd = math.max(latestEnd, fx.start + fx.dur)
+                    end
+                end
+            end
+            local delay = math.max(0, latestEnd + 0.5 - CurTime())
+            timer.Simple(delay, function()
+                if IsValid(info.table) and IsValid(unitEnt) then
+                    net.Start("KardsFieldDeathRemove")
+                        net.WriteEntity(info.table)
+                        net.WriteEntity(unitEnt)
+                    net.SendToServer()
+                end
+                pending[unitEnt] = nil
+            end)
+            pending[unitEnt] = nil
+        end
+    end
+end)
 
 -- 匹配等待音效（sound/kards/match.ogg，2026-08-10）：玩家进入牌桌且牌桌未满
 -- （< 2 名玩家）时循环播放，第二位玩家加入 / 对战开始 / 退出牌桌时停止。
@@ -617,6 +799,9 @@ net.Receive("KardsTableEntered", function()
     local count = net.ReadUInt(8) -- 当前牌桌玩家数（含本次进入者；匹配音效循环播放依据）
     if not IsValid(ent) then return end
     KARDS.BattleState.inTable = { ent = ent, slot = slot }
+    -- 观战追踪复位（进入牌桌成为参战者：观战重新调度进度不再适用，见 KardsSpectateMulliganHUD）
+    KARDS.BattleState.spectate = nil
+    KARDS.BattleState.mulliganStarted = false
     tablePlayerCount = count
     UpdateMatchSound() -- 进入牌桌且未满（< 2 人）→ 开始循环播放匹配音效
     -- 进入牌桌：若 dynamic_BGM 插件存在，暂停其 BGM（插件主循环仅在
@@ -689,14 +874,72 @@ net.Receive("KardsTablePlayerCount", function()
     end
 end)
 
+--[[
+    每场对局共享状态复位（2026-09-13 规划 S2/R1）：
+    退出牌桌（KardsTableExited）与新一场对局开始（KardsTableBattleStart 参战分支）
+    原有两处长序列逐项一致，收敛为单一入口，防后续新增状态只在一处复位造成跨场/跨桌
+    残留。仅复位对局共享状态；摄像头 / BGM / 鼠标 / 常驻头像 / 本地视角等接管类
+    复位与调用点特有流程仍由各接收器自行处理。
+]]
+function KARDS.ResetBattleState()
+    local BS = KARDS.BattleState
+    -- 重新调度状态复位（含观战追踪）
+    BS.mulligan = nil
+    BS.mulliganReadySent = false
+    BS.mulliganDoneSlot = {}
+    BS.mulliganAnimSentSlot = {}
+    BS.dealStarterCount = {}
+    BS.mulliganStarted = false
+    BS.spectate = nil
+    BS.realHandCards[1], BS.realHandCards[2] = {}, {}
+    BS.prevMulliganLeft = false
+    -- 结束回合按钮状态复位（当前回合/悬停/点击沿）
+    BS.battleTurn = nil
+    BS.endTurnRect = nil
+    BS.endTurnHover = 0
+    KARDS.EndTurnReset()
+    -- 指挥点复位（手牌花费颜色恢复默认；HUD 面板显示与动画清空）
+    BS.commandPoints[1], BS.commandPoints[2] = 0, 0
+    KARDS.CommandPointsReset()
+    -- 手牌拿起/拖拽/打出状态复位（拖拽卡/待确认/战场布局/动画表）
+    BS.dragCard = nil
+    BS.pendingPlayEnt = nil
+    BS.endedTurn = false
+    BS.fieldLayouts[1], BS.fieldLayouts[2] = {}, {}
+    BS.remoteDrags = {}
+    remoteHandHover[1], remoteHandHover[2] = nil, nil
+    lastSentHover = nil
+    BS.dragSync = {}
+    BS.effectCache = setmetatable({}, { __mode = "k" })
+    BS.cardFaces = setmetatable({}, { __mode = "k" })
+    BS.commandAnimQueue = {}
+    BS.frontlineLayout = {}
+    BS.frontlineOwnerSlot = 0
+    KARDS.UnitOpsReset()
+    KARDS.BattleHint.Clear()
+    KARDS.AnimPlayer:StopAll()
+    hqReveals = {} -- 总部对局开始动画活跃集合复位（StopAll 中断时 onComplete 不触发）
+    BS.prevDragLeft = false
+    -- 角落玩家头像面板复位（移除控件 + 清空数据源，见 cl_battle_player_panel.lua）
+    if KARDS.PlayerPanelReset then KARDS.PlayerPanelReset() end
+end
+
 -- 退出成功：恢复默认 HUD 与摄像头（并恢复鼠标视角控制）；清理先手揭晓 UI 残留
 net.Receive("KardsTableExited", function()
     local ent = net.ReadEntity()
     local slot = net.ReadUInt(8)
     if KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent == ent then
         KARDS.BattleState.inTable = nil
+        -- 退出牌桌：对局结算状态复位（黑屏动画进行中则保留由 KardsGameOverThink 收尾，
+        -- 见 cl_battle_gameover.lua GameOverReset）
+        if KARDS.GameOverReset then KARDS.GameOverReset() end
         tablePlayerCount = 0
         UpdateMatchSound() -- 离开牌桌：停止匹配音效（循环播放通道释放）
+        -- 离开牌桌：对局结束为淡出停止战斗 BGM（2026-08-15 用户规格；牌桌销毁由
+        -- table_cleanup.lua OnRemove 立即停止，见 cl_battle_bgm.lua 播放模式说明）
+        if KARDS.StopBattleBGM and KARDS.BattleBGM then
+            KARDS.StopBattleBGM(KARDS.BattleBGM.FadeOut)
+        end
         KARDS.BattleState.battleStarted = false
         pendingReveal = nil
         StopInitLoading() -- 退出牌桌：停止初始化卡顿加载提示检测
@@ -717,31 +960,14 @@ net.Receive("KardsTableExited", function()
         end
         ClearRevealPanels()
         KARDS.BattleState.reveal = nil
-        -- 退出牌桌：重新调度状态复位（含屏幕点击器关闭，见重新调度段）
-        KARDS.BattleState.mulligan = nil
-        KARDS.BattleState.mulliganReadySent = false
-        KARDS.BattleState.mulliganDoneSlot = {}
-        KARDS.BattleState.realHandCards[1], KARDS.BattleState.realHandCards[2] = {}, {}
-        KARDS.BattleState.prevMulliganLeft = false
-        -- 退出牌桌：结束回合按钮状态复位（当前回合/悬停/点击沿）
-        KARDS.BattleState.battleTurn = nil
-        KARDS.BattleState.endTurnRect = nil
-        KARDS.BattleState.endTurnHover = 0
-        KARDS.EndTurnReset() -- 2026-08-11 拆分 B1：prevEndTurnLeft 复位收归 cl_battle_hud.lua
-        -- 退出牌桌：指挥点复位（手牌花费颜色恢复默认；HUD 面板显示与动画清空）
-        KARDS.BattleState.commandPoints[1], KARDS.BattleState.commandPoints[2] = 0, 0
-        KARDS.CommandPointsReset() -- 2026-08-11 拆分 B1：段内状态复位收归 cl_battle_command_points.lua
-        -- 退出牌桌：手牌拿起/拖拽/打出状态复位（拖拽卡/待确认/战场布局/动画表）
-        KARDS.BattleState.dragCard = nil
-        KARDS.BattleState.pendingPlayEnt = nil
-        KARDS.BattleState.endedTurn = false
-        KARDS.BattleState.fieldLayouts[1], KARDS.BattleState.fieldLayouts[2] = {}, {}
-        KARDS.BattleState.frontlineLayout = {} -- 前线布局复位（2026-08-11 单位操作）
-        KARDS.BattleState.frontlineOwnerSlot = 0
-        KARDS.UnitOpsReset() -- 单位操作选中复位（cl_battle_ops.lua）
-        KARDS.AnimPlayer:StopAll() -- 退出牌桌：停止全部关键帧动画（re.md 重构）
-        hqReveals = {} -- 退出牌桌：总部对局开始动画活跃集合复位（StopAll 中断时 onComplete 不触发）
-        KARDS.BattleState.prevDragLeft = false
+        -- 对局共享状态复位（重新调度/手牌/布局/指挥点/动画表等，见 ResetBattleState）
+        KARDS.ResetBattleState()
+        -- 离开牌桌：关闭测试版不同步重启弹窗（若残留）
+        if KARDS.DesyncReset then KARDS.DesyncReset() end
+        -- 离开牌桌：清空三选一交互（候选实体/动画/悬停态，见 cl_battle_pick.lua）
+        if KARDS.BattlePickReset then KARDS.BattlePickReset() end
+        -- 离开牌桌：清空弃牌选择交互（手牌上移/选中/确认按钮，见 cl_battle_discard.lua）
+        if KARDS.BattleDiscardReset then KARDS.BattleDiscardReset() end
         -- 退出牌桌：恢复 dynamic_BGM 原播放模式（进入牌桌时置 0 停止 BGM，见
         -- KardsTableEntered；插件不存在则 savedBGMPlayMode 恒为 nil 不处理）
         if savedBGMPlayMode ~= nil and _G.DynamicBGM and _G.DynamicBGM.Config then
@@ -753,9 +979,9 @@ net.Receive("KardsTableExited", function()
     end
 end)
 
--- 服务端提示（如槽位被占用）
+-- 服务端提示（如槽位被占用 / 单位操作失败原因）：转提示系统居中显示（2026-08-12）
 net.Receive("KardsTableMsg", function()
-    Flash(net.ReadString())
+    KARDS.BattleHint.Push(net.ReadString())
 end)
 
 -- 准备回执：显示已准备状态
@@ -820,6 +1046,12 @@ net.Receive("KardsTableBattleStart", function()
         enemySteamID64 = net.ReadString()
     end
     if not IsValid(ent) then return end
+    -- 新一场对局：对局结算状态复位（上一场结算残留，见 cl_battle_gameover.lua GameOverReset）
+    if KARDS.GameOverReset then KARDS.GameOverReset() end
+    -- B 修复（2026-08-12）：每场对局开始复位 per-modelID 去重表（血红镰刀跨桌污染，
+    -- 机制见 cl_battle_material.lua KARDS.KardsResetPerMatchDedup）。置于 if/else
+    -- 分支之前：参战者与观战者路径都覆盖（观战者本地同样渲染卡组槽卡/抽牌临时卡）。
+    if KARDS.KardsResetPerMatchDedup then KARDS.KardsResetPerMatchDedup() end
     if KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent == ent then
         KARDS.BattleState.battleStarted = true
         -- 对战开始：立即无条件停止匹配音效（服务端 SetNWBool 的 Kards_FormalBattleStarted
@@ -827,31 +1059,15 @@ net.Receive("KardsTableBattleStart", function()
         -- NW 仍为 false 而继续播放；StopMatchSound 同时使加载中的通道不播放）
         StopMatchSound()
         hqRevealStarted = false -- 新一场对局：总部动画启动标志复位（上一场残留防误触发）
-        -- 新一场对局：重新调度状态复位（上一场残留防误触发）
-        KARDS.BattleState.mulligan = nil
-        KARDS.BattleState.mulliganReadySent = false
-        KARDS.BattleState.mulliganDoneSlot = {}
-        KARDS.BattleState.realHandCards[1], KARDS.BattleState.realHandCards[2] = {}, {}
-        KARDS.BattleState.prevMulliganLeft = false
-        -- 新一场对局：结束回合按钮状态复位（KARDS.BattleState.battleTurn 待 KardsTurnUpdate 写入）
-        KARDS.BattleState.battleTurn = nil
-        KARDS.BattleState.endTurnRect = nil
-        KARDS.BattleState.endTurnHover = 0
-        KARDS.EndTurnReset() -- 2026-08-11 拆分 B1：prevEndTurnLeft 复位收归 cl_battle_hud.lua
-        -- 新一场对局：指挥点复位（手牌花费颜色待 KardsCommandPoints 广播写入；HUD 面板显示与动画清空）
-        KARDS.BattleState.commandPoints[1], KARDS.BattleState.commandPoints[2] = 0, 0
-        KARDS.CommandPointsReset() -- 2026-08-11 拆分 B1：段内状态复位收归 cl_battle_command_points.lua
-        -- 新一场对局：手牌拿起/拖拽/打出状态复位（上一场残留防误触发）
-        KARDS.BattleState.dragCard = nil
-        KARDS.BattleState.pendingPlayEnt = nil
-        KARDS.BattleState.endedTurn = false
-        KARDS.BattleState.fieldLayouts[1], KARDS.BattleState.fieldLayouts[2] = {}, {}
-        KARDS.BattleState.frontlineLayout = {} -- 前线布局复位（2026-08-11 单位操作）
-        KARDS.BattleState.frontlineOwnerSlot = 0
-        KARDS.UnitOpsReset() -- 单位操作选中复位（cl_battle_ops.lua）
-        KARDS.AnimPlayer:StopAll() -- 新一场对局：停止全部关键帧动画（re.md 重构）
-        hqReveals = {} -- 新一场对局：总部对局开始动画活跃集合复位（StopAll 中断时 onComplete 不触发）
-        KARDS.BattleState.prevDragLeft = false
+        -- 新一场对局：对局共享状态复位（重新调度/手牌/布局/指挥点/动画表等，
+        -- 与退出牌桌共用 ResetBattleState，规划 S2/R1）
+        KARDS.ResetBattleState()
+        -- 新对局：关闭测试版不同步重启弹窗（若残留）
+        if KARDS.DesyncReset then KARDS.DesyncReset() end
+        -- 新对局：清空三选一交互（候选实体/动画/悬停态，见 cl_battle_pick.lua）
+        if KARDS.BattlePickReset then KARDS.BattlePickReset() end
+        -- 新对局：清空弃牌选择交互（手牌上移/选中/确认按钮，见 cl_battle_discard.lua）
+        if KARDS.BattleDiscardReset then KARDS.BattleDiscardReset() end
         UpdateTableMouse() -- 对局开始：仍处牌桌内，鼠标保持呼出（2026-08-10）
         -- 对战开始：本地视角从观察者（nil）切换为槽位视角（P1/P2），
         -- 手牌槽卡/战场卡朝向随之切换（见 cl_perspective.lua ApplyHandFacing/ApplyFacing）
@@ -868,6 +1084,10 @@ net.Receive("KardsTableBattleStart", function()
             enemyName = enemyName,
             enemySteamID64 = enemySteamID64,
         }
+        -- 角落玩家头像面板数据源（2026-10-10）：敌方昵称 + SteamID64（PlayerPanelIntro
+        -- 按此查找敌方玩家实体；虚拟对手时为 nil，头像缺失走白色矩形兜底，见
+        -- cl_battle_player_panel.lua）。须置于上方 ResetBattleState 之后（该处清空）
+        KARDS.PlayerPanelData = { enemyName = enemyName, enemySteamID64 = enemySteamID64 }
         local ply = LocalPlayer()
         -- 起始关键帧：位置 = 宽边 +x 侧外部（镜像默认进入相机位置；位置对双方相同，
         -- 视角差异由目标相机 yaw 区分，见下方 deckAng）
@@ -884,9 +1104,19 @@ net.Receive("KardsTableBattleStart", function()
         local deckAng = ent:LocalToWorldAngles(Angle(90, deckYaw, 0))
         KARDS.BattleCamera:SetView(ply, deckPos, deckAng, 75, 2, introPos, introAng)
     else
-        -- 观战者（未进入该牌桌，含在其他牌桌的玩家）：该场对局开始 → 本地直接触发
-        -- 总部对局开始动画（无 KARDS.BattleState.reveal 序列/无本方头像；mySlot=nil 时直接翻转落位
+        -- 观战者（未进入该牌桌）：该场对局开始 → 本地直接触发总部对局开始动画
+        --（无 KARDS.BattleState.reveal 序列/无本方头像；mySlot=nil 时直接翻转落位
         -- 支援阵线，观战视角下 P1 总部朝 P1、P2 总部朝 P2，见 StartHQReveal/FacingYaw）
+        -- 观战重新调度进度追踪（2026-08-12，KardsSpectateMulliganHUD）：
+        -- spectate.mulliganDone 由 KardsMulliganDone 广播写入，mulliganStarted 由首个
+        -- 重新调度发牌广播置位（KardsTableDeckDraw）
+        -- 2026-09-13 规划 S2：服务端把开局广播发给全部非本槽玩家（含在其他牌桌参战
+        -- 者）。本客户端若已在他桌参战，只播总部开始的世界动画，不得覆盖 spectate
+        -- 单例，否则他桌事件会被误判为关注桌事件写入本地状态
+        if not KARDS.BattleState.inTable then
+            KARDS.BattleState.spectate = { ent = ent, mulliganDone = {} }
+            KARDS.BattleState.mulliganStarted = false
+        end
         StartHQReveal(ent, nil)
     end
 end)
@@ -1013,6 +1243,9 @@ hook.Add("Think", "KardsFirstTurnRevealStart", function()
             -- 见上方分支，不再在此触发）
             ClearRevealPanels()
             KARDS.BattleState.reveal = nil
+            -- 先手揭晓结束 → 角落玩家头像面板入场（头像淡入 + 玩家名向右滑动淡入，
+            -- 2026-10-10，见 cl_battle_player_panel.lua）
+            if KARDS.PlayerPanelIntro then KARDS.PlayerPanelIntro() end
             -- 先手揭晓序列结束 → 本方重新调度就绪（每场对局一次；服务端
             -- OnMulliganReady 据此发牌，本方走牌桌中间扇形选择）
             if KARDS.BattleState.inTable and not KARDS.BattleState.mulliganReadySent then
@@ -1354,6 +1587,172 @@ hook.Add("PostDrawOpaqueRenderables", "KardsDeckSaveButton", function()
     cam.End3D2D()
 end)
 
+-- 组卡卡组堆叠：抗视差（仅组卡构建者）+ 保存成功两段动画（见文件头）
+include("cl_deck_pile.lua")
+
+-- 组卡搜索输入广播接收（2026-09-05）：所有客户端实时更新 3D2D 输入框文字
+local deckSearchText = "" -- 本地映射的搜索文本
+net.Receive("KardsDeckSearchInputBC", function()
+    local ent = net.ReadEntity()
+    if not IsValid(ent) or ent:GetClass() ~= "sent_kards_battle_table" then return end
+    local text = net.ReadString()
+    deckSearchText = text
+    if KARDS.Input3D2D then
+        KARDS.Input3D2D:SetText(ent.TableID, text)
+    end
+end)
+
+-- 3D2D 搜索输入框渲染（2026-09-05）：卡组堆叠上方半透明矩形
+hook.Add("PostDrawOpaqueRenderables", "KardsDeckSearchInput", function()
+    if not KARDS.BattleState.inTable then return end
+    if KARDS.BattleState.inTable.ent:GetNWString("Kards_Mode", "battle") ~= "deck" then return end
+    local ent = KARDS.BattleState.inTable.ent
+    local tid = ent.TableID
+    local inst = KARDS.Input3D2D and KARDS.Input3D2D.Instances[tid]
+    if not inst or not inst.active then return end
+    local pos = ent:LocalToWorld(inst.pos)
+    local dx = ent:GetForward()
+    local dy = ent:GetRight()
+    local camAng = dx:AngleEx(dx:Cross(-dy))
+    local halfW, halfH = inst.width / 2, inst.height / 2
+    cam.Start3D2D(pos + ent:GetUp() * 0.08, camAng, inst.scale)
+        -- 背景（半透明黑）
+        surface.SetDrawColor(0, 0, 0, 180)
+        surface.DrawRect(-halfW, -halfH, inst.width, inst.height)
+        -- 边框（亮白）
+        surface.SetDrawColor(220, 220, 220, 255)
+        surface.DrawOutlinedRect(-halfW, -halfH, inst.width, inst.height)
+        -- 文字
+        local displayText = inst.text
+        if displayText == "" then
+            displayText = inst.placeholder
+            draw.DrawText(displayText, "SourceHan_Heavy_24", 0, 0,
+                Color(120, 120, 120, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        else
+            draw.DrawText(displayText, "SourceHan_Heavy_24", 0, 0,
+                Color(255, 255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
+    cam.End3D2D()
+end)
+
+-- 组卡搜索输入框 DTextEntry（2026-09-05）：在 3D2D 输入框投影屏幕位置创建 DTextEntry
+local searchInputDialogOpen = false
+local function ShowDeckSearchDialog()
+    if searchInputDialogOpen then return end
+    searchInputDialogOpen = true
+    local ent = KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent
+    if not IsValid(ent) then return end
+    local tid = ent.TableID
+    local inst = KARDS.Input3D2D and KARDS.Input3D2D.Instances[tid]
+    if not inst then return end
+    -- 计算 3D2D 输入框的世界坐标，投影到屏幕
+    local worldPos = ent:LocalToWorld(inst.pos) + ent:GetUp() * 0.08
+    local screenPos = worldPos:ToScreen()
+    local sx, sy = screenPos.x, screenPos.y
+    local w, h = 160, 28
+    local frame = vgui.Create("DFrame")
+    frame:SetSize(200, 60)
+    frame:SetPos(sx - 100, sy - 30)
+    frame:SetTitle("")
+    frame:SetDraggable(false)
+    frame:ShowCloseButton(false)
+    frame:SetAlpha(0) -- 完全透明（只显示 DTextEntry）
+    function frame:OnClose()
+        searchInputDialogOpen = false
+    end
+    function frame:OnKeyCodePressed(key)
+        if key == KEY_ESCAPE then
+            self:Close()
+        end
+    end
+    -- 移除标题栏（Panel 默认无标题栏，仅 DFrame 有，覆写 Paint 隐藏）
+    frame.Paint = function() end
+    local entry = vgui.Create("DTextEntry", frame)
+    entry:SetPos(20, 16)
+    entry:SetSize(w, h)
+    entry:SetPlaceholderText("搜索卡牌…")
+    entry:SetText(inst.text)
+    entry:RequestFocus()
+    function entry:OnEnter()
+        net.Start("KardsDeckSearchInput")
+            net.WriteString(self:GetValue())
+        net.SendToServer()
+        frame:Close()
+    end
+    function entry:OnValueChange(val)
+        if #val > 6 then
+            self:SetText(val:sub(1, 6))
+            return
+        end
+        net.Start("KardsDeckSearchInput")
+            net.WriteString(val)
+        net.SendToServer()
+    end
+    frame:MakePopup()
+end
+
+-- 修改现有 KardsDeckCardClick 钩子：在保存按钮判定后追加搜索输入框点击判定
+-- 在确认不是保存按钮点击后，新增输入框命中检测。hook 定义在 line 1409，通过 Think 方式
+-- 注册，需要修改原 hook 逻辑。由于 hook 是追加方式，新增一个 Think 钩子专门处理输入框
+-- 点击即可（独立于原卡牌+保存点击检测，避免干扰原逻辑）。
+local prevDeckSearchLeft = false
+hook.Add("Think", "KardsDeckSearchClick", function()
+    local ply = LocalPlayer()
+    local down = IsValid(ply) and input.IsMouseDown(MOUSE_LEFT) or false
+    local clicked = down and not prevDeckSearchLeft
+    prevDeckSearchLeft = down
+    if not clicked or not IsValid(ply) or not KARDS.BattleState.inTable then return end
+    if KARDS.BattleState.inTable.slot ~= 2 then return end -- 仅 P2（构建者）可输入
+    if KARDS.BattleState.inTable.ent:GetNWString("Kards_Mode", "battle") ~= "deck" then return end
+    if gui.IsConsoleVisible() or gui.IsGameUIVisible() then return end
+    local ent = KARDS.BattleState.inTable.ent
+    local tid = ent.TableID
+    local inst = KARDS.Input3D2D and KARDS.Input3D2D.Instances[tid]
+    if not inst or not inst.active then return end
+    -- 射线检测：投影到输入框世界位置
+    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
+    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
+    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
+        dir = (KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
+    end
+    local worldPos = ent:LocalToWorld(inst.pos) + ent:GetUp() * 0.08
+    -- 输入框世界尺寸：半宽 ≈ 7.2（180像素 × 0.02缩放 × 2），半长 ≈ 1.6（取决于朝向）
+    local d = KARDS.RayPointDistSqr(pos, dir, worldPos)
+    if d <= 225 then -- 阈值 15^2（与保存按钮容差一致）
+        ShowDeckSearchDialog()
+    end
+end)
+
+-- 组卡模式卡牌名称过滤（2026-09-05）：搜索文本非空时，隐藏不匹配的网格卡
+local function UpdateDeckCardFilter()
+    local searchText = deckSearchText or ""
+    -- 搜索文本为空 → 显示所有网格卡
+    if searchText == "" then
+        for _, c in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
+            if IsValid(c) and c:GetNWString("Kards_CardRole", "") == "deck"
+                and c:GetNWString("Kards_DeckRole", "") == "grid" then
+                if c:GetNoDraw() then c:SetNoDraw(false) end
+            end
+        end
+        return
+    end
+    -- 搜索文本非空 → 按名称匹配过滤
+    for _, c in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
+        if IsValid(c) and c:GetNWString("Kards_CardRole", "") == "deck"
+            and c:GetNWString("Kards_DeckRole", "") == "grid" then
+            local name = c:GetNWString("Kards_CardName", "")
+            local match = name:lower():find(searchText:lower(), 1, true)
+            c:SetNoDraw(not match)
+        end
+    end
+end
+-- 每帧执行过滤（搜索文本变化时实际生效，不变时 Check 几乎无开销）
+hook.Add("Think", "KardsDeckCardFilter", function()
+    if not KARDS.BattleState.inTable then return end
+    if KARDS.BattleState.inTable.ent:GetNWString("Kards_Mode", "battle") ~= "deck" then return end
+    UpdateDeckCardFilter()
+end)
+
 -- 右侧卡头浏览面板（组卡模式）：名称 / 费用 / 攻击 / 防御 / 词条（卡头=简单浏览）
 hook.Add("HUDPaint", "KardsDeckCardView", function()
     if not aimDeckCard or not IsValid(aimDeckCard) then return end
@@ -1386,550 +1785,12 @@ hook.Add("HUDPaint", "KardsDeckCardView", function()
 end)
 
 -- ====================================================================
--- 组卡卡牌材质/文字初始化（客户端）：与编辑器「生成3D2D卡牌」同链路
--- ====================================================================
--- 卡面纹理在「保存卡牌」时已离屏渲染一次并落盘为不透明 RGB PNG（保存文件记录
--- texturePath/textureSize）。故此处对每张组卡卡牌：本地创建模型副本 manifest
--- （image_path 指向 data/kards_deck/<safeName>/front.png|back.png）→ 将保存文件指向的
--- 卡面渲染与卡背图复制到该路径 → ClearCache 销毁旧 renderable → 前置模组按 image_path
--- 直接加载不透明贴图（已实测：不预填 MaterialCache 时卡面正常；Material() 自动材质为
--- 半透明渲染，预填后卡面透明而露出卡背）→ Overlay:AddLocal 绑定文字（renderW/H
--- 用保存文件记录的渲染尺寸，与模板像素对齐）。全程不再离屏渲染，避免反复渲染的性能风险。
--- 注意：manifest + PNG 复制必须在实体首次 Draw 前完成（Think 阶段同步执行，见
--- DeckPrepareCardFiles / KardsDeckCardMaterial）——引擎材质按路径缓存，先缺后补无法刷新，
--- 否则新卡（本会话才落盘）会白屏无纹理直至重启。
-
--- 已初始化卡牌实体集合 / 排队处理中（weak keys：实体移除自动清理）
-local deckCardReady = setmetatable({}, { __mode = "k" })
-local deckCardPending = setmetatable({}, { __mode = "k" })
--- modelID 级就绪标记：同 modelID 副本（加卡复制）复用首次初始化成果（manifest/贴图/缓存），
--- 跳过重复文件 I/O 与 ClearCache 重建（后者销毁共享 renderable 强制重建是加卡卡顿主因）
-local deckModelReady = {}
--- 翻面变化（Kards_GridFlipped）改由 EntityNetworkedVarChanged 事件即时检测并处理
---（见下方统一驱动 KardsTableCardNWChanged），不再每帧轮询对比
-
--- 卡牌 manifest 副本统一由共享模块 KARDS.CardManifest 提供（EnsureDeck /
--- EnsureBattleDeck / EnsureHandSlot / EnsureDeckPileSingle，re.md T-H2）：
--- 服务端已创建则直接复用，远程客户端本地无副本时此处调用同样会自行创建；
--- 两端同一入口，不再维护同构薄包装。
-
--- 卡堆档位模型清单（与 init.lua ENT.DeckPileModelIDs 同步硬编码：客户端实体对象上
--- 不存在服务端 ENT 字段；PMXStaticImporter.exe 不支持数字命名，档位用罗马数字）
-local DeckPileModelIDs = {
-    "basic_card_xxxx", -- 40 张
-    "basic_card_xxx",  -- 30 张
-    "basic_card_xx",   -- 20 张
-    "basic_card_x",    -- 10 张
-    "basic_card_v",    -- 5 张
-    "kards_deckpile_1",-- 单张（basic_card 副本）
-}
-
--- 卡堆档位模型卡背改写：整叠卡堆模型（PMXStaticImporter.exe 导入的档位模型，
--- 专属用途不被其他系统共享）可见面 = 顶层卡背（front 子网格），把 front/back
--- image_path 统一改写为 usa 卡背图（side 卡边保持默认灰白色）。幂等：已指向目标
--- 时跳过写入。@return boolean
-local function EnsureDeckPileManifest(modelID)
-    return KARDS.CardManifest.RewriteImagePaths(modelID, "kards_deckpile/usa")
-end
-
---[[
-    back 槽 UV 镜像修正（2026-08-09）：basic_card 家族模型（含卡堆档位模型）的
-    back 子网格从 -z 方向采样的 UV 相对图片是水平镜像的（建模时 back 面 UV 未按
-    背向重映射——U 仍沿模型 +X，而从 -z 观察 +X 落在屏幕左侧，图像左右颠倒；
-    front 槽从 +z 观察正常，故卡组槽卡 front=卡背图显示正常、而手牌/组卡/翻面卡
-    的 back 槽卡背图镜像）。卡背图须在 back 槽水平翻转才能从 -z 方向正常显示。
-    前置模组 Draw 时优先使用 MaterialCache（cl_canvas_editor.lua 预填实测生效，
-    "预填后卡面透明"现象即预填材质被使用），故在此为 back 槽预填带
-    $basetexturetransform 水平翻转的 UnlitGeneric 材质——不透明（无
-    $vertexcolor/$vertexalpha/$translucent：mesh 顶点流仅 pos3+normal3+uv2，带颜色
-    流会读垃圾数据致透明，配方同 cl_canvas_editor.lua 的 mesh 专用材质）。
-    调用时机：必须在 PMXStaticImporter.ClearCache(modelID) 之后——ClearCache 清空
-    MaterialCache，实体 Draw 重建 renderable 时才会读取本函数预填的翻转材质。
-
-    @param modelID string 模型副本 ID（manifest 已就绪；无 back 子网格则跳过）
-]]
-local function PrefillBackFlip(modelID)
-    if not PMXStaticImporter or not PMXStaticImporter.MaterialCache then return end
-    local path = "pmx_static_importer/models/" .. modelID .. "/manifest.json"
-    local src = file.Read(path, "DATA")
-    if not src then
-        -- 附加包 GAME 随包分发副本回退（同 cl_canvas_editor.lua 的 manifest 读取方式）
-        src = file.Read("data_static/" .. path, "GAME")
-    end
-    if not src then return end
-    local m = util.JSONToTable(src)
-    if not m or not m.submeshes then return end
-    local cache = PMXStaticImporter.MaterialCache
-    for idx, sm in ipairs(m.submeshes) do
-        if sm.name == "back" then
-            local imagePath = tostring(sm.image_path or "")
-            local key = modelID .. "|" .. tostring(idx) .. "|" .. imagePath
-            local cur = cache[key]
-            -- 幂等：已预填过同名材质则跳过（CreateMaterial 同名会更新，避免反复重建）
-            if not (cur and cur.GetName and cur:GetName() == ("Kards_BackFlip_" .. modelID)) then
-                -- 与前置 cl_runtime.lua get_image_material 同款纹理解析：Material() 加载
-                -- data/ PNG（克隆 manifest 的 image_path = "data/<imageDir>/back.png"），
-                -- 再以 GetName() 作为 $basetexture，保证材质系统解析到同一纹理
-                -- （直接写路径可能因大小写/别名解析不一致导致纹理解析失败）
-                local base = Material(imagePath, "vertexlitgeneric noclamp smooth")
-                if base and not base:IsError() then
-                    cache[key] = CreateMaterial("Kards_BackFlip_" .. modelID, "UnlitGeneric", {
-                        ["$basetexture"] = base:GetName(),
-                        -- 绕纹理中心 (0.5, 0.5) 水平翻转（scale -1 1）：修正 back 槽水平镜像
-                        ["$basetexturetransform"] = "center 0.5 0.5 scale -1 1 rotate 0 translate 0 0",
-                        ["$nolod"] = 1,
-                    })
-                end
-            end
-            return
-        end
-    end
-end
-
---[[
-    basic_card_unit UV 裁切预填（2026-08-11）：单位部署战场模型 basic_card_unit 复用手牌
-    卡牌纹理（209×290），通过 V 轴缩放 229/290 ≈ 0.789655（锚定 v=0）裁切底部
-    品质/效果描述/词条区域（209×61），仅保留上部 209×229。
-    调用时机：必须在 PMXStaticImporter.ClearCache(modelID) 之后。
-
-    @param modelID string 模型副本 ID（basic_card_unit 克隆，manifest 已就绪）
-]]
--- 挂 KARDS 命名空间（非顶层 local）：main chunk 局部变量接近 GLua 200 上限
--- （2026-08-11 实测 local function 声明会占用槽位触发超限报错），故不占局部槽
-function KARDS.PrefillUnitCrop(modelID)
-    if not PMXStaticImporter or not PMXStaticImporter.MaterialCache then return end
-    local path = "pmx_static_importer/models/" .. modelID .. "/manifest.json"
-    local src = file.Read(path, "DATA")
-    if not src then return end
-    local m = util.JSONToTable(src)
-    if not m or not m.submeshes then return end
-    local cache = PMXStaticImporter.MaterialCache
-    for idx, sm in ipairs(m.submeshes) do
-        if sm.name == "front" or sm.name == "back" then
-            local imagePath = tostring(sm.image_path or "")
-            local key = modelID .. "|" .. tostring(idx) .. "|" .. imagePath
-            local matName = "Kards_UnitCrop_" .. modelID .. "_" .. sm.name
-            local cur = cache[key]
-            if not (cur and cur.GetName and cur:GetName() == matName) then
-                local base = Material(imagePath, "vertexlitgeneric noclamp smooth")
-                if base and not base:IsError() then
-                    -- V 轴缩放 229/290 ≈ 0.789655，锚定 v=0；back 槽需同时水平翻转
-                    local scaleX = (sm.name == "back") and -1 or 1
-                    local transform = ("center 0.5 0 scale %s 0.789655 rotate 0 translate 0 0"):format(scaleX)
-                    cache[key] = CreateMaterial(matName, "UnlitGeneric", {
-                        ["$basetexture"] = base:GetName(),
-                        ["$basetexturetransform"] = transform,
-                        ["$nolod"] = 1,
-                    })
-                end
-            end
-        end
-    end
-end
-
--- ====================================================================
--- 卡牌纹理落盘（re.md T-M1 共享）：组卡与卡组槽两套「材质/贴图链路」共用的原子操作
--- —— 把卡面/卡背 PNG 复制到 manifest image_path 对应的真实文件 + ClearCache 重建。
--- 两链路差异（卡面来源/是否绑文字）在调用方（DeckPrepareCardFiles /
--- ProcessBattleDeckCard），本函数仅统一「目录创建 + 双面文件写 + 缓存重建」。
--- 卡背缺失用卡面兜底（保证 back.png 真实存在，避免卡背棋盘格）；卡面缺失不写 front
--- （旧格式卡 / 卡组槽卡背缺失 → 前置模组白色兜底，维持原回退行为）。
---
--- @param dir        string PNG 落盘目录（data 相对路径，= manifest image_path 目录，
---                    如 "kards_deck/<safeName>" / "kards_battledeck/<safeName>"）
--- @param frontData  string|nil 卡面 PNG 数据（nil → 不写 front.png）
--- @param backData   string|nil 卡背 PNG 数据（nil → 用 frontData 兜底写 back.png）
--- @param modelID    string|nil 模型副本 ID（非 nil → PMXStaticImporter.ClearCache 重建
---                    renderable，使实体 Draw 重建时按 image_path 加载新贴图）
-local function WriteCardTextures(dir, frontData, backData, modelID)
-    file.CreateDir(dir)
-    if frontData then file.Write(dir .. "/front.png", frontData) end
-    if backData then file.Write(dir .. "/back.png", backData)
-    elseif frontData then file.Write(dir .. "/back.png", frontData) end -- 卡背缺失 → 卡面兜底
-    if modelID and PMXStaticImporter and PMXStaticImporter.ClearCache then
-        PMXStaticImporter.ClearCache(modelID)
-        -- back 槽 UV 镜像修正：ClearCache 清空 MaterialCache 后预填翻转材质
-        PrefillBackFlip(modelID)
-    end
-end
-
--- 本地保存文件按名称匹配外观数据（卡面纹理路径 + 渲染尺寸 + 文字叠加数据源）。
--- 支持两种卡标识（Kards_CardName NW 因生成链路而异）：
---   组卡（table_deckmode）→ 卡牌显示名 app.name；battle 抽卡/卡组槽（table_battledeck）
---   → 保存文件名（card:GetName() = fileName）。故先精确匹配显示名，再按归一化
---   （去目录/扩展名）匹配显示名与文件名，保证两端都能命中。
-local function DeckFindCardInfo(cardName)
-    local appearance, texturePath, textureSize = nil, nil, nil
-    if KARDS.CardEditor and KARDS.CardEditor.SaveSystem then
-        -- 归一化卡标识：去目录前缀、去 .json/.txt 扩展名（保存文件名可能带扩展名）
-        local function norm(s)
-            local n = tostring(s or ""):match("[^/\\]+$") or tostring(s or "")
-            return n:gsub("%.json$", ""):gsub("%.txt$", "")
-        end
-        local target = norm(cardName)
-        local infos = KARDS.CardEditor.SaveSystem.GetAllCardsInfo() or {}
-        for _, info in ipairs(infos) do
-            local hit = (info.name and info.name == cardName)
-                or (target ~= "" and norm(info.name) == target)
-                or (target ~= "" and norm(info.fileName) == target)
-            if hit then
-                appearance = info.cardAppearance
-                texturePath = info.texturePath
-                textureSize = info.textureSize
-                break
-            end
-        end
-    end
-    return appearance, texturePath, textureSize
-end
-
--- 组卡卡牌文件准备（manifest 副本 + 卡面/卡背 PNG 落盘）：
--- 必须在实体首次 Draw（前置模组按 manifest image_path 调 Material() 建材质）之前完成——
--- GMod 材质系统按路径名缓存：若在 PNG 落盘前先以该路径请求过材质，引擎层会缓存错误材质
--- 直到本次会话结束（之后复制文件 + ClearCache 只能清前置模组的 Lua 缓存，无法刷新引擎层
--- 材质缓存，卡面呈现前置模组的白色兜底 =「没有纹理」；重启后文件已存在才正常）。
--- 故本函数须在 Think 阶段（先于当帧渲染）同步调用，保证首次 Draw 时文件已存在。
--- 返回是否处理完成（成功后同 modelID 副本不再重复文件 I/O 与 ClearCache）。
-local function DeckPrepareCardFiles(modelID, safeName, appearance, texturePath)
-    if not KARDS.CardManifest.EnsureDeck(modelID, safeName) then
-        print("[Kards] 组卡卡牌 manifest 副本创建失败: " .. modelID)
-        return false
-    end
-    -- 卡面纹理：直接应用保存文件指向的路径（保存时已离屏渲染落盘为不透明 RGB PNG）。
-    -- 前置模组按 manifest image_path 从 data/kards_deck/<safeName>/front.png 直接加载贴图
-    -- （ClearCache 后重建 renderable 命中真实文件，实测卡面正常）；不再预填 MaterialCache——
-    -- Material() 自动创建的 data/ PNG 材质为半透明渲染，预填后卡面透明而露出卡背（已实测回退）
-    local tmplPath = appearance and texturePath and texturePath.template or nil
-    if not (tmplPath and file.Exists(tmplPath, "DATA")) then
-        return true -- 旧格式卡（无卡面文件）：前置模组按 image_path 加载缺失即白色兜底，维持原回退行为
-    end
-    -- 复制卡面/卡背 PNG 到 manifest image_path 对应的真实文件（data/kards_deck/<safeName>/）：
-    -- 卡面 = 保存文件指向的模板渲染；卡背 = materials/kards/cardbacks/<country>.png（缺失用卡面兜底）
-    -- （WriteCardTextures 共享函数，re.md T-M1）
-    local frontData = file.Read(tmplPath, "DATA")
-    local country = tostring(appearance.country or ""):lower()
-    local backData = file.Read("materials/kards/cardbacks/" .. country .. ".png", "GAME")
-    WriteCardTextures("kards_deck/" .. safeName, frontData, backData, modelID)
-    -- 副本诊断：front.png（manifest image_path 指向）是否复制成功（与模板渲染文件大小一致）
-    local copyData = file.Read("kards_deck/" .. safeName .. "/front.png", "DATA")
-    print("[Kards] 组卡卡牌副本诊断: template_size=" .. tostring(frontData and #frontData or 0)
-        .. " | front_copy_size=" .. tostring(copyData and #copyData or 0)
-        .. " | match=" .. tostring(frontData and copyData and #frontData == #copyData or false))
-    return true
-end
-
--- 初始化单张组卡卡牌：manifest 副本 → 复制卡面/卡背到 image_path 对应文件 → ClearCache
--- 重建 → 前置模组直接加载不透明贴图 → 绑定 3D2D 文字。
--- 性能：同 modelID 副本（加卡复制）仅首次执行文件 I/O 与 ClearCache，后续实体只绑定文字。
--- 文件准备（manifest + PNG 复制）已由首次发现实体时的 Think 同步完成，此处兜底再确认一次。
-local function DeckInitCard(ent, modelID)
-    deckCardPending[ent] = nil
-    if not IsValid(ent) then return end
-    -- 已就绪（可能已被其他初始化路径处理）则直接返回，避免重复绑定文字
-    if deckCardReady[ent] then return end
-    -- 翻面卡守卫：0.1s 延迟初始化期间翻面的卡不绑定 3D2D 文字
-    -- （NW 事件 KardsTableCardNWChanged 已移除文字并标记就绪）
-    if ent:GetNWBool("Kards_GridFlipped", false) then
-        deckCardReady[ent] = true
-        return
-    end
-    local safeName = modelID:match("^kards_deck_(.+)$")
-    if not safeName then return end
-    local appearance, texturePath, textureSize = DeckFindCardInfo(ent:GetNWString("Kards_CardName", ""))
-    -- 首次初始化该 modelID：写 manifest + 复制卡面/卡背 + 清缓存重建（仅一次；通常已由
-    -- 首次发现时的同步准备完成，此处兜底——如当时保存文件尚未就绪）
-    if not deckModelReady[modelID] then
-        if not DeckPrepareCardFiles(modelID, safeName, appearance, texturePath) then
-            return -- 准备失败：不标记就绪，下帧 Think 会重新尝试（如保存文件稍后可用）
-        end
-        deckModelReady[modelID] = true
-    end
-    if not appearance or not KARDS.CardTextOverlay then
-        -- 无本地外观数据 / 叠加层未加载：回退实体模式（3D2D 文字从 NW 变量读取）
-        if KARDS.CardTextOverlay then KARDS.CardTextOverlay:AddEntity(ent) end
-        deckCardReady[ent] = true
-        return
-    end
-    -- 3D2D 文字：编辑器同款本地绑定（appearance 静态表实时读：费用/攻防/词条/描述富文本）；
-    -- renderW/H 用保存文件记录的渲染尺寸（与模板像素对齐，避免文字错位）
-    local texW, texH = 300, 400
-    if textureSize and textureSize.w and textureSize.h then
-        texW, texH = textureSize.w, textureSize.h
-    end
-    KARDS.CardTextOverlay:AddLocal(ent, appearance, 7.2, 10.8, texW, texH)
-    deckCardReady[ent] = true
-    print("[Kards] 组卡卡牌纹理已应用: " .. tostring(ent:GetNWString("Kards_CardName", "")))
-end
-
--- ====================================================================
--- 牌桌卡牌材质就绪统一驱动（re.md T-H3）：
--- 原两个 Think 钩子（KardsDeckCardMaterial / KardsBattleDeckCardMaterial）每帧对全部
--- sent_pmx_static_imported 实体全量扫描匹配属性；现改为「实体自身驱动」——实体创建
--- （OnEntityCreated）或 NW 属性变更（EntityNetworkedVarChanged）时注册到待初始化集合，
--- 下方单一 Think 钩子只处理集合成员、完成即移除，不再每帧全量扫描。两类卡牌按属性
--- 区分初始化路径：组卡 kards_deck_*（卡面 + 卡背 + 3D2D 文字）/ 卡组槽 kards_battledeck_*
---（仅卡背，不渲染正面纹理、不绑定文字）。
+-- 卡牌材质链路（2026-08-15 C1 拆分：组卡卡牌材质/文字初始化、国家卡背 PNG 缓存、
+-- 卡牌纹理落盘、牌桌卡牌材质就绪统一驱动、卡堆档位模型卡背预置、手牌槽卡卡面预置
+-- 已迁移至 cl_battle_material.lua）
+include("cl_battle_material.lua")
 -- ====================================================================
 
--- 待初始化集合（weak keys：实体移除自动清理）：新实体创建或卡属性 NW 变更时入队，
--- 处理完成即移除；非卡牌实体（卡堆/手牌槽/牌桌模型等）入队后快速移出。
-local cardPendingEntities = setmetatable({}, { __mode = "k" })
--- 实体 NW 初始值等待超时（秒）：批量创建卡牌时 NW 同步可能延迟 1 秒以上才全部到位，
--- 超时后仍未识别为卡牌（role 空）的实体从待初始化集合移除（见 Think KardsTableCardMaterial）
-local KARDS_CARD_INIT_TIMEOUT = 3
-
--- 已处理卡组槽卡实体集合 / modelID 级就绪标记（weak keys：实体移除自动清理）
-local battleDeckReady = setmetatable({}, { __mode = "k" })
-local battleDeckModelReady = {}
-
--- 注册实体到待初始化集合（去重；NW 同步晚于实体创建，仅靠创建事件可能漏掉初始
--- NW 值，故 NW 变更事件（EntityNetworkedVarChanged）会再次入队兜底）
-local function EnqueueCardEntity(ent)
-    if IsValid(ent) and ent:GetClass() == "sent_pmx_static_imported" then
-        cardPendingEntities[ent] = CurTime()
-        -- 竞态兜底：初始 NW 同步晚于 OnEntityCreated（GetNWString 此时返回空），且 NW 值
-        -- 作为初始状态到达时 EntityNetworkedVarChanged 不触发——若实体在 Think 的 else 分支
-        -- 被移出集合（role 暂空），将永远不再处理（卡面文件不落盘、3D2D 文字不绑定）。
-        -- 延迟复检：NW 就绪（role 为 deck/battledeck）后重新入队；非卡牌实体复检为空直接跳过。
-        -- 已处理实体（deckCardReady 命中）复检入队为无害空转（ProcessDeckCard 守卫直接返回）。
-        timer.Simple(0.5, function()
-            if not IsValid(ent) then return end
-            local role = ent:GetNWString("Kards_CardRole", "")
-            if role == "deck" or role == "battledeck" then
-                cardPendingEntities[ent] = CurTime()
-            end
-        end)
-    end
-end
-
-hook.Add("OnEntityCreated", "KardsTableCardEnqueue", function(ent)
-    EnqueueCardEntity(ent)
-end)
-
--- NW 属性变更：卡属性就绪/更新 → 重新入队；翻面切换（Kards_GridFlipped）→ 即时
--- 移除/恢复 3D2D 文字并重新入队（原每帧对比 deckCardFlipped 检测变化，现事件驱动）
-hook.Add("EntityNetworkedVarChanged", "KardsTableCardNWChanged", function(ent, key, oldv, newv)
-    if not IsValid(ent) or ent:GetClass() ~= "sent_pmx_static_imported" then return end
-    if key == "Kards_CardRole" or key == "Kards_DeckModelID" then
-        cardPendingEntities[ent] = CurTime()
-    elseif key == "Kards_GridFlipped" then
-        if newv and KARDS.CardTextOverlay then
-            KARDS.CardTextOverlay:Remove(ent) -- 翻面：移除已绑定的 3D2D 文字
-        end
-        deckCardReady[ent] = nil -- 翻面/恢复正面均清空就绪标记，重新初始化
-        deckCardPending[ent] = nil
-        cardPendingEntities[ent] = CurTime()
-    end
-end)
-
--- 组卡卡牌（kards_deck_*）单实体初始化：返回 true 表示本实体处理完成可从集合移除。
--- 同步准备（DeckPrepareCardFiles：manifest + PNG 复制）必须先于实体首次 Draw：Think
--- 阶段先于当帧渲染，保证前置模组首次 Material() 时文件已存在，避免引擎层缓存错误
--- 材质导致卡面白屏无纹理（见 DeckPrepareCardFiles 注释）。文字先以实体模式绑定
--- （NW 数据）：卡牌出现即文字出现，避免延迟初始化期间文字空白（随后 DeckInitCard
--- 无缝覆盖为本地富文本模式）。翻面卡（Kards_GridFlipped，达携带上限）：不渲染卡面
--- 与 3D2D 文字——卡面朝下由服务端 180° 旋转实现（init.lua SetGridFlipped，正面子网格
--- 转至 -z 朝下不可见），仅保证卡背纹理落盘；翻面/恢复正面变化由 NW 事件即时处理。
-local function ProcessDeckCard(ent)
-    local modelID = ent:GetNWString("Kards_DeckModelID", "")
-    if modelID == "" then return false end -- NW 未就绪：保持入队等待后续 NW 事件
-    local flipped = ent:GetNWBool("Kards_GridFlipped", false)
-    if not deckCardReady[ent] and not deckCardPending[ent] then
-        -- 卡面 PNG 落盘须早于实体首次 Draw：此处 Think 先于渲染阶段同步复制，
-        -- 保证当帧渲染时文件已存在（新卡首帧即正常显示纹理，无需重启）。
-        -- 翻面卡同样须先落盘卡背纹理（正面朝下不可见，卡背朝上需真实卡背图）
-        local safeName = modelID:match("^kards_deck_(.+)$")
-        if safeName and not deckModelReady[modelID] then
-            local appearance, texturePath = DeckFindCardInfo(ent:GetNWString("Kards_CardName", ""))
-            -- 总部卡（battle 模式 Kards_DeckRole="hq"）卡背固定 usa（测试版暂定）：
-            -- 临时改写 country 写卡背，同步执行完立即还原，不影响其他卡
-            local hqFixed = ent:GetNWString("Kards_DeckRole", "") == "hq" and appearance
-            local savedCountry = hqFixed and appearance.country or nil
-            if hqFixed then appearance.country = "usa" end
-            local prepOk = DeckPrepareCardFiles(modelID, safeName, appearance, texturePath)
-            if hqFixed then appearance.country = savedCountry end
-            if prepOk then deckModelReady[modelID] = true end
-        end
-        if flipped then
-            -- 翻面卡：仅保证卡背纹理就绪，不绑定任何 3D2D 文字
-            deckCardReady[ent] = true
-        else
-            deckCardPending[ent] = true
-            if KARDS.CardTextOverlay then KARDS.CardTextOverlay:AddEntity(ent) end
-            timer.Simple(0.1, function()
-                if IsValid(ent) then DeckInitCard(ent, modelID) end
-            end)
-        end
-    end
-    return true
-end
-
--- 卡组槽卡牌（kards_battledeck_*）单实体初始化：仅复制卡背 PNG（front=back=卡背图，
--- 测试版统一 usa 卡背 materials/kards/cardbacks/usa.png，无论卡名国家；无卡组占位卡
--- 同样 usa）落盘到 data/kards_battledeck/<safeName>/，再 ClearCache 重建 renderable
--- 使前置模组按 manifest image_path 加载卡背——不绑定任何 3D2D 文字、不渲染正面纹理
--- （性能优化）。卡背 PNG 缺失时直接不写文件 → 前置模组按 image_path 加载缺失 → 白色
--- 兜底（与组卡「旧格式卡无卡面」回退行为一致）。同 modelID 副本仅首次执行文件 I/O
--- 与 ClearCache（battleDeckModelReady 去重）；本实体无论成败只尝试一次（battleDeckReady）。
--- 返回 true 表示可从集合移除。
-local function ProcessBattleDeckCard(ent)
-    local modelID = ent:GetNWString("Kards_DeckModelID", "")
-    if modelID == "" then return false end -- NW 未就绪：保持入队等待后续 NW 事件
-    if battleDeckReady[ent] then return true end
-    battleDeckReady[ent] = true
-    local safeName = modelID:match("^kards_battledeck_(.+)$")
-    if safeName and not battleDeckModelReady[modelID] then
-        -- 卡背统一 usa（测试版暂定：卡组槽卡背均为美国卡背，不看卡名国家）
-        if KARDS.CardManifest.EnsureBattleDeck(modelID, safeName) then
-            -- front=back=usa 卡背（WriteCardTextures 共享函数，re.md T-M1）：
-            -- 卡背 PNG 缺失时不写文件 → 前置模组按 image_path 加载缺失 → 白色兜底
-            local backData = file.Read("materials/kards/cardbacks/usa.png", "GAME")
-            WriteCardTextures("kards_battledeck/" .. safeName, backData, backData, modelID)
-            battleDeckModelReady[modelID] = true
-        end
-    end
-    return true
-end
-
--- 单一 Think：只处理待初始化集合（实体自身驱动，完成即移除；无新卡时集合为空，
--- 不再每帧全量扫描全部 sent_pmx_static_imported 实体）
-hook.Add("Think", "KardsTableCardMaterial", function()
-    for ent in pairs(cardPendingEntities) do
-        if not IsValid(ent) then
-            cardPendingEntities[ent] = nil
-        elseif ent:GetNWString("Kards_CardRole", "") == "deck" then
-            if ProcessDeckCard(ent) then cardPendingEntities[ent] = nil end
-        elseif ent:GetNWString("Kards_CardRole", "") == "battledeck" then
-            if ProcessBattleDeckCard(ent) then cardPendingEntities[ent] = nil end
-        else
-            -- NW 尚未就绪（role 空）：实体保留在集合中等待初始 NW 到达（批量创建时
-            -- NW 同步可延迟 1 秒以上才全部到位，且初始值到达不触发
-            -- EntityNetworkedVarChanged——立即移出将永久漏掉）。超过
-            -- KARDS_CARD_INIT_TIMEOUT 仍无 role 才移出（非卡牌实体），后续 NW 变更再入队。
-            -- 时间戳由 EnqueueCardEntity / EntityNetworkedVarChanged 入队时刷新（CurTime）
-            local enqTime = cardPendingEntities[ent]
-            if not enqTime or CurTime() - enqTime > KARDS_CARD_INIT_TIMEOUT then
-                cardPendingEntities[ent] = nil
-            end
-        end
-    end
-end)
-
--- ====================================================================
--- 卡堆档位模型卡背文件预置（session 级，InitPostEntity 执行，同手牌槽
--- PrepareHandSlotFiles 的时序理由）：引擎材质按路径缓存——若 PNG/manifest 在实体
--- 首次请求材质后才落盘，本会话白屏无纹理直至重启。故在地图加载后、任何人进入对战
--- 之前，把 usa 卡背 PNG 复制到 data/kards_deckpile/usa/ 并改写全部档位模型 manifest
---（含单张档 basic_card 副本），保证卡堆实体首次 Draw 时文件已在。实体钩子
--- KardsBattleDeckPileMaterial 的 ClearCache 仅作兜底重建，不承担首发材质职责。
--- 幂等：成功后同会话不再重复文件 I/O；失败可重试。
--- ====================================================================
-local deckPileFilesReady = false
-local function PrepareDeckPileFiles()
-    if deckPileFilesReady then return true end
-    -- usa 卡背 PNG 落盘（front/back 均指向卡背图；缺失时前置模组白色兜底）
-    file.CreateDir("kards_deckpile/usa")
-    local backData = file.Read("materials/kards/cardbacks/usa.png", "GAME")
-    if backData then
-        file.Write("kards_deckpile/usa/front.png", backData)
-        file.Write("kards_deckpile/usa/back.png", backData)
-    end
-    -- 改写档位模型 manifest（front/back → usa 卡背）；单张档先建 basic_card 副本
-    if not KARDS.CardManifest.EnsureDeckPileSingle() then return false end
-    for _, modelID in ipairs(DeckPileModelIDs) do
-        if not EnsureDeckPileManifest(modelID) then return false end
-    end
-    deckPileFilesReady = true
-    return true
-end
-hook.Add("InitPostEntity", "KardsDeckPileFiles", PrepareDeckPileFiles)
-
--- 卡堆档位实体卡背兜底（每帧）：档位模型 manifest 与卡背 PNG 已由
--- PrepareDeckPileFiles 在 InitPostEntity 预置；此处对出现的卡堆实体仅作兜底重试 +
--- ClearCache 重建一次（同 modelID 仅首次执行；前置模组 renderable 按 manifest 重建
--- 时读取 usa 卡背）。两槽共用同一组档位模型，故按 modelID 而非实体去重。
-local deckPileModelReady = {}
-hook.Add("Think", "KardsBattleDeckPileMaterial", function()
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-        if IsValid(ent) and ent:GetNWBool("Kards_IsBattleDeckPile", false) then
-            local modelID = ent:GetNWString("Kards_DeckModelID", "")
-            if modelID ~= "" and not deckPileModelReady[modelID] then
-                if PrepareDeckPileFiles() then
-                    deckPileModelReady[modelID] = true
-                    -- 销毁该 modelID 旧 renderable：manifest（image_path）已就绪，
-                    -- 强制实体 Draw 重建时按 image_path 加载 usa 卡背（档位模型每档唯一）
-                    if PMXStaticImporter and PMXStaticImporter.ClearCache then
-                        PMXStaticImporter.ClearCache(modelID)
-                        -- back 槽 UV 镜像修正：ClearCache 后预填翻转材质（卡堆 back 槽朝下）
-                        PrefillBackFlip(modelID)
-                    end
-                end
-            end
-        end
-    end
-end)
-
--- ====================================================================
--- 手牌槽卡牌卡面文件预置（session 级，回合开始即执行）：
--- 引擎材质按路径缓存——若 PNG/manifest 在实体首次请求材质后才落盘，本会话白屏无纹理
--- 直至重启（详见 DeckPrepareCardFiles 注释）。故在 InitPostEntity（地图加载后、任何人
--- 进入对战的牌桌实体与手牌槽卡创建之前）提前把 UK 卡背 PNG 复制到 data/kards_handslot/
--- 并写好 kards_handslot manifest，保证实体首次 ApplyImportedModel / Draw 时文件已在；
--- 实体钩子 KardsHandSlotCardMaterial 的 ClearCache 仅作兜底重建，不承担首发材质职责。
--- 仅写 back（朝下，-z 卡背子网格）：back 槽就是卡背——卡背 = UK 卡背图（卡背图片
--- 放卡背槽）；front（朝上，+z 卡面）不写文件 → 缺失白色兜底"正面"占位（卡牌平躺
--- 卡面朝上时俯视见 front，即"正面"，避免"正反两面都是卡背"；并删除旧会话可能残留的
--- front.png，否则引擎按路径缓存会继续加载旧卡背）。
--- 幂等：成功后同会话不再重复文件 I/O；失败可重试。
--- ====================================================================
-local handSlotFilesReady = false
-local function PrepareHandSlotFiles()
-    -- 防御旧残留：front 槽=卡面，任何时候都不应存在卡背图（缺失 → 白色兜底"正面"）。
-    -- 每次调用都删除 front.png（文件删除幂等，开销可忽略）：旧版本曾把卡背图写进
-    -- front 槽（卡面方向 UV），卡背图按卡面方向采样会左右镜像；且引擎材质按路径缓存，
-    -- 同会话内已加载的 front 卡背材质无法刷新，须靠删除文件 + 重启规避。
-    file.Delete("kards_handslot/front.png")
-    if handSlotFilesReady then return true end
-    if not KARDS.CardManifest.EnsureHandSlot("kards_handslot") then
-        return false
-    end
-    file.CreateDir("kards_handslot")
-    local backData = file.Read("materials/kards/cardbacks/uk.png", "GAME")
-    if backData then
-        file.Write("kards_handslot/back.png", backData)
-    end
-    handSlotFilesReady = true
-    return true
-end
-hook.Add("InitPostEntity", "KardsHandSlotFiles", PrepareHandSlotFiles)
-
--- ====================================================================
--- 手牌槽卡牌卡背初始化（battle 模式）：模型副本 kards_handslot（front 缺失白色
--- 兜底"正面"占位、back=UK 卡背图，服务端 CreateHandCardSlots 创建）。卡面文件已
--- 在 InitPostEntity 预置
--- （PrepareHandSlotFiles），此处对出现的实体仅作兜底重试 + ClearCache 重建一次
--- （两槽共享 modelID，同 modelID 仅首次执行）。
--- ====================================================================
-local handSlotModelReady = {}
-hook.Add("Think", "KardsHandSlotCardMaterial", function()
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-        if IsValid(ent) and ent:GetNWBool("Kards_IsHandSlotCard", false) then
-            local modelID = ent:GetNWString("Kards_DeckModelID", "")
-            if modelID ~= "" and not handSlotModelReady[modelID] then
-                if PrepareHandSlotFiles() then
-                    handSlotModelReady[modelID] = true
-                    -- 销毁该 modelID 旧 renderable：manifest（image_path）已就绪，
-                    -- 强制实体 Draw 重建时按 image_path 加载 UK 卡背（两槽共享 modelID）
-                    if PMXStaticImporter and PMXStaticImporter.ClearCache then
-                        PMXStaticImporter.ClearCache(modelID)
-                        -- back 槽 UV 镜像修正：ClearCache 后预填翻转材质（手牌槽卡背朝下）
-                        PrefillBackFlip(modelID)
-                    end
-                end
-            end
-        end
-    end
-end)
 
 -- ====================================================================
 -- 手牌槽卡可见性（组卡模式隐藏）：牌桌处于组卡模式（Kards_Mode == "deck"）时，
@@ -1981,22 +1842,9 @@ local battleHQLeft = setmetatable({}, { __mode = "k" })
     （battleHQLeft）不在此处设置：其显示/朝向由抽牌动画 / 总部对局开始动画驱动接管。
     注：早期方案曾把非顶层卡 SetNoDraw(true) 隐藏，导致卡组只剩顶层一张牌——
     逐张堆叠方案因此改为全部渲染模型；现卡堆为单实体档位模型，此问题已不存在。
+    2026-08-15 阶段四 C4：本钩子已并入 KardsTableEntitiesThink（文件后部统一实体
+    遍历，见 KardsFieldFacing / KardsHandSlotFacing 段）。
 ]]
-hook.Add("Think", "KardsBattleDeckStackVisible", function()
-    if not KARDS.BattleState.inTable then return end
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-        if IsValid(ent) and not battleDeckDrawn[ent] and not battleHQLeft[ent] then
-            if ent:GetNWString("Kards_CardRole", "") == "battledeck" then
-                ent:SetNoDraw(false)
-            end
-        end
-    end
-end)
-
--- 总部对局开始动画中的活跃 HQ 集合（re.md 重构：动画本身由 KARDS.AnimPlayer 关键帧
--- 播放器驱动，组名 "hqReveal"；本表仅保留 { ent, slot } 供 InHQRevealAnim 遍历判定 +
--- 全部完成时播放一次 hq_end 收尾音效；每场对局最多两个：本方 + 敌方）
-local hqReveals = {}
 
 --[[
     总部对局开始动画：
@@ -2079,20 +1927,21 @@ StartHQReveal = function(tableEnt, mySlot)
                 list[#list + 1] = { ent = ent, slot = slot } -- 活跃 HQ 集合（InHQRevealAnim 遍历）
                 KARDS.AnimPlayer:Play(ent, {
                     { t = 0, pos = fromPos, ang = Angle(180, fromYaw, 0) },
-                    { t = 1.0, pos = flankPos, ang = Angle(0, facing, 0) },
+                    { t = 1.0, pos = flankPos, ang = Angle(0, facing, 0), event = "switch" },
                     { t = 1.6, pos = supportPos, ang = Angle(0, facing, 0) },
                 }, {
                     group = "hqReveal",
                     easing = "smooth", -- 原 RevealEaseInOut（翻转 / 滑落同一曲线）
-                    onComplete = function(target)
-                        -- 总部落位支援阵线第 3 槽：登记进 KARDS.BattleState.fieldLayouts（服务端 HQ 恒参与居中，
-                        -- 见 BroadcastFieldLayout；首次广播前拖拽预览/飞行的偶数偏移计数含总部，
-                        -- 2026-08-10 部署落位修复）
-                        KARDS.BattleState.fieldLayouts[slot][target] = 3
-                        -- 2026-08-11：总部动画结束 → 切换 basic_card_unit 模型（短卡 + UV
-                        -- 裁切，与单位一致）。客户端本地准备 manifest + 裁切材质 + 重绑短卡
-                        -- 尺寸文字；参战者通知服务端 ApplyImportedModel 权威切换（观战者
-                        -- 渲染随服务端切换同步，本地仅准备 manifest + 文字）
+                    -- 2026-08-12：短卡切换提前到第二关键帧（到达头像外侧）与第三关键帧
+                    -- （滑落支援阵线）之间——部署单位「半程切换小模型」原理同款：到达
+                    -- 头像外侧后立即切换 basic_card_unit 模型（短卡 + UV 裁切），随后
+                    -- 短卡滑落落位。客户端本地准备 manifest + 裁切材质 + 重绑短卡尺寸
+                    -- 文字；参战者通知服务端 ApplyImportedModel 权威切换（观战者渲染
+                    -- 随服务端切换同步，本地仅准备 manifest + 文字）。服务端收到通知后
+                    -- 把权威状态置为支援阵线第 3 槽，客户端动画每帧 SetLocalPos 覆盖之，
+                    -- 不产生跳变。
+                    onKeyframe = function(target, name, t)
+                        if name ~= "switch" then return end
                         local hqModelID = target:GetNWString("Kards_DeckModelID", "")
                         local hqSafe = hqModelID:match("^kards_deck_hq_(.+)$") or ""
                         if hqSafe ~= "" and KARDS.CardManifest and KARDS.CardManifest.CloneUnit then
@@ -2114,8 +1963,18 @@ StartHQReveal = function(tableEnt, mySlot)
                             if KARDS.CardTextOverlay then
                                 KARDS.CardTextOverlay:Remove(target)
                                 KARDS.CardTextOverlay:AddEntity(target, 7.2, 8.528, 209, 290, true)
+                                -- 总部防御源值（t4 攻防颜色规则基准，2026-08-12）：防御 NW
+                                -- 已由服务端创建时初写（文件值，见 table_battledeck.lua），快照
+                                -- 为 base——此后受伤害防御下降 → 红色 + 数值变动特效
+                                KARDS.CardTextOverlay:SetBaseStat(target, "defense", target:GetNWInt("Kards_CardDefense", 0))
                             end
                         end
+                    end,
+                    onComplete = function(target)
+                        -- 总部落位支援阵线第 3 槽：登记进 KARDS.BattleState.fieldLayouts（服务端 HQ 恒参与居中，
+                        -- 见 BroadcastFieldLayout；首次广播前拖拽预览/飞行的偶数偏移计数含总部，
+                        -- 2026-08-10 部署落位修复）
+                        KARDS.BattleState.fieldLayouts[slot][target] = 3
                         -- 从活跃集合移除；全部总部动画结束 → 播放一次收尾音效
                         for i, r in ipairs(hqReveals) do
                             if r.ent == target then
@@ -2158,11 +2017,11 @@ local function InitDrawCardFace(ent)
     local safeName = ent:GetNWString("Kards_DeckSafeName", "")
     if modelID == "" or safeName == "" then return false end
     if drawFaceReady[ent] then return true end
-    local cardName = ent:GetNWString("Kards_CardName", "")
+    local cardName = KARDS.GetCardIdentity(ent) -- 手牌卡面定向表优先，回退 NW（2026-08-18，规划 B1）
     -- 卡名 NW 未就绪：外观数据（appearance/textureSize）无法匹配，不标记就绪，
     -- 调用方（drawFacePending Think 重试）等 NW 同步后再初始化
     if cardName == "" then return false end
-    local appearance, texturePath, textureSize = DeckFindCardInfo(cardName)
+    local appearance, texturePath, textureSize = KARDS.DeckFindCardInfo(cardName)
     -- manifest 改写（组卡同款确定性改写：front/back → data/kards_deck/<safeName>/）
     if KARDS.CardManifest.EnsureDeck(modelID, safeName) then
         -- 卡面文件兜底：本地卡面 PNG 未落盘时从保存文件模板复制（组卡模式通常已落盘）
@@ -2174,16 +2033,38 @@ local function InitDrawCardFace(ent)
                 file.Write(dir .. "/front.png", file.Read(tmplPath, "DATA"))
             end
         end
+        -- A 修复（2026-08-12）：manifest back → data/kards_deck/<safeName>/back.png，
+        -- 原只保证 front.png、back.png 从不落盘 → 卡背加载缺失贴图（白色空背；调试
+        -- 会话 A:face 探针证实血红镰刀/步兵55团 back=false）。卡背源 = 外观国家卡背，
+        -- 缺失依次兜底 usa → front.png（与 WriteCardTextures「卡背缺失用卡面兜底」一致）。
+        if not file.Exists(dir .. "/back.png", "DATA") then
+            local country = tostring((appearance and appearance.country) or "usa"):lower()
+            local backData = KARDS.ReadCardbackPNG(country)
+            if not backData then
+                backData = KARDS.ReadCardbackPNG("usa")
+            end
+            if not backData and file.Exists(dir .. "/front.png", "DATA") then
+                backData = file.Read(dir .. "/front.png", "DATA")
+            end
+            if backData then
+                file.CreateDir(dir)
+                file.Write(dir .. "/back.png", backData)
+            end
+        end
         if PMXStaticImporter and PMXStaticImporter.ClearCache then
             PMXStaticImporter.ClearCache(modelID)
             -- back 槽 UV 镜像修正：ClearCache 后预填翻转材质（抽牌临时卡翻面后 back 槽可见）
-            PrefillBackFlip(modelID)
+            -- 2026-08-15：PrefillBackFlip 定义于 cl_battle_material.lua（include 独立
+            -- 编译执行不共享本文件 local），经 KARDS 命名空间访问
+            KARDS.PrefillBackFlip(modelID)
         end
     end
     -- 标记为已处理：防止统一驱动 KardsTableCardMaterial 再把 manifest 写回卡背
+    -- 2026-08-15：battleDeckReady / battleDeckModelReady 定义于 cl_battle_material.lua
+    -- （include 独立编译执行不共享本文件 local），经 KARDS 命名空间访问
     drawFaceReady[ent] = true
-    battleDeckReady[ent] = true
-    battleDeckModelReady[modelID] = true
+    KARDS.battleDeckReady[ent] = true
+    KARDS.battleDeckModelReady[modelID] = true
     -- 绑定 3D2D 文字（外观编辑器生成 3D2D 预览卡同款，cl_canvas_editor.lua SpawnTestEntity
     -- mode=="3d2d"）：AddLocal 本地外观表 + 渲染像素尺寸 → 文字分布/字号与编辑器预览
     -- 完全一致（appearance 静态表每帧实时读；renderW/H = 保存文件记录的渲染尺寸，
@@ -2193,7 +2074,10 @@ local function InitDrawCardFace(ent)
         if textureSize and textureSize.w and textureSize.h then
             texW, texH = textureSize.w, textureSize.h
         end
-        KARDS.CardTextOverlay:AddLocal(ent, appearance, 7.2, 10.8, texW, texH)
+        -- hideWhenBack=true（2026-08-12）：卡背朝上（抽牌动画排队/delay 等待期或
+        -- 翻面早期）不绘制 3D2D 文字，避免在卡组顶泄露所抽牌攻防/费用；翻面越过
+        -- ±90° 后文字随卡面出现（见 cl_card_text_overlay.lua DrawOverlay）
+        KARDS.CardTextOverlay:AddLocal(ent, appearance, 7.2, 10.8, texW, texH, true)
     end
     return true
 end
@@ -2211,9 +2095,151 @@ hook.Add("Think", "KardsDrawFacePending", function()
     end
 end)
 
+-- 无对手模式操作身份切换（服务端 kards_switch 指令发送）：更新本方槽位 + 本地视角
+-- + 相机朝向（正上方俯视，yaw 按槽位，与 KardsTableBattleStart 目标姿态同款）。
+-- 切换后本方手牌 = 目标槽手牌：该槽原按「对方」绘制（未 InitDrawCardFace 卡背），
+-- 需补卡面初始化才能操作；旧槽（现为对方）手牌绕卡长轴翻转 180° 恢复卡背
+--（不改 manifest，见下方处理）；真实手牌扇形/翻转角度由 KardsRealHandFacing 每帧
+-- 驱动（本方扇形姿态 / 对方已初始化卡强制卡背朝上），战场卡朝向由 cl_perspective.lua
+-- ApplyFacing 驱动（读 P.LocalView）。
+-- 位置位于 InitDrawCardFace 定义之后：处理函数依赖其 local 引用。
+-- F 修复（2026-08-12）：前向占位——本回调引用 HandFanPos / MulliganFanPos，二者分别于
+-- L2754 / L2821 声明、晚于本回调，不占位则词法解析为全局 nil → 代选/旧槽回收路径运行时
+-- 报错。占位后由原声明处 local function 改为赋值（同 KardsResetPerMatchDedup 前向占位
+-- 模式，见 L166 / L1808）。
+local HandFanPos, MulliganFanPos
+net.Receive("KardsSwitchSlot", function()
+    local ent = net.ReadEntity()
+    local slot = net.ReadUInt(8)
+    if not IsValid(ent) then return end
+    local inTable = KARDS.BattleState.inTable
+    if not (inTable and inTable.ent == ent) then return end
+    local oldSlot = inTable.slot
+    inTable.slot = slot
+    if KARDS.Perspective and KARDS.Perspective.SetLocalView then
+        KARDS.Perspective:SetLocalView(slot)
+    end
+    -- F 修复（2026-08-12）：无对手模式结束本方回合后 endedTurn=true，且不随对方回合
+    -- 广播复位（KardsTurnUpdate 仅当 slot==inTable.slot 才复位 endedTurn，而切换时
+    -- 该广播早已到达）→ 切换后拿起门控 not endedTurn 恒不满足 → 双方手牌都拿不起。
+    -- 切换即接管新槽操作身份：复位 endedTurn，新槽回合（battleTurn==slot）可拿起。
+    KARDS.BattleState.endedTurn = false
+    -- F 修复（2026-08-12）：旧槽仍在重新调度选择中（mulligan 未提交）时切换——把中间
+    -- 扇形卡收回手牌位并登记（放弃本次选择；返回该槽时由下方代选逻辑重新呈现）。避免
+    -- 新槽代选替换 mulligan 状态后旧槽卡被孤弃（不在手牌表、不可选择、不可拿起）。
+    local oldM = KARDS.BattleState.mulligan
+    if oldSlot and oldSlot ~= slot and oldM and oldM.slot == oldSlot and not oldM.submitted then
+        for ce, card in pairs(oldM.cards) do
+            if IsValid(ce) then
+                KARDS.AnimPlayer:Play(ce, {
+                    { t = 0, pos = ce:GetLocalPos(), ang = Angle(0, ce:GetLocalAngles().y, 0) },
+                    { t = 1.0, pos = HandFanPos(oldSlot, card.index, oldM.total), ang = Angle(0, (oldSlot == 1) and 180 or 0, 0) },
+                }, { group = "mulliganToHand" })
+                KARDS.BattleState.realHandCards[oldSlot][ce] = card.index
+            end
+        end
+        oldM.cards = {}
+    end
+    -- 目标槽重新调度代选（2026-08-12）：无对手模式虚拟对手不再自动确认重新调度
+    --（table_battledeck.lua SetupVirtualOpponent 改动），切换到尚未完成重新调度的槽
+    --（mulliganDoneSlot 未置位）且该槽已有起手牌（发牌广播已按对方视角登记
+    -- realHandCards）→ 把起手牌（idx ≤ dealStarterCount[slot]，后续回合抽牌留在手牌）
+    -- 重新呈现为牌桌中间扇形选择（玩家代替虚拟对手选择去留），确认后走既有补抽/
+    -- 统一落位流程（KardsMulliganDone / KardsMulliganAnimsUpdate）。
+    local hand = KARDS.BattleState.realHandCards[slot]
+    local m = KARDS.BattleState.mulligan
+    local starterTotal = KARDS.BattleState.dealStarterCount[slot] or 0
+    if hand and next(hand) and not KARDS.BattleState.mulliganDoneSlot[slot] and starterTotal > 0
+        and not (m and m.slot == slot and m.submitted) then
+        if not m or m.slot ~= slot or m.submitted then
+            m = { active = false, slot = slot, total = starterTotal, cards = {}, submitted = false }
+            KARDS.BattleState.mulligan = m
+        end
+        for cardEnt, idx in pairs(hand) do
+            if IsValid(cardEnt) and idx <= starterTotal then
+                InitDrawCardFace(cardEnt) -- 代选需看卡面（原对方视角未初始化，卡背）
+                drawFacePending[cardEnt] = true
+                m.cards[cardEnt] = { ent = cardEnt, index = idx, selected = false }
+                local endYaw = (slot == 1) and 180 or 0 -- 文字朝本方（同重新调度发牌）
+                KARDS.AnimPlayer:Play(cardEnt, {
+                    { t = 0, pos = cardEnt:GetLocalPos(), ang = Angle(0, cardEnt:GetLocalAngles().y, 0) },
+                    { t = 0.5, pos = MulliganFanPos(idx, starterTotal), ang = Angle(0, endYaw, 0) },
+                }, { group = "mulliganDeal", delay = (idx - 1) * 0.25 })
+                KARDS.BattleState.realHandCards[slot][cardEnt] = nil -- 移出手牌登记（代选期间不可拿起）
+            end
+        end
+    else
+        -- 已完成的槽（正常切换）：补卡面初始化（原对方手牌卡背，NW 未就绪则入队重试）；
+        -- 角度由 KardsRealHandFacing 本方分支下帧驱动回扇形姿态（卡面朝上）
+        if hand then
+            for cardEnt in pairs(hand) do
+                if IsValid(cardEnt) then
+                    InitDrawCardFace(cardEnt)
+                    drawFacePending[cardEnt] = true
+                end
+            end
+        end
+        -- 旧槽（现为对方）：手牌绕卡长轴翻转 180°（pitch 180，卡背朝上）——恢复卡背
+        -- 不改 manifest（back 子网格即真实卡背图，PrefillBackFlip 已修正 UV 镜像）；
+        -- 3D2D 文字跟随实体朝向（cl_card_text_overlay DrawOverlay 用 GetForward/GetRight/
+        -- GetUp 派生轴线）→ 文字朝卡背侧不可见，满足「对方手牌正面不渲染」。
+        -- 兜底：KardsRealHandFacing 对方分支每帧强制翻转（动画终帧/后续抽牌 pitch=0
+        -- 会被覆盖），见该钩子 mine/elseif drawFaceReady 分支。
+        if oldSlot and oldSlot ~= slot then
+            local oldHand = KARDS.BattleState.realHandCards[oldSlot]
+            if oldHand then
+                for cardEnt in pairs(oldHand) do
+                    if IsValid(cardEnt) then
+                        local cur = cardEnt:GetLocalAngles()
+                        cardEnt:SetLocalAngles(Angle(180, cur.y, cur.r))
+                    end
+                end
+            end
+        end
+    end
+    -- 相机切到新视角（正上方俯视，yaw 按槽位；与 KardsTableBattleStart 目标关键帧同款）
+    local deckPos = ent:LocalToWorld(Vector(0, 0, 60))
+    local deckYaw = (slot == 1) and 270 or 90
+    local deckAng = ent:LocalToWorldAngles(Angle(90, deckYaw, 0))
+    KARDS.BattleCamera:SetView(LocalPlayer(), deckPos, deckAng, 75)
+end)
+
 -- 手牌槽常量（与服务端 ENT.HandSlot* 同步硬编码：客户端实体对象上不存在服务端 ENT
 -- 字段，访问 tableEnt.HandSlotBase 等会得 nil → 算术错误；数值变更须与服务端同步）
 local HandSlotBase    = Vector(0, 0, 30.5)  -- 手牌中心卡位置（桌面中心正上方，z 抬升更高；与服务端同步，见 init.lua L1333）
+-- 中槽（2026-09-26 新增；2026-09-30 统一）：牌桌玩家视角下的居中展示槽位族，xy 取牌桌中心、
+-- z 与手牌等高（= HandSlotBase.z），供居中展示类动画使用（如「开发」三选一展开候选卡）。
+-- 槽位几何沿用牌桌中间扇形（重新调度发牌 MulliganFanPos）：n 张时第 i 张落
+-- x = ((n + 1) / 2 - i) * CenterSlotSpacing（首张在最左，P1 视角 +x 为左），于是
+-- n = 4 即中槽的 4 槽模式（x = 12 / 4 / -4 / -12，先手重新调度的四张卡槽），
+-- n = 3 即三选一（x = 8 / 0 / -8），居中那张与 CenterSlotPos（x = 0）重合。
+-- 高度由 CenterSlotZ 承载，重新调度扇形与中槽同为该高度（2026-09-30 统一，此前扇形用
+-- CardZ + 10，比中槽低约 2 个单位，跨槽动画会出现高度跳变）。
+local CenterSlotSpacing = 8.0
+local CenterSlotZ       = HandSlotBase.z
+local CenterSlotPos     = Vector(0, 0, CenterSlotZ)
+-- 三选一槽位（2026-09-26 新增：「开发」「观星」三张候选卡的展示位）：即中槽槽位族取 n = 3，
+-- index 1 = 中左 / 2 = 中 / 3 = 中右，index 2 与 CenterSlotPos 完全一致。间距与高度同中槽
+-- 常量（CenterSlotSpacing / CenterSlotZ）。左右方向随视角镜像：P1 视角左侧为 +x（与爆牌弃牌
+-- 槽 P1LP2RSlot 的判定一致，见 cl_battle_mulligan.lua L119 起），P2 视角取反，故用取值函数承载。
+local function PickSlotPos(index, viewSlot)
+    local sign = (viewSlot == 2) and -1 or 1
+    return Vector(sign * (2 - index) * CenterSlotSpacing, 0, CenterSlotZ)
+end
+-- 三选一动画数值常量（时长秒 / 距离世界单位 / 角度度）
+local PickDealDur      = 0.5    -- 单张候选卡由卡组顶飞到槽位的时长（同 mulligan 发牌）
+local PickDealStagger  = 0.25   -- 错峰：前一张度过一半时下一张起飞
+local PickHoverLift    = 1.5    -- 悬停抬升量（z 上升）
+local PickToHandDur    = 1.0    -- 选中卡飞入手牌扇形时长（同 mulligan 落位）
+local PickSpinDur      = 0.9    -- 未选中卡出场时长
+local PickSpinYaw      = 135    -- 未选中卡逆时针旋转角
+local PickSpinDropZ    = 18     -- 未选中卡出场过程 z 下降量（30.5 降到 12.5）
+local PickExitDist     = 26     -- 未选中卡出场终点沿「视角左下」方向的位移
+local PickEnemyShift   = 14     -- 敌方 / 观战视角：选中卡由中槽向该方前移的距离（前线 xy 前方）
+local PickSpecAngle    = 45     -- 观战视角：选中卡倾向该方玩家的旋转角
+local ScryTableZ       = 18.93  -- 观星未选中卡第一段终点 z（桌面高度 CardZ 18.43 + 0.5，贴桌不悬空）
+local ScryFlipDur      = 0.45   -- 观星未选中卡翻面段时长
+local ScryToBottomDur  = 0.6    -- 观星未选中卡落入卡组底段时长
 local HandSlotHalfY   = 18                  -- 南北分离半距（P1 +y / P2 −y；18 更靠近牌桌中心，与服务端同步）
 local HandSlotZViewOffset = 8               -- 观战视角手牌 z 偏移：观战不跟随 P1/P2 的 z 抬升，
                                             -- 按服务端基础 z − 本偏移还原观战基线（= 服务端 HandSlotBase.z − 22.5，须与服务端同步）
@@ -2230,30 +2256,95 @@ local HandSlotAngles  = { [1] = Angle(0, 0, 0), [2] = Angle(0, 180, 0) }
 -- 左右镜像「整体反了」（用户实测）——文字方向必须与扇形布局解耦，故位置/卡体
 -- 张开用位置基准（HandSlotAngles），文字方向在 HandFanPos 最终角度叠加本常量。
 local HandSlotTextYaw = 180
-local HandSlotHoverLift = 1.6   -- 悬停提升量：鼠标悬停本方手牌时沿自身 y 轴的最大移动量（单位，可微调）
+local HandSlotHoverLift = 0.8   -- 悬停提升量：鼠标悬停本方手牌时沿自身 y 轴的最大移动量（单位，可微调；2026-08-14 用户规格由 1.6 减半；对方/观战远程悬停 z 抬升同用此增量）
 local HandSlotHoverDur = 0.1   -- 悬停提升时长（秒）：0.1 秒内增加到满量（离开同样 0.1 秒回落）
 local HandSlotHoverRadius = 12 -- 悬停判定半径：鼠标射线到手牌中心的最大距离（单位）
 
 -- ====================================================================
--- 左右展示槽常量（2026-08-11，牌桌卡动画系统坐标常量，见 re.md §3.2 姿态库）：
---   左侧展示 / 右侧展示——牌桌俯视视角（P1 视角：−x 为左侧 / +x 为右侧；2026-08-11
---   实测修正：原按战场列注释「+x 为左」设置与实际视觉左右相反，已交换）左右对称的
---   两个固定展示位，供卡牌展示 / 信息陈列类动画使用（{ pos, ang } 即 re.md 6 值姿态
---   帧结构，可直接喂 AnimPlayer）。
---   位置：x = ±DisplaySlotHalfX（俯视视角区分左右，仅 x 符号不同；2026-08-11 由
---   ±24 收拢到 ±14，更靠近屏幕中心——相机在 (-70,0,30) 近水平朝牌桌中线看，越靠近
---   中线越接近画面中央）、y = 0（牌桌中线）、z = DisplaySlotZ（2026-08-11 由
---   手牌层 30.5 抬高到 40，浮于战场上方更醒目、贴近相机瞄准线高度；测试定位期间
---   观战视角曾用 DisplaySlotSpectatorZ=22.5 贴桌面验证，占位卡已移除后锁定 z=40）。
---   角度：Angle(0, 0, 0)——相对牌桌 yaw = 0（与牌桌 x/y 轴对齐，不随本地视角 / 手牌
---   扇形旋转），pitch/roll 归零 = 正面朝上（平躺，同手牌姿态）。
+-- 左右卡槽常量（2026-08-12 更名，牌桌卡动画系统坐标常量，见 re.md §3.2 姿态库）：
+--   原「左卡槽 / 右卡槽」按 P2 视角命名（-x = P2 视角左 / +x = P2 视角右），与 P1
+--   视角左右相反，容易混淆；现按双方视角命名：
+--     P1RP2LSlot = 原左卡槽（x=-DisplaySlotHalfX）：P1 视角右 / P2 视角左
+--     P1LP2RSlot = 原右卡槽（x=+DisplaySlotHalfX）：P1 视角左 / P2 视角右
+--   （P1 视角约定：+x 为左侧 / -x 为右侧——与 MulliganFanPos 发牌从左侧起填一致；
+--   2026-08-11 曾按战场列误设「-x 为左」并标注实测修正，实际该左右是相对 P2 的。）
+--   位置：x = ±DisplaySlotHalfX（2026-08-11 由 ±24 收拢到 ±14，更靠近屏幕中心——
+--   相机在 (-70,0,30) 近水平朝牌桌中线看，越靠近中线越接近画面中央）、y = 0（牌桌
+--   中线）、z = DisplaySlotZ（2026-08-11 由手牌层 30.5 抬高到 40，浮于战场上方更醒目）。
+--   角度：Angle(0, 0, 0)——相对牌桌 yaw = 0（与牌桌 x/y 轴对齐），pitch/roll 归零 =
+--   正面朝上（平躺，同手牌姿态）。
 -- ====================================================================
-local DisplaySlotHalfX = 14  -- 左右展示槽 x 半距（俯视视角：左侧 −x / 右侧 +x；数值可调）
-local DisplaySlotZ = 40      -- 展示槽 z（进桌对战视角 LocalView=1|2，浮于战场/手牌之上；数值可调）
+local DisplaySlotHalfX = 14  -- 左右卡槽 x 半距（P1 视角：+x 为左 / -x 为右；数值可调）
+local DisplaySlotZ = 40      -- 卡槽 z（进桌对战视角 LocalView=1|2，浮于战场/手牌之上；数值可调）
+KARDS.P1RP2LSlot = 1 -- 原左卡槽（-x；P1 视角右 / P2 视角左）
+KARDS.P1LP2RSlot = 2 -- 原右卡槽（+x；P1 视角左 / P2 视角右）
 local DisplaySlots = {
-    [1] = { pos = Vector(-DisplaySlotHalfX, 0, DisplaySlotZ), ang = Angle(0, 0, 0) }, -- 左侧展示
-    [2] = { pos = Vector( DisplaySlotHalfX, 0, DisplaySlotZ), ang = Angle(0, 0, 0) }, -- 右侧展示
+    [KARDS.P1RP2LSlot] = { pos = Vector(-DisplaySlotHalfX, 0, DisplaySlotZ), ang = Angle(0, 0, 0) }, -- P2 视角左
+    [KARDS.P1LP2RSlot] = { pos = Vector( DisplaySlotHalfX, 0, DisplaySlotZ), ang = Angle(0, 0, 0) }, -- P1 视角左
 }
+
+-- ====================================================================
+-- 交叉填槽统一方法（2026-08-12）：声明卡应出现在「哪方视角的哪一侧」，自动交叉
+-- 填槽使从双方视角看卡都在声明的同一侧。调用方只需声明视角方与期望侧，无需关心
+-- 实际坐标符号：
+--   KARDS.CrossSlotFor(1, "left")  → KARDS.P1LP2RSlot（P1 视角左 = +x）
+--   KARDS.CrossSlotFor(2, "left")  → KARDS.P1RP2LSlot（P2 视角左 = -x）
+--   KARDS.CrossSlotFor(1, "right") → KARDS.P1RP2LSlot（P1 视角右 = -x）
+--   KARDS.CrossSlotFor(2, "right") → KARDS.P1LP2RSlot（P2 视角右 = +x）
+-- 挂 KARDS 命名空间（非顶层 local，同 L2693 惯例：顶层 local 接近 GLua 上限，
+-- 且本方法供其他文件/后续复用）：
+-- @param viewer number 视角方槽位（1=P1 / 2=P2）
+-- @param side string "left" / "right"（viewer 视角下的左/右侧）
+-- @return number 槽位编号（KARDS.P1RP2LSlot / KARDS.P1LP2RSlot）
+-- ====================================================================
+function KARDS.CrossSlotFor(viewer, side)
+    local left = (viewer == 1) and KARDS.P1LP2RSlot or KARDS.P1RP2LSlot
+    local right = (viewer == 1) and KARDS.P1RP2LSlot or KARDS.P1LP2RSlot
+    return (side == "right") and right or left
+end
+
+-- ====================================================================
+-- 指令卡打出动画常量（2026-08-12，阶段 C；更名）：指令卡打出后飞至「打出方视角
+-- 左侧」卡槽（交叉填槽：P1 打出 → P1LP2RSlot(+x) / P2 打出 → P1RP2LSlot(-x)，双方
+-- 看起来打出的指令都在自己左侧），停留 CommandHoldDur 秒后向左下出场（跳台）。
+-- 队列规则（2026-08-13 特殊处理）：前一指令停留达 CommandHoldGate（1s）即放行后一
+-- 指令开始动画（不必等其完全出场）；z 下移 CommandZDn 同样仅在前一指令停留达
+-- CommandHoldGate 后生效（未达则后一指令与 z 下移一起等待至该时刻）。已有两个指令
+-- 未结束动画又打出新指令 → 最早指令直接出场。
+--   展示槽：CommandSlotFor(slot)（打出方视角左侧，见 CrossSlotFor）→ 槽位 pos。
+--   出场终点：相对展示槽再向该方视角左侧（±CommandExitX，符号随槽位）、向观者侧
+--     （P1 +y / P2 −y，按打出方取符号）、z 降低（CommandExitZ）——「左下」移动出牌桌
+--     （z 降后仍高于桌面顶 CardZ=18.43）。
+--   动画时长（CommandToSlotDur → 展示槽 / CommandHoldDur 停留 / CommandExitDur 出场）
+--   总长约 2.6s；服务端据此延后实体移除（见 table_battledeck.lua C3）。
+-- ====================================================================
+local CommandToSlotDur = 0.35  -- 当前位置 → 展示槽飞行时长（秒）
+local CommandHoldDur = 2.0     -- 展示槽停留时长（秒，用户指定：打出指令 2 秒后出场）
+local CommandExitDur = 0.6     -- 展示槽 → 左下出场动画时长（秒；总动画 0.35+2.0+0.6 ≈ 2.95s）
+local CommandHoldGate = 1.0    -- 停留放行阈值（秒，2026-08-13 用户指定）：前一指令停留达此值
+                               -- 才允许后一指令开始动画，且 CommandZDn 下移才生效
+local CommandZDn = 2.0         -- 前一指令 z 下移量（单位；新的指令覆盖其上）
+local CommandExitX = 46        -- 出场终点相对展示槽、向该方视角左侧的偏移（牌桌局部，符号随槽位）
+local CommandExitY = 12        -- 出场终点相对展示槽的观者侧偏移（P1 +y / P2 −y，符号按打出方）
+local CommandExitZ = 8         -- 出场终点相对展示槽的 z 降低量（40 → 32，仍高于桌面顶 18.43）
+
+-- 指令展示槽（打出方视角左侧；交叉填槽——双方打出指令都在自己视角左侧）
+-- @param playSlot number 打出方槽位（1=P1 / 2=P2）
+-- @return number 槽位编号（P1RP2LSlot / P1LP2RSlot）
+local function CommandSlotFor(playSlot)
+    return KARDS.CrossSlotFor(playSlot, "left")
+end
+
+-- 指令左下出场终点（相对展示槽偏移：向该方视角左侧按槽位取符号 + 向观者侧按打出方取符号）
+-- @param playSlot number 打出方槽位（1=P1 / 2=P2）
+-- @return Vector 出场终点（牌桌局部坐标）
+local function CommandExitPosFor(playSlot)
+    local slotIdx = CommandSlotFor(playSlot)
+    local slotPos = DisplaySlots[slotIdx].pos
+    local xSign = (slotIdx == KARDS.P1LP2RSlot) and 1 or -1 -- 向打出方视角左侧出场（沿槽位 x 符号方向）
+    local yOff = (playSlot == 1) and CommandExitY or -CommandExitY
+    return slotPos + Vector(xSign * CommandExitX, yOff, -CommandExitZ)
+end
 
 -- ====================================================================
 -- 出场动画预设（2026-08-11，re.md §3.2 姿态库约定：返回 { pos, ang } 6 值姿态）：
@@ -2284,21 +2375,35 @@ local function ClockwiseExitPose(pose)
 end
 
 -- 爆牌动画时长（2026-08-11，readme 7.1 手牌上限 9：抽牌时手牌已满 → 专属弃牌动画，
--- 见 KardsTableDeckDraw 爆牌分支）：卡堆顶 → 右卡槽（DisplaySlots[2]）→ 停留
--- OverdrawHold 秒 → 顺时针出场（ClockwiseExitPose）
-local OverdrawFlyDur = 0.45  -- 卡堆顶 → 右卡槽飞行时长（秒，同抽牌动画 dur1）
-local OverdrawHold = 1.0     -- 右卡槽停留时长（秒，1 秒后顺时针出场，用户指定）
-local OverdrawExitDur = 0.4  -- 顺时针出场动画时长（秒，同抽牌动画 dur2）
+-- 见 KardsTableDeckDraw 爆牌分支）：卡堆顶 → 爆牌方视角左侧卡槽（交叉填槽，
+-- KARDS.CrossSlotFor(slot, "left")）→ 停留 OverdrawHold 秒 → 沿槽位方向出场
+-- （+x 槽向右顺时针 / -x 槽向左逆时针，镜像对称）
+local OverdrawFlyDur = 0.45  -- 卡堆顶 → 弃牌槽位飞行时长（秒，同抽牌动画 dur1）
+local OverdrawHold = 1.0     -- 弃牌槽位停留时长（秒，1 秒后沿槽位方向出场，用户指定）
+local OverdrawExitDur = 0.4  -- 出场动画时长（秒，同抽牌动画 dur2）
+
+-- 对方视角抽牌直飞时长（2026-08-12）：看对方抽牌 → 直接到手牌、不翻面、无桌中
+-- 停留（第二关键帧即手牌位），单段飞行时长同本方抽牌首段（dur1）
+local EnemyDrawDirectDur = 0.45
 
 -- 手牌拿起 / 拖拽 / 打出 常量（2026-08-10）：拖拽机制在悬停提升基础上扩展——
--- 按下左键拿起（z 抬升 + xy 跟随鼠标、悬停失效、播放「拿起卡牌」音效）；松手
+-- 按下左键拿起（屏幕投影补偿跟随鼠标、悬停失效、播放「拿起卡牌」音效）；松手
 -- 在手牌区域渐变回原位，否则打出（单位进本方支援阵线、指令进战斗系统）。
--- 拖拽抬升 z 不设固定常量：按当前手牌张数取扇形 z 理论最大值（阶梯最高层）
--- 上方 0.1（KardsDragCardThink 内计算），避免固定 40 与手牌层落差过大。
-local HandSlotLiftDur = 0.1       -- 拿起 z 抬升 / 松手 z 回落时长（秒）
+-- 拖拽视觉位置 = 「鼠标射线 ∩ 抬升 z 平面」交点（2026-08-12 三次修订，见
+-- KardsDragCardThink）：抬升 z（手牌扇形最高层 +0.1）保证拿起后高于所有手牌，
+-- 射线交点任意屏幕位置（含边缘）投影恒 = 鼠标（ScreenToVector 逆映射），精确无
+-- 视差；射线不穿抬升平面（斜视相机指向桌面下方）时回退深度锁定（HandSlotDragVisDist）。
+-- 修订史：二次修订（2026-08-11）用「迭代 ToScreen 补偿」修正抬升后 xy，其线性化
+-- 步长在屏幕边缘收敛慢、残余偏移明显（2026-08-12 用户反馈），故改为直接求交。
+local HandSlotDragVisDist = 72    -- 深度锁定回退距离：射线不穿抬升平面（斜视相机指向桌面下方）时，卡牌原点置于鼠标射线前方 72 单位（≈相机到手牌距离），屏幕投影恒等于鼠标
 local HandSlotFlightDur = 0.35    -- 打出飞行动画时长（秒）
 local HandSlotReturnDur = 0.2     -- 松手回手牌渐变时长（秒）
 local HandSlotReposDur = 0.15     -- 腾位预览 / 布局复位动画时长（秒）
+local CounterRiseHeight = 6       -- 反制激活上浮高度（反制系统 M3：反制卡拖出松手时先上浮该值再还原，见 cl_battle_hud.lua CounterClientToggle）
+-- 部署飞行动画组（2026-08-12，阶段五 P7 组名英文化）：源卡半程飞行 + 小模型占位
+-- + 小模型后半程三段同组并发——同组调度不会被排队机制停顿（切换瞬间源卡销毁、
+-- 小模型接管的衔接动画原子完成）
+local DeployAnimGroup = "deployFlight"
 local SupportLineHover = 4        -- 支援阵线行判定容差（鼠标投影 y 到行 y 的最大距离）
 local HandRegionDist = 12         -- 手牌区域判定半径（鼠标投影与手牌扇形位置的水平距离；复用 HandSlotHoverRadius）
 -- 手牌点击/悬停命中尺寸（2026-08-11）：拿起与悬停判定从「到中心 3D 距离 <12」改为
@@ -2313,7 +2418,10 @@ KARDS.HandHitHalfL = 5.4 + KARDS.HandHitPad -- 命中半长（卡长 10.8 / 2 + 
 
 -- 射线是否命中卡面矩形：射线与卡面平面（法线 = 实体 Up，手牌平躺）求交，
 -- 交点落在卡面 ±半宽/±半长（含容差）内即命中；用于手牌拿起与悬停判定
--- （替代宽泛的中心距离判定）。挂 KARDS 命名空间同理不占局部槽。
+-- （替代宽泛的中心距离判定）。命中时额外返回射线参数 t（沿射线到卡面交点的
+-- 距离）——重叠扇形卡取 t 最小 = 最先命中 = 视觉最上层卡（z 阶梯层叠，2026-08-14
+-- 修复「拿起/悬停选悬停卡左侧卡」：原最近中心距离会选中被上方卡遮挡的卡）。
+-- 挂 KARDS 命名空间同理不占局部槽。
 function KARDS.RayCardHit(origin, dir, ent, halfW, halfL)
     local plane = ent:GetUp()
     local denom = dir:Dot(plane)
@@ -2321,7 +2429,52 @@ function KARDS.RayCardHit(origin, dir, ent, halfW, halfL)
     local t = (ent:GetPos() - origin):Dot(plane) / denom
     if t < 0 then return false end
     local lp = ent:WorldToLocal(origin + dir * t)
-    return math.abs(lp.x) <= halfW and math.abs(lp.y) <= halfL
+    if math.abs(lp.x) <= halfW and math.abs(lp.y) <= halfL then
+        return true, t
+    end
+    return false
+end
+
+-- 相机射线（抗视差，2026-08-14 用户规格「握住手牌抗视差」）：Think 钩子中
+-- gui.ScreenToVector 基于「上一帧活跃相机」——BattleCamera 经 CalcView 接管渲染时，
+-- Think 期间活跃相机常为玩家默认相机（位置/FOV 与渲染相机不同），与 pos=ViewPos
+-- （渲染相机位置）组合即产生视差：屏幕中心偏差小、越靠屏幕两侧越大，拿起/悬停
+-- 命中与鼠标视觉所指不一致（用户反馈）。BattleCamera 接管时按其相机参数
+-- （ViewPos/ViewAng/fov，CalcView 记录、与渲染同源）手动构造透视射线：
+--   dir = fwd + right*(nx*tan(φ/2)*aspect) + up*(ny*tan(φ/2))（垂直 FOV 逆投影）
+-- 与渲染画面完全一致；未接管时回退玩家默认相机（gui.ScreenToVector 此刻基于默认
+-- 相机，恰好正确）。返回 pos, dir；LocalPlayer 无效时返回 nil。挂 KARDS 命名空间
+-- 同理不占局部槽。
+function KARDS.MouseRay(mx, my)
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return nil end
+    local vp = KARDS.BattleCamera and KARDS.BattleCamera.ViewPos
+    local va = KARDS.BattleCamera and KARDS.BattleCamera.ViewAng
+    if vp and va then
+        local cam = KARDS.BattleCamera.Cameras[ply]
+        local fov = (cam and cam.fov) or 75
+        local fwd, right, up = va:Forward(), va:Right(), va:Up()
+        local nx = (mx / ScrW() - 0.5) * 2 -- 屏幕 x → 归一化设备坐标（右为正）
+        local ny = (0.5 - my / ScrH()) * 2 -- 屏幕 y 向下 → 归一化设备坐标（上为正）
+        local tan = math.tan(math.rad(fov) * 0.5)
+        -- 投影系数（2026-08-14 实测修正，用户 kards_raytest 诊断数据）：GMod 渲染实际
+        -- 投影为  tan_h = tan(fov/2) × aspect × 3/4、tan_v = tan(fov/2) × 3/4（16:9 实测
+        -- 引擎垂直半角正切 0.5755 = tan(37.5°)×3/4，并非 tan(fov/2) 恒定——旧代码垂直
+        -- 用 ny×tan 过修正 1/(3/4)≈1.33 倍，屏幕上下边缘握住的手牌偏出屏幕（用户反馈
+        -- 「上下移动为视差、越屏幕边缘几何坐标离鼠标越远」；kards_raytest 实测左上角
+        -- ny=1 时 MouseRay 投影 y=-180）。一般化：k = aspect×3/4（4:3 屏幕 =1，退化为
+        -- 标准垂直 FOV 语义），tan_h = tan×k、tan_v = tan/k（垂直半角随宽屏收缩）。
+        -- 水平系数与旧实现一致（tan×aspect×3/4，已修复「两次反视差」），此处仅改垂直。
+        local k = (ScrW() / ScrH()) * (3 / 4)
+        local dir = fwd + right * (nx * tan * k) + up * (ny * tan / k)
+        if dir:LengthSqr() < 1e-8 then dir = fwd end
+        return vp, dir:GetNormalized()
+    end
+    local dir = gui.ScreenToVector(mx, my)
+    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
+        dir = ply:EyeAngles():Forward()
+    end
+    return ply:EyePos(), dir
 end
 
 -- ====================================================================
@@ -2341,7 +2494,9 @@ end
 --   逐字对应服务端 CreateHandCardSlots）+ HandSlotTextYaw=180°（文字方向解耦：
 --   3D2D 文字顶部沿实体 +Right → 朝向本方，见上方常量区说明，2026-08-10）。
 -- @return Vector pos 牌桌局部位置；Angle ang 局部角度（平躺 + 扇形旋转 + 文字朝向）
-local function HandFanPos(slot, i, n)
+-- （2026-08-12：改由 L2488 前向占位 local 承接赋值——KardsSwitchSlot 回调引用本函数，
+-- 原 local function 声明晚于该回调会解析为全局 nil）
+HandFanPos = function(slot, i, n)
     local sign = (slot == 1) and 1 or -1
     local center = HandSlotBase + Vector(0, sign * HandSlotHalfY, 0)
     local base = HandSlotAngles[slot]
@@ -2366,9 +2521,8 @@ local function HandFanPos(slot, i, n)
     local cosP, sinP = math.cos(psi), math.sin(psi)
     local fwd = base:Forward() * cosP + up:Cross(base:Forward()) * sinP
     local rgt = base:Right() * cosP + up:Cross(base:Right()) * sinP
-    local total = fwd:Angle()
-    local r0 = total:Right()
-    total.roll = total.roll + math.deg(math.atan2(fwd:Cross(r0):Dot(rgt), r0:Dot(rgt)))
+    -- roll 修正公式收敛自 cl_perspective.lua AngleFromBasis（阶段五 P5）
+    local total = KARDS.Perspective.AngleFromBasis(fwd, rgt)
     -- 文字方向解耦（2026-08-10）：位置/扇形张开用位置基准（0/180，弧朝向对方），
     -- 文字朝向在最终角度叠加 HandSlotTextYaw（180°：绕面法线转半圈，3D2D 文字
     -- 顶部沿实体 +Right → 朝向本方），避免再交换基准常量导致扇形镜像。
@@ -2389,16 +2543,28 @@ end
 -- @param targetN  number|nil 目标手牌总数（抽牌时服务端已广播新张数，须传入使
 --   剩余卡按新张数重排；缺省 = 登记卡数，用于打出/弃牌的张数递减场景）
 local function RenumberHand(slot, skipEnt, targetN)
+    -- 2026-10-03 联机排查 NEW-12：槽位越界时直接返回（上游接收器漏检时不因索引 nil 报错）
+    local map = KARDS.BattleState.realHandCards[slot]
+    if not map then return end
     local list = {}
-    for e, idx in pairs(KARDS.BattleState.realHandCards[slot]) do
+    for e, idx in pairs(map) do
         if IsValid(e) and e ~= skipEnt then list[#list + 1] = { e, idx } end
     end
     table.sort(list, function(a, b) return a[2] < b[2] end)
     local n = targetN or #list
     for i, it in ipairs(list) do
         local e = it[1]
-        KARDS.BattleState.realHandCards[slot][e] = i
+        map[e] = i
         local pos, ang = HandFanPos(slot, i, n)
+        -- 2026-08-12 修复（敌方手牌重排闪卡面）：非本方槽目标角度 pitch=180（卡背
+        -- 朝上）——HandFanPos 返回 pitch=0（平躺卡面朝上），若该槽手牌经 kards_switch
+        -- 代选已 InitDrawCardFace（manifest front=卡面），重排动画期间会正面朝上闪露
+        -- 牌面（用户反馈：点击结束回合敌方抽牌重排时闪一帧）。KardsRealHandFacing
+        -- 对方分支在动画期间跳过（handRepos 组排除），须在动画目标帧即翻转；未初始化
+        -- 卡两面卡背，pitch 180 无副作用（与对方手牌常态卡背姿态一致）。
+        if not (KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == slot) then
+            ang.p = 180
+        end
         -- 位置/角度 6 值两关键帧（cos 缓动）；首帧快照当前姿态 → 从当前位置渐变到新扇形位
         KARDS.AnimPlayer:Play(e, {
             { t = 0, pos = e:GetLocalPos(), ang = e:GetLocalAngles() },
@@ -2407,14 +2573,19 @@ local function RenumberHand(slot, skipEnt, targetN)
     end
 end
 -- 牌桌中间扇形相对坐标（重新调度发牌 / 选择期间显示；不重叠横排，卡宽 7.2 留缝 0.8，
--- 整体 z 抬高于桌面顶 CardZ + 3.4，贴近视线便于选择）
-local function MulliganFanPos(i, n)
+-- 整体 z 抬高于桌面顶 CardZ + 10，浮起明显便于选择；2026-08-13 用户反馈：z 上移，
+-- 原 +3.4 浮起不明显）
+-- （2026-08-12：改由 L2488 前向占位 local 承接赋值——KardsSwitchSlot 回调引用本函数，
+-- 原 local function 声明晚于该回调会解析为全局 nil）
+MulliganFanPos = function(i, n)
     local centerIdx = (n + 1) / 2
     -- k 取 centerIdx - i（2026-08-10 反向）：i=1（第一张抽的牌）落视觉左侧
     -- （P1 视角 +x），发牌/补抽从左侧开始往右填卡槽；原 k=i-centerIdx 时
     -- i=1 落 -x（P1 视角右侧），表现为从右开始填
     local k = centerIdx - i
-    return Vector(k * 8.0, 0, KARDS.Animation.Board2D.CardZ + 3.4)
+    -- 高度与中槽一致（2026-09-30 统一）：重新调度的卡槽即中槽的 4 槽模式（先手 4 张），
+    -- 此前用 CardZ + 10，比中槽低约 2 个单位，扇形与中槽的跨槽动画会出现高度跳变
+    return Vector(k * CenterSlotSpacing, 0, CenterSlotZ)
 end
 
 -- 抽牌动画（re.md 重构：由 KARDS.AnimPlayer 关键帧播放器驱动，组名 "deckDraw"；
@@ -2440,421 +2611,102 @@ local function StartHandShift()
     deckDrawShift = { start = CurTime(), dur = 0.4, items = items }
 end
 
--- 服务端抽牌通知（OnBattleDraw 广播，含重新调度发牌/补抽）：抽牌临时卡实体
--- （卡堆顶，见 table_battledeck.lua SpawnDeckDrawCard）→ 按「槽位 × 补抽标记 ×
--- 本方/对方」路由：
---   本方 + 非补抽 + 未完成重新调度 → 起手发牌：牌桌中间扇形（MulliganFanPos，可点击选择）
---   本方 + 补抽（isReplace，确认后）→ 补抽卡飞向牌桌中间扇形区空位（被弃卡原序号
---     位置，与保留卡一起待 0.7s 统一落手牌，见 KardsMulliganAnimsUpdate 末段）
---   爆牌（overdraw，readme 7.1 手牌上限 9：手牌已达上限）→ 专属弃牌动画：卡堆顶 →
---     右卡槽（DisplaySlots[2]）停留 OverdrawHold 秒 → 顺时针出场（ClockwiseExitPose），
---     动画结束移除实体（手牌不变，不重排扇形 / 不登记 KARDS.BattleState.realHandCards）
---   对方 / 观战（非本方）→ 直接落该槽手牌位（HandFanPos，卡背朝上：本方客户端
---     不改写 manifest，被抽卡两面子网格均为卡背图 → 任何姿态看到的都是卡背，
---     对方牌面不可见）
-net.Receive("KardsTableDeckDraw", function()
-    local ent = net.ReadEntity()
-    local slot = net.ReadUInt(8)
-    local idx = net.ReadUInt(8)
-    local total = net.ReadUInt(8)
-    local isReplace = net.ReadBool()
-    local isOverdraw = net.ReadBool() -- 本张卡爆牌标记（手牌已达上限 9，服务端数据层 per-card 判定）
-    net.ReadString() -- 卡名（材质数据源用实体 NW Kards_CardName）
-    if not IsValid(ent) then return end
-    battleDeckDrawn[ent] = true -- 从堆叠移除（可见性钩子跳过，动画驱动接管）
-    KARDS.BattleState.entSpawnPos[ent] = ent:GetLocalPos() -- 弃牌回卡组动画的终点（服务端卡堆顶）
-    local isMine = KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == slot
-    -- 本方起手发牌且该槽未完成重新调度 → 牌桌中间扇形选择阶段
-    if isMine and not isReplace and not KARDS.BattleState.mulliganDoneSlot[slot] then
-        InitDrawCardFace(ent) -- 本方需看卡面选择（NW 未就绪则入队，Think 重试）
-        drawFacePending[ent] = true
-        ent:SetNoDraw(false)
-        local m = KARDS.BattleState.mulligan
-        if not m or m.slot ~= slot or m.submitted then
-            m = { active = false, slot = slot, total = total, cards = {}, submitted = false }
-            KARDS.BattleState.mulligan = m
-            -- 选择在发牌动画全部结束后才启用（active 延迟置 true，见
-            -- KardsMulliganAnimsUpdate 发牌循环后）
-        end
-        m.cards[ent] = { ent = ent, index = idx, selected = false }
-        -- 发牌动画：卡堆顶 → 牌桌中间扇形，抽牌动画同款翻面（pitch 180 卡背朝上
-        -- 离堆 → 0 卡面朝上落位）+ yaw 从卡堆角度渐变到朝向本方；取消全程强制
-        -- 正面（2026-08-10 反馈）。错峰发牌：delay 使前一槽动画进行一半（dur 0.5
-        -- → 0.25s）时开始下一槽；翻面音效在动画实际启动时播放（onStart）。
-        -- （re.md 重构：KARDS.AnimPlayer 6 值两关键帧）
-        local endYaw = (slot == 1) and 180 or 0 -- 文字朝本方（P1 yaw180 / P2 yaw0：P1 卡组槽在牌桌 -x 侧，文字顶部需朝 +x 才正对 P1）
-        KARDS.AnimPlayer:Play(ent, {
-            { t = 0, pos = ent:GetLocalPos(), ang = Angle(180, ent:GetLocalAngles().y, 0) },
-            { t = 0.5, pos = MulliganFanPos(idx, m.total), ang = Angle(0, endYaw, 0) },
-        }, {
-            group = "mulliganDeal",
-            delay = (idx - 1) * 0.25,
-            onStart = function() KARDS.PlayKardsSound("draw") end, -- 翻面音效在动画实际启动时播放
-        })
-        return
-    end
-    -- 本方重新调度补抽（isReplace=true，KardsMulliganDone 已置 submitted）：补抽卡
-    -- 从卡堆飞向牌桌中间扇形区的空位（被弃牌原序号位置），与保留卡一起待 0.7s 后
-    -- 统一进手牌（2026-08-10 补充动画，见 KardsMulliganAnimsUpdate 末段统一落位）
-    if isMine and isReplace and KARDS.BattleState.mulligan and KARDS.BattleState.mulligan.slot == slot then
-        InitDrawCardFace(ent) -- 本方需看卡面（补抽卡进入中间扇形区待命）
-        drawFacePending[ent] = true
-        ent:SetNoDraw(false)
-        KARDS.BattleState.mulligan.cards[ent] = { ent = ent, index = idx, selected = false }
-        KARDS.BattleState.mulligan.replaceGot = (KARDS.BattleState.mulligan.replaceGot or 0) + 1 -- 已收到补抽卡计数
-        -- 发牌动画同款（卡堆顶 → 中间扇形区空位，翻面 + yaw 朝向本方）；错峰 delay
-        -- 同起手发牌（按被弃原序号）；补抽不播抽牌音效（2026-08-10 需求：点击确定后
-        -- 的抽牌静音，不注册 onStart 音效回调）
-        local endYaw = (slot == 1) and 180 or 0
-        KARDS.AnimPlayer:Play(ent, {
-            { t = 0, pos = ent:GetLocalPos(), ang = Angle(180, ent:GetLocalAngles().y, 0) },
-            { t = 0.5, pos = MulliganFanPos(idx, KARDS.BattleState.mulligan.total), ang = Angle(0, endYaw, 0) },
-        }, {
-            group = "mulliganDeal",
-            delay = (idx - 1) * 0.25,
-        })
-        return
-    end
-    -- 爆牌（readme 7.1 手牌上限 9）：手牌已达上限，抽到的卡不进手牌，播放专属
-    -- 弃牌动画——卡堆顶 → 右卡槽（DisplaySlots[2]）停留 OverdrawHold 秒 → 顺时针
-    -- 出场（ClockwiseExitPose）；动画结束隐藏实体（手牌不变：不 RenumberHand /
-    -- 不登记 KARDS.BattleState.realHandCards / 不掉落手牌位）。本方看卡面（InitDrawCardFace），
-    -- 对方/观战看卡背（不改写 manifest）。
-    if isOverdraw then
-        if isMine then
-            InitDrawCardFace(ent)
-            drawFacePending[ent] = true
-        end
-        ent:SetNoDraw(false)
-        local slotPose = DisplaySlots[2] -- 右卡槽（右侧展示位：x=-DisplaySlotHalfX / z=DisplaySlotZ）
-        local startAng = Angle(180, ent:GetLocalAngles().y, 0) -- 卡背朝上离堆（同抽牌动画）
-        local flyPose = { pos = slotPose.pos, ang = Angle(0, slotPose.ang.y, 0) } -- 右卡槽平躺正面朝上
-        local exitPose = ClockwiseExitPose(flyPose) -- 顺时针出场终点（向右飞 ExitFlyDist、yaw −135°）
-        -- 4 关键帧：卡堆顶 → 右卡槽（翻面）→ 右卡槽停留（第二、三关键帧同姿）→ 顺时针出场
-        KARDS.AnimPlayer:Play(ent, {
-            { t = 0, pos = ent:GetLocalPos(), ang = startAng },
-            { t = OverdrawFlyDur, pos = flyPose.pos, ang = flyPose.ang },
-            { t = OverdrawFlyDur + OverdrawHold, pos = flyPose.pos, ang = flyPose.ang },
-            { t = OverdrawFlyDur + OverdrawHold + OverdrawExitDur, pos = exitPose.pos, ang = exitPose.ang },
-        }, {
-            group = "deckOverdraw",
-            onComplete = function(target)
-                -- 爆牌：卡被弃，隐藏实体（同弃牌回卡组；抽牌临时卡为服务端网络实体，
-                -- 客户端不可 Remove，由服务端 ExitSlot / 牌桌 OnRemove 统一清理）
-                if IsValid(target) then target:SetNoDraw(true) end
-            end,
-        })
-        return
-    end
-    -- 其余（对方/观战补抽 / 后续回合抽牌）：直接落手牌扇形（原位）
-    local faceUp = isMine -- 本方看卡面；对方/观战看卡背（不改写 manifest）
-    if faceUp then
-        InitDrawCardFace(ent)
-        drawFacePending[ent] = true
-    end
-    ent:SetNoDraw(false)
-    KARDS.BattleState.realHandCards[slot][ent] = idx
-    -- 剩余手牌按新张数重排扇形（2026-08-11 修复：原 StartHandShift 只按
-    -- Kards_IsHandSlotCard 左移 2.5——占位空手牌移除后无人设置该 NW → 恒为空操作，
-    -- 导致抽牌后既有手牌不随新张数更新扇形分布（KardsRealHandFacing 仅驱动角度，
-    -- 位置仍停旧扇形）。此处立即按服务端广播的 total 重排：位置/角度平滑过渡到
-    -- 新扇形位；新卡经 deckDraw 动画落位（skipEnt 排除，避免 Play 替换其飞行动画））
-    RenumberHand(slot, ent, total)
-    local handPos, handAng = HandFanPos(slot, idx, total) -- 预设扇形落位（位置+角度，服务端同款）
-    local endYaw = handAng.y -- 落手牌位朝向（HandFanPos：位置基准 + fan 角 + 文字朝向）
-    -- 补抽：卡堆顶 → 手牌原位直接飞行（与弃牌回卡组动画同时进行）；
-    -- 非补抽（对方起手发牌 / 后续回合抽牌）：经牌桌中间翻面后落手牌
-    local skipCenter = isReplace
-    local dur1, hold, dur2 = 0.45, skipCenter and 0 or 0.5, skipCenter and 0.25 or 0.4
-    -- 桌中终点：z 抬升于桌面顶 +3.4（与重新调度发牌 MulliganFanPos 同高，贴近视线；
-    -- 2026-08-11 修复：原 z=CardZ 贴桌面，抽牌翻面阶段过低）
-    local centerPos = skipCenter and handPos
-        or (KARDS.Animation.Board2D:RelPos(3, 0) + Vector(0, 0, 3.4))
-    -- 桌中阶段朝向本方（P1 yaw180 / P2 yaw0，与重新调度发牌落位一致；2026-08-11
-    -- 修复：原固定 0° 对 P1 文字朝向反了）/ 直接飞行朝向本方
-    local centerYaw = skipCenter and endYaw or ((slot == 1) and 180 or 0)
-    local pitch0 = faceUp and 180 or 0 -- 翻面：本方卡 卡背朝上 → 卡面朝上 / 对方保持卡背朝上
-    -- 4 关键帧：卡堆顶 → 桌中（翻面 + yaw 朝向本方）→ 桌中停留（两相同帧）→ 手牌位
-    -- （re.md 重构：KARDS.AnimPlayer；越过停留帧（离开桌中）触发手牌槽卡左移 StartHandShift）
-    KARDS.AnimPlayer:Play(ent, {
-        { t = 0, pos = ent:GetLocalPos(), ang = Angle(pitch0, ent:GetLocalAngles().y, 0) },
-        { t = dur1, pos = centerPos, ang = Angle(0, centerYaw, 0) },
-        { t = dur1 + hold, pos = centerPos, ang = Angle(0, centerYaw, 0), event = "shift" },
-        { t = dur1 + hold + dur2, pos = handPos, ang = Angle(0, endYaw, 0) },
-    }, {
-        group = "deckDraw",
-        onKeyframe = function(target, name)
-            if name == "shift" then StartHandShift() end -- 阶段 3：为新卡让位
-        end,
-    })
-end)
-
--- 手牌槽卡左移动画驱动（每帧）：抽牌动画阶段 3（KardsTableDeckDraw 的
--- "deckDraw" 组动画离开桌中停留帧时触发 StartHandShift）后，本玩家手牌槽卡
--- 向左移动部分为新卡让位；占位空手牌已移除后该部分为空操作。抽牌动画本体由
--- KARDS.AnimPlayer 驱动（re.md 重构），本钩子仅保留多实体批量平移。
-hook.Add("Think", "KardsDeckDrawUpdate", function()
-    -- 手牌槽卡左移（阶段 3 触发）
-    if deckDrawShift then
-        local t = (CurTime() - deckDrawShift.start) / deckDrawShift.dur
-        local e = RevealEaseInOut(math.min(t, 1))
-        for _, item in ipairs(deckDrawShift.items) do
-            if IsValid(item.ent) then
-                local pos = item.ent:GetLocalPos()
-                item.ent:SetLocalPos(Vector(item.fromX + item.dx * e, pos.y, pos.z))
-            end
-        end
-        if t >= 1 then deckDrawShift = nil end
-    end
-end)
+-- ====================================================================
+-- 跨文件桥接（2026-08-15 修复）：GMod include 为独立编译执行的 chunk，不共享
+-- 本文件（cl_init.lua）的词法作用域 —— 被拆出的 cl_battle_mulligan.lua /
+-- cl_battle_drag.lua 中的裸名引用会解析为全局 nil 而报错（实测
+-- cl_battle_mulligan.lua:556 attempt to call global 'UpdateTableMouse'）。
+-- 故本文件将拆分文件所需的文件级 local 值挂到 KARDS 命名空间，拆分文件内
+-- 改为经 KARDS.xxx 运行时访问（引用均位于函数体内、运行时求值，晚于本桥接块
+-- 执行，无时序问题）。local 本体保留不变，本文件内继续词法使用。
+-- ====================================================================
+KARDS.UpdateTableMouse = UpdateTableMouse
+KARDS.PileBase = PileBase
+KARDS.PileYaw = PileYaw
+KARDS.battleDeckDrawn = battleDeckDrawn
+KARDS.battleHQLeft = battleHQLeft
+KARDS.drawFacePending = drawFacePending
+KARDS.InitDrawCardFace = InitDrawCardFace
+KARDS.HandFanPos = HandFanPos
+KARDS.MulliganFanPos = MulliganFanPos
+KARDS.CenterSlotPos = CenterSlotPos  -- 中槽（居中展示槽位：xy 牌桌中心 / z 同手牌；重新调度扇形与三选一共用同一高度），见常量区中槽定义
+KARDS.PickSlotPos = PickSlotPos      -- 三选一槽位取值函数（中槽槽位族取 n = 3：index 1/2/3 为中左/中/中右，viewSlot 视角槽位），见常量区三选一槽位定义
+KARDS.PickDealDur = PickDealDur
+KARDS.PickDealStagger = PickDealStagger
+KARDS.PickHoverLift = PickHoverLift
+KARDS.PickToHandDur = PickToHandDur
+KARDS.PickSpinDur = PickSpinDur
+KARDS.PickSpinYaw = PickSpinYaw
+KARDS.PickSpinDropZ = PickSpinDropZ
+KARDS.PickExitDist = PickExitDist
+KARDS.PickEnemyShift = PickEnemyShift
+KARDS.PickSpecAngle = PickSpecAngle
+KARDS.ScryTableZ = ScryTableZ
+KARDS.ScryFlipDur = ScryFlipDur
+KARDS.ScryToBottomDur = ScryToBottomDur
+KARDS.DisplaySlots = DisplaySlots
+KARDS.ExitFlyDist = ExitFlyDist
+KARDS.OverdrawFlyDur = OverdrawFlyDur
+KARDS.OverdrawHold = OverdrawHold
+KARDS.OverdrawExitDur = OverdrawExitDur
+KARDS.EnemyDrawDirectDur = EnemyDrawDirectDur
+KARDS.RenumberHand = RenumberHand
+KARDS.StartHandShift = StartHandShift
+KARDS.deckDrawShift = deckDrawShift
+KARDS.RevealEaseInOut = RevealEaseInOut
+KARDS.remoteHandHover = remoteHandHover
+KARDS.HandSlotBase = HandSlotBase
+KARDS.HandSlotZStep = HandSlotZStep
+KARDS.HandSlotTextYaw = HandSlotTextYaw
+KARDS.HandSlotDragVisDist = HandSlotDragVisDist
+KARDS.HandSlotReturnDur = HandSlotReturnDur
+KARDS.HandSlotReposDur = HandSlotReposDur
+KARDS.CounterRiseHeight = CounterRiseHeight
+KARDS.SupportLineHover = SupportLineHover
+KARDS.HandRegionDist = HandRegionDist
 
 -- ====================================================================
--- 重新调度完成广播（服务端 OnMulliganSubmit，先于补抽发牌广播）：
---   本方：被弃卡从牌桌中间回卡组；保留卡留在中间扇形区不移动，被弃卡空位
---     等待补抽卡飞入（KardsTableDeckDraw isReplace 分支），0.7s（toHandAt）
---     后中间扇形区卡统一落手牌位（见 KardsMulliganAnimsUpdate 末段统一落位）；
---   对方/观战：被弃卡从对方手牌位回卡组（对方保留卡本就停手牌位，不移动），
---     补抽卡直接落手牌原位（见上方接收器 skipCenter 分支）。
--- ====================================================================
-net.Receive("KardsMulliganDone", function()
-    local ent = net.ReadEntity()
-    local slot = net.ReadUInt(8)
-    local n = net.ReadUInt(8)
-    local ents = {}
-    for _ = 1, n do ents[#ents + 1] = net.ReadEntity() end
-    if not IsValid(ent) then return end
-    KARDS.BattleState.mulliganDoneSlot[slot] = true
-    local isMine = KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == slot
-    -- 被弃卡回卡组：从当前所在位置（本方=牌桌中间 / 对方=手牌位）飞回卡堆顶
-    if #ents > 0 then KARDS.PlayKardsSound("shuffle") end -- 洗牌音效（弃牌洗入卡组，一次）
-    for _, e in ipairs(ents) do
-        if IsValid(e) then
-            -- 回卡组动画（re.md 重构：KARDS.AnimPlayer 6 值两关键帧）：翻回卡背朝上
-            -- （本方被弃卡原本卡面朝上；对方/观战本就卡背无变化）飞回卡堆顶，
-            -- 结束 SetNoDraw 回卡堆档位 + 移出真实手牌
-            KARDS.AnimPlayer:Play(e, {
-                { t = 0, pos = e:GetLocalPos(), ang = Angle(0, e:GetLocalAngles().y, 0) },
-                { t = 0.55, pos = KARDS.BattleState.entSpawnPos[e] or PileBase[slot], ang = Angle(180, PileYaw[slot], 0) },
-            }, {
-                group = "mulliganReturn",
-                onComplete = function(target)
-                    if IsValid(target) then target:SetNoDraw(true) end -- 已回到卡组内（卡堆档位模型表现厚度）
-                    KARDS.BattleState.realHandCards[slot][target] = nil
-                end,
-            })
-            KARDS.BattleState.realHandCards[slot][e] = nil
-        end
-    end
-    -- 本方：保留卡留在牌桌中间扇形区（不移动，2026-08-10 补充动画），被弃卡空位
-    -- 等待补抽卡飞入；0.7s 后中间扇形区卡（保留 + 补抽）统一进手牌，见
-    -- KardsMulliganAnimsUpdate 末段统一落位（KARDS.BattleState.mulligan 保留至落位完成）
-    if isMine and KARDS.BattleState.mulligan and KARDS.BattleState.mulligan.slot == slot then
-        KARDS.BattleState.mulligan.toHandAt = CurTime() + 0.7     -- 确认后 0.7s 统一落手牌（可微调）
-        KARDS.BattleState.mulligan.expectedReplace = #ents        -- 补抽卡数 = 被弃卡数（服务端原位替换）
-        KARDS.BattleState.mulligan.replaceGot = 0                 -- 已收到补抽卡计数（随补抽广播递增）
-        for _, e in ipairs(ents) do
-            if IsValid(e) then KARDS.BattleState.mulligan.cards[e] = nil end -- 被弃卡移出待落位表
-        end
-        UpdateTableMouse() -- 仍处牌桌内：鼠标保持呼出（2026-08-10）
-        KARDS.BattleState.prevMulliganLeft = false
-    end
-end)
-
--- 重新调度动画驱动（每帧）：发牌 / 弃牌回卡组 / 落手牌动画本体由 KARDS.AnimPlayer
--- 驱动（re.md 重构），本钩子仅保留「发牌完成判定」与「统一落位调度」两段业务逻辑
-hook.Add("Think", "KardsMulliganAnimsUpdate", function()
-    -- 发牌动画全部结束后才允许选择（2026-08-10 补充动画）：KARDS.BattleState.mulligan 创建时
-    -- active=false，待所有发牌（起手/补抽）动画完成（"mulliganDeal" 组清空）
-    -- 后置 active=true，选择交互 / 确认按钮 HUD 才生效
-    if KARDS.BattleState.mulligan and not KARDS.BattleState.mulligan.active and not KARDS.BattleState.mulligan.submitted
-        and not KARDS.AnimPlayer:Any("mulliganDeal") then
-        KARDS.BattleState.mulligan.active = true
-    end
-    -- 统一落位（2026-08-10 补充动画）：KardsMulliganDone 设 toHandAt（确认后 0.7s）。
-    -- 到时后，中间扇形区的卡（保留 + 已到达的补抽）逐张落手牌位（HandFanPos）；
-    -- 仍在飞入的补抽卡（"mulliganDeal" 组动画）等其落位后再启动（晚到不搁浅）；
-    -- 全部落位完成后清理 KARDS.BattleState.mulligan（保留至此刻：补抽卡才知该飞向中间区空位）。
-    -- 每张卡只启动一次（card.toHandStarted），落位期间由 AnimPlayer 驱动，
-    -- 结束后 KARDS.BattleState.realHandCards 登记仍保留，KardsRealHandFacing 兜底接管角度。
-    if KARDS.BattleState.mulligan and KARDS.BattleState.mulligan.submitted and KARDS.BattleState.mulligan.toHandAt
-        and CurTime() >= KARDS.BattleState.mulligan.toHandAt then
-        -- 抽牌音效：存在本帧待启动落位的卡（保留/补抽 中间扇形区 → 手牌）时播一次，
-        -- 避免每张各播一次叠音（统一落位一次即可）
-        local willStart = false
-        for ce, card in pairs(KARDS.BattleState.mulligan.cards) do
-            if IsValid(ce) and not card.toHandStarted
-                and not KARDS.AnimPlayer:Active(ce, "mulliganDeal") then
-                willStart = true
-                break
-            end
-        end
-        if willStart then KARDS.PlayKardsSound("draw") end
-        local allSettled = true
-        local anyValid = false
-        for ce, card in pairs(KARDS.BattleState.mulligan.cards) do
-            if IsValid(ce) then
-                anyValid = true
-                if not card.toHandStarted then
-                    if KARDS.AnimPlayer:Active(ce, "mulliganDeal") then
-                        allSettled = false -- 补抽卡仍在飞入：等其落位（下一帧再启动）
-                    else
-                        card.toHandStarted = true
-                        local toPos, toAng = HandFanPos(KARDS.BattleState.mulligan.slot, card.index, KARDS.BattleState.mulligan.total)
-                        -- 落手牌位：位置渐变到扇形槽位 + yaw 渐变到扇形角度（无翻面，pitch 恒 0）
-                        KARDS.AnimPlayer:Play(ce, {
-                            { t = 0, pos = ce:GetLocalPos(), ang = Angle(0, ce:GetLocalAngles().y, 0) },
-                            { t = 0.5, pos = toPos, ang = Angle(0, toAng.y, 0) },
-                        }, { group = "mulliganToHand" })
-                        KARDS.BattleState.realHandCards[KARDS.BattleState.mulligan.slot][ce] = card.index
-                        allSettled = false -- 本帧刚启动，等动画结束
-                    end
-                elseif KARDS.AnimPlayer:Active(ce, "mulliganToHand") then
-                    allSettled = false -- 落位动画进行中
-                end
-            end
-        end
-        if anyValid and allSettled then
-            KARDS.BattleState.mulligan = nil -- 全部落位完成：清理（退出牌桌/新对局本就重置，此处为常态清理）
-        end
-    end
-end)
-
--- ====================================================================
--- 重新调度选择交互：牌桌中间扇形卡 左键点击 选中/取消（选中=丢弃，卡沿法线上抬）；
--- 屏幕点击器在重新调度期间开启（自由鼠标：点卡片 + 点准星下方「确认」按钮），
--- 提交 / 完成 / 退出时关闭。
+-- 重新调度机制（2026-08-15 C1 拆分：KardsTableDeckDraw / KardsReturnToHand /
+-- KardsDeckDrawUpdate / KardsMulliganDone / KardsMulliganAnimsUpdate /
+-- KardsMulliganAnimDoneNotify / KardsMulliganSelect / 三个重新调度 HUD
+-- 已迁移至 cl_battle_mulligan.lua）
+include("cl_battle_mulligan.lua")
 -- ====================================================================
 
--- 选中卡图标材质（materials/kards/cards/choose.png，3D2D 绘制于卡面上方 z+0.1）
-local chooseMat = Material("materials/kards/cards/choose.png", "noclamp smooth")
+-- ====================================================================
+-- 洗入动画（2026-09-26 缺口 D 拆分：KardsShuffleInto 接收器 + ShuffleAnim
+-- 三来源（手牌/场上/凭空生成）三分视角（本方/敌方/观战）动画
+-- 已迁移至 cl_battle_shuffle.lua）
+include("cl_battle_shuffle.lua")
+-- ====================================================================
 
--- 射线到牌桌中间扇形卡的最近距离判定（同卡堆悬停 KARDS.RayPointDistSqr 方法）
-local function HitMulliganCard(mX, mY)
-    local ply = LocalPlayer()
-    if not IsValid(ply) then return nil end
-    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(mX, mY)
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then return nil end
-    local bestEnt, bestD = nil, 100 -- 阈值 10^2（扇形卡间距 4 单位，半对角 ~6.5）
-    for ce in pairs(KARDS.BattleState.mulligan.cards) do
-        if IsValid(ce) then
-            local d = KARDS.RayPointDistSqr(pos, dir, ce:GetPos())
-            if d < bestD then bestEnt, bestD = ce, d end
-        end
-    end
-    return bestEnt
-end
+-- ====================================================================
+-- 加入阵线动画（2026-09-26 缺口 F 拆分：KardsJoinAnim 接收器 + 手牌下落 /
+-- 观战二次曲线入场 / KARDS.JoinAnim:Target 接入 KardsFieldLayout
+-- 已迁移至 cl_battle_join.lua）
+include("cl_battle_join.lua")
+-- ====================================================================
 
--- 提交重新调度（点击「确认」）：被选中的卡 = 不想要的牌 → 发送服务端
-local function SubmitMulligan()
-    if not KARDS.BattleState.mulligan or not KARDS.BattleState.mulligan.active or KARDS.BattleState.mulligan.submitted then return end
-    if not KARDS.BattleState.inTable then return end
-    KARDS.BattleState.mulligan.submitted = true
-    KARDS.PlayKardsSound("click_button") -- 确认按钮点击音效（点击按钮）
-    local ents = {}
-    for ce, card in pairs(KARDS.BattleState.mulligan.cards) do
-        if card.selected and IsValid(ce) then ents[#ents + 1] = ce end
-    end
-    net.Start("KardsMulliganSubmit")
-        net.WriteEntity(KARDS.BattleState.inTable.ent)
-        net.WriteUInt(#ents, 8)
-        for _, e in ipairs(ents) do net.WriteEntity(e) end
-    net.SendToServer()
-    -- 确认提交后仍在牌桌内：鼠标保持呼出（2026-08-10；等待服务端广播落位动画）
-    UpdateTableMouse()
-    KARDS.BattleState.prevMulliganLeft = false
-end
+-- ====================================================================
+-- 单位攻击冲刺动画（2026-09-26 缺口 G 拆分：KardsUnitAction 接收器 +
+-- 坦克炮兵回弹 / 步兵高频往复两套帧序列
+-- 已迁移至 cl_battle_unit_action.lua）
+include("cl_battle_unit_action.lua")
+-- ====================================================================
 
-hook.Add("Think", "KardsMulliganSelect", function()
-    local active = KARDS.BattleState.mulligan and KARDS.BattleState.mulligan.active and not KARDS.BattleState.mulligan.submitted
-    -- 牌桌内鼠标恒呼出（2026-08-10：KARDS.BattleState.mulligan 结束/确认后仍在牌桌内，不再关闭；
-    -- 开关由 UpdateTableMouse 按 KARDS.BattleState.inTable 统一决定，仅离开牌桌才关闭；内部记录
-    -- 上次状态，active 期间每帧调用也无重复切换）
-    UpdateTableMouse()
-    if not active then
-        KARDS.BattleState.prevMulliganLeft = false
-        return
-    end
-    -- 选择卡定格落位（发牌动画结束后；选中卡沿法线上抬）。
-    -- 取消每帧强制正面/朝向（2026-08-10 反馈：改为抽牌动画同款翻面落位，角度由
-    -- 发牌动画定格为扇面姿态 Angle(0, endYaw, 0)，此处仅保位置）。
-    for ce, card in pairs(KARDS.BattleState.mulligan.cards) do
-        if IsValid(ce) and not KARDS.AnimPlayer:Active(ce, "mulliganDeal") then
-            local pos = MulliganFanPos(card.index, KARDS.BattleState.mulligan.total)
-            local lift = card.selected and 1.5 or 0
-            local cur = ce:GetLocalPos()
-            if cur.z ~= pos.z + lift or cur.x ~= pos.x or cur.y ~= pos.y then
-                ce:SetLocalPos(Vector(pos.x, pos.y, pos.z + lift))
-            end
-        end
-    end
-    -- 左键上升沿：确认按钮优先，其次点击牌桌中间扇形卡
-    local left = input.IsMouseDown(MOUSE_LEFT)
-    if left and not KARDS.BattleState.prevMulliganLeft then
-        local mX, mY = gui.MouseX(), gui.MouseY()
-        local r = KARDS.BattleState.mulliganConfirmRect
-        if r and mX >= r.x and mX <= r.x + r.w and mY >= r.y and mY <= r.y + r.h then
-            SubmitMulligan()
-        else
-            local hit = HitMulliganCard(mX, mY)
-            if hit and KARDS.BattleState.mulligan.cards[hit] then
-                KARDS.BattleState.mulligan.cards[hit].selected = not KARDS.BattleState.mulligan.cards[hit].selected
-                KARDS.PlayKardsSound("select_card") -- 选中/取消选择音效（选择卡牌）
-            end
-        end
-    end
-    KARDS.BattleState.prevMulliganLeft = left
-end)
+-- ====================================================================
+-- 老兵升级动画（2026-09-26 缺口 I 拆分：KardsUnitElevate 接收器 + z 上升 /
+-- 依次白色飘字 / 回落三段
+-- 已迁移至 cl_battle_veteran.lua）
+include("cl_battle_veteran.lua")
+-- ====================================================================
 
--- 文字提示渐变背景材质（materials/kards/ui/textUnderground.png，2026-08-11）：
--- 横向线性对称渐变——中心 70% 黑 → 两侧 0% 透明黑，作为重新调度提示文字横幅背景
--- （放大提示文字「选择要替换的卡牌」）；亦供「友方回合开始」提示横幅使用（线性渐变拉伸无损）
-local textUndergroundMat = Material("materials/kards/ui/textUnderground.png", "noclamp smooth")
-
--- 重新调度 HUD（仅本方选择阶段）：选中卡图标（3D2D）+ 提示 + 准星下方「确认」按钮
-hook.Add("HUDPaint", "KardsMulliganHUD", function()
-    if not KARDS.BattleState.mulligan or not KARDS.BattleState.mulligan.active or KARDS.BattleState.mulligan.submitted then return end
-    -- 被选中的卡：在卡面上方（局部 z+0.1，跟随上抬）绘制选中图标。
-    -- 3D2D 平面法线朝上（pitch 90）俯视可见，图标尺寸 1.4 世界单位（卡宽 7.2）
-    for ce, card in pairs(KARDS.BattleState.mulligan.cards) do
-        if card.selected and IsValid(ce) then
-            local ang = ce:GetAngles()
-            cam.Start3D2D(ce:GetPos() + ce:GetUp() * 0.1, Angle(90, ang.y, 0), 1)
-                surface.SetMaterial(chooseMat)
-                surface.SetDrawColor(255, 255, 255, 255)
-                surface.DrawTexturedRect(-0.7, -0.7, 1.4, 1.4)
-            cam.End3D2D()
-        end
-    end
-    -- 按钮：屏幕底部居中（2026-08-11 由准星下方移至底部——牌桌中间扇形卡投影在
-    -- 屏幕中心，提示与按钮不遮挡卡面/牌桌视野；距底边 90px）
-    local x, y = ScrW() / 2, ScrH() - 90
-    local w, h = 160, 52
-    KARDS.BattleState.mulliganConfirmRect = { x = x - w / 2, y = y - h / 2, w = w, h = h }
-    -- 提示横幅（textUnderground.png 横向渐变背景，2026-08-11）：包裹放大提示文字，
-    -- 置于按钮上方 8px
-    local tipText = "选择要替换的卡牌"
-    local tipFont = "SourceHan_Heavy_36"
-    surface.SetFont(tipFont)
-    local tw, th = surface.GetTextSize(tipText)
-    local tipPadX, tipPadY = 28, 12 -- 渐变横幅内边距
-    local tipW, tipH = tw + tipPadX * 2, th + tipPadY * 2
-    local tipY = y - h / 2 - 8 - tipH -- 按钮顶 - 8px
-    surface.SetMaterial(textUndergroundMat)
-    surface.SetDrawColor(255, 255, 255, 255)
-    surface.DrawTexturedRect(ScrW() / 2 - tipW / 2, tipY, tipW, tipH)
-    draw.SimpleText(tipText, tipFont, ScrW() / 2, tipY + tipH / 2,
-        Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    -- 确认按钮背景：#BDBCAF 浅灰米色非软边矩形（直角，替代渐变背景，2026-08-11；
-    -- 浅底配深色文字保持可读）；按住（左键悬停按下）时背景 #333229 / 文字 #C78736
-    local held = input.IsMouseDown(MOUSE_LEFT)
-        and gui.MouseX() >= KARDS.BattleState.mulliganConfirmRect.x and gui.MouseX() <= KARDS.BattleState.mulliganConfirmRect.x + w
-        and gui.MouseY() >= KARDS.BattleState.mulliganConfirmRect.y and gui.MouseY() <= KARDS.BattleState.mulliganConfirmRect.y + h
-    surface.SetDrawColor(held and Color(51, 50, 41) or Color(189, 188, 175))
-    surface.DrawRect(KARDS.BattleState.mulliganConfirmRect.x, KARDS.BattleState.mulliganConfirmRect.y, w, h)
-    draw.SimpleText("确认", "SourceHan_Heavy_32", x, y,
-        held and Color(199, 135, 54) or Color(16, 16, 16), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-end)
+-- ====================================================================
+-- 卡牌转换交接动画（2026-09-26 缺口 J 拆分：KardsUnitConvert 接收器 +
+-- 旧卡 z 上升翻面至侧立 / 90° 换显 / 新卡反向回落三段
+-- 已迁移至 cl_battle_convert.lua）
+include("cl_battle_convert.lua")
+-- ====================================================================
 
 -- ====================================================================
 -- 结束回合按钮交互 / 绘制（2026-08-11 拆分 B1：KardsEndTurnThink /
@@ -2866,6 +2718,47 @@ end)
 -- 共用；声明置于两个钩子之前——Lua 词法作用域：钩子函数体引用的名字必须在其
 -- 定义处可见，声明在后会被当作全局变量（nil）访问而报错（2026-08-10 实测）。
 local handHoverCards = setmetatable({}, { __mode = "k" })
+
+-- 手牌悬停提升状态机（2026-08-15 阶段四 C9 收敛）：KardsRealHandFacing 与
+-- KardsHandSlotFacing 两处同构状态机收敛为共享工具——st 存在则更新悬停标记/axis，
+-- cur 在 HandSlotHoverDur 秒内逼近目标（悬停 1 / 回落 0），cur>0 时按 axis 位移：
+-- "y" 沿自身 y+ 轴（本方悬停）/ "z" 沿父局部 z（远程悬停，增量 0.8 > 扇形 z 阶梯
+-- 最大落差 0.3，必为该手牌 z 最高）；回落完成移除登记（交还常规位置，动画定格值）。
+-- st 不存在且 isHovered → 记录当前实际位置为基线（冻结，避免逐帧叠加造成无上限
+-- 移动）新建登记。axis 仅悬停时更新（回落沿原方向），与原逻辑一致。
+-- 返回 true = 状态机已接管该卡位置（调用方跳过自身常规位置/角度覆盖，等价原
+-- if st / elseif 悬停 两分支）；false = 无登记且未悬停（调用方做常规修正）。
+function KARDS.UpdateHandHover(ent, isHovered, axis)
+    local st = handHoverCards[ent]
+    if st then
+        st.hovered = isHovered
+        if isHovered and axis then st.axis = axis end
+        local target = st.hovered and 1 or 0
+        if st.cur < target then
+            st.cur = math.min(st.cur + FrameTime() / HandSlotHoverDur, 1)
+        elseif st.cur > target then
+            st.cur = math.max(st.cur - FrameTime() / HandSlotHoverDur, 0)
+        end
+        if st.cur > 0 then
+            if st.axis == "z" then
+                -- 远程悬停：沿卡面法线（父局部 z）抬升——与扇形 z 阶梯同坐标系
+                ent:SetLocalPos(st.base + Vector(0, 0, st.cur * HandSlotHoverLift))
+            else
+                -- 本方悬停：沿自身 y+ 轴方向移动（yp 为局部 +y；LocalToWorld 换算
+                -- 随当前朝向变化，扇形各卡方向略异 → 父局部方向，2026-08-15
+                -- C2 收敛至 KARDS.LocalYAxis）
+                local yp = KARDS.LocalYAxis(ent)
+                ent:SetLocalPos(st.base + yp * (st.cur * HandSlotHoverLift))
+            end
+        else
+            handHoverCards[ent] = nil -- 已回落，交还常规位置（动画定格值）
+        end
+    elseif isHovered then
+        -- 新悬停：记录当前实际位置为基线（动画已结束，位置稳定）
+        handHoverCards[ent] = { hovered = true, cur = 0, base = ent:GetLocalPos(), axis = axis }
+    end
+    return st ~= nil or isHovered
+end
 
 -- 总部对局开始动画中的实体判定（hqReveals 声明于上方；本函数供 KardsDragCardThink /
 -- KardsFieldLayout 接收 / KardsFieldFacing 共用，须先于这些引用者声明——Lua 词法
@@ -2929,6 +2822,10 @@ local function PreviewFieldPositions(layout, dragEnt, dropCol, row)
         if it[2] < dropCol then insertAfter = insertAfter + 1 end
     end
     local n = #ordered + 1 -- 含拖拽单位后的整线卡数（偶数偏移基准）
+    -- 阵线已满（含总部共 SLOT_COUNT 张）：部署必被服务端拒绝（InsertCentered 满员
+    -- 返回 false），不产生腾位预览——返回空表，调用方回退各卡当前布局位（卡不动），
+    -- 并避免 GetCenteredStart 按 lineSize 截断后落点列越界（ColX[6] 为 nil 崩溃）
+    if n > KARDS.Battlefield.SLOT_COUNT then return {} end
     local start = KARDS.Battlefield:GetCenteredStart(n)
     local out = {}
     for k, it in ipairs(ordered) do
@@ -2946,91 +2843,86 @@ end
 -- 创建）的悬停提升机制补回真实手牌——鼠标悬停本方某张手牌时，该卡沿自身 y+ 轴在
 -- HandSlotHoverDur 秒内移动 HandSlotHoverLift（离开同样时长回落），机制与
 -- KardsHandSlotFacing 占位卡同款（handHoverCards 状态表 + 射线最近距离判定）。
+-- 单张真实手牌每帧驱动（2026-08-15 阶段四 C9 拆分）：跳过判定（拖拽中 / 待打出
+-- 确认 / 重排动画中的卡位置角度由拖拽钩子或飞行/返回动画接管）+ 悬停提升（共享
+-- 状态机 KARDS.UpdateHandHover）+ 角度驱动（本方 HandFanPos 扇形角度 / 对方
+-- drawFaceReady pitch 180 兜底）
+local function RealHandFacingCard(view, slot, mine, n, ent, idx, hoveredEnt)
+    if not IsValid(ent) or ent == KARDS.BattleState.pendingPlayEnt
+        -- 2026-10-03 联机排查 NEW-2/NEW-9：跳过条件由枚举组名改为「任一动画在播」。
+        -- 枚举必然漏项（洗入 shuffleInto、三选一 pickResult 就漏了），漏掉时动画收尾的
+        -- SetNoDraw(true) 会被本函数下方的兜底显隐复活，同一张卡三方表现不一致。
+        or KARDS.AnimPlayer:Active(ent)
+        or (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == ent) then
+        return
+    end
+    if ent:GetNoDraw() then ent:SetNoDraw(false) end
+    -- 悬停提升（本方鼠标悬停 / 远程对方悬停均驱动；与 KardsHandSlotFacing 占位卡
+    -- 同款状态机，已收敛至 KARDS.UpdateHandHover）。提升方向：本方悬停（view 与
+    -- slot 一致）沿自身 y+ 轴（2026-08-10 反向后沿 +y 提升）；远程悬停（对方在
+    -- P1/P2 视角、双方在观战视角，经 KardsHandHover 广播）沿 z 抬升——需求 2
+    -- 「敌方悬停 z 增加为手牌中最高」、需求 3「观战视角同样增量」。
+    local localHover = (view == 1 or view == 2) and slot == view and ent == hoveredEnt
+    local remoteHover = remoteHandHover[slot] == ent
+    KARDS.UpdateHandHover(ent, localHover or remoteHover, localHover and "y" or "z")
+    if mine then
+        -- 与动画定格同一预设扇形角度（n=当前手牌数；动画全部结束后 n 与登记时
+        -- total 一致，角度不跳变）
+        local _, ang = HandFanPos(slot, idx, n)
+        local cur = ent:GetLocalAngles()
+        if math.abs(cur.p - ang.p) > 0.01 or math.abs(cur.y - ang.y) > 0.01
+            or math.abs(cur.r - ang.r) > 0.01 then
+            ent:SetLocalAngles(ang)
+        end
+    elseif drawFaceReady[ent] then
+        -- 对方/观战视角看本方切过的卡（kards_switch 已 InitDrawCardFace 初始化
+        -- 卡面，manifest front=卡面）：绕卡长轴翻转 180°（pitch 180）使卡背
+        -- （back 子网格，真实卡背图）朝上——恢复卡背不改 manifest（2026-08-12
+        -- kards_switch 切换不干净修复：切回后对方手牌不再正面朝上泄漏牌面）。
+        -- 每帧兜底：kards_switch 切离时已即时翻转，此处覆盖动画终帧/后续
+        -- 抽牌动画终帧（pitch=0）残留。未初始化卡两面卡背（front=back=usa）
+        -- 任何姿态均为卡背，跳过；3D2D 文字随实体朝向下翻不可见。
+        local cur = ent:GetLocalAngles()
+        if math.abs(cur.p - 180) > 0.01 then
+            ent:SetLocalAngles(Angle(180, cur.y, cur.r))
+        end
+    end
+end
+
 hook.Add("Think", "KardsRealHandFacing", function()
-    -- 悬停检测（仅 P1/P2 视角 + 本方真实手牌）：相机射线到各手牌中心的最近距离判定
-    --（同卡堆悬停 KardsDeckHoverDetect 的 KARDS.RayPointDistSqr 方法）；观战/未进入牌桌不悬停
+    -- 悬停检测（仅 P1/P2 视角 + 本方真实手牌）：相机射线命中手牌卡面矩形才算
+    -- 悬停（2026-08-11 改，替代宽泛的中心距离）；重叠扇形卡取最先命中（t 最小）＝
+    -- 视觉最上层卡（2026-08-14 修复：原最近中心距离会选中被上方卡遮挡的左卡，
+    -- 且 `local bestD, hoveredEnt` 在 if 块内重复声明遮蔽外层导致悬停提升从未
+    -- 生效）；观战/未进入牌桌不悬停
     local view = KARDS.Perspective and KARDS.Perspective.LocalView
     local hoveredEnt = nil
     if view == 1 or view == 2 then
         local ply = LocalPlayer()
         if IsValid(ply) and not gui.IsConsoleVisible() and not gui.IsGameUIVisible() then
-            local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-            local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-            if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-                dir = (KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-            end
-            -- 悬停判定（2026-08-11 改）：射线命中手牌卡面矩形才算悬停（替代原
-            -- 「到中心 3D 距离 <12」——过宽，鼠标指向靠近手牌的战场单位时误触手牌）；
-            -- 重叠扇形卡取最近中心距离
-            local bestD, hoveredEnt = math.huge, nil
-            for ent in pairs(KARDS.BattleState.realHandCards[view]) do
-                -- 拖拽中 / 待打出确认 / 返回手牌动画 / 重排动画中的卡跳过（位置/角度由拖拽钩子或飞行/返回动画接管）
-                if IsValid(ent) and ent ~= KARDS.BattleState.pendingPlayEnt
-                    and not KARDS.AnimPlayer:Active(ent, "mulliganToHand", "deckDraw", "dragReturn", "handRepos")
-                    and not (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == ent) then
-                    if KARDS.RayCardHit(pos, dir, ent, KARDS.HandHitHalfW, KARDS.HandHitHalfL) then
-                        local d = KARDS.RayPointDistSqr(pos, dir, ent:GetPos())
-                        if d < bestD then
-                            bestD, hoveredEnt = d, ent
-                        end
-                    end
-                end
-            end
+            local pos, dir = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
+            -- 2026-08-15 C2：命中测试收敛至 KARDS.HandHitTest（skipBusy=true：busy 判定
+            -- = IsHandBusy，与原内联的 pendingPlayEnt + 4 组动画 + dragCard 过滤一致）
+            hoveredEnt = KARDS.HandHitTest(pos, dir, view, true)
+        end
+    end
+    -- 悬停广播（2026-08-14，需求 2/3）：本方悬停变化时发给服务端中继（对方+观战者
+    -- 据此显示敌方悬停 z 抬升）；仅 P1/P2 视角、对局进行中发送；无悬停发 NULL 清除
+    if (view == 1 or view == 2) and hoveredEnt ~= lastSentHover then
+        lastSentHover = hoveredEnt
+        local tbl = KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent
+        if IsValid(tbl) and KARDS.BattleState.battleStarted then
+            net.Start("KardsHandHover")
+                net.WriteEntity(tbl)
+                net.WriteEntity(hoveredEnt or NULL)
+            net.SendToServer()
         end
     end
     for slot = 1, 2 do
         local mine = KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == slot
-        local n = 0
-        for ent in pairs(KARDS.BattleState.realHandCards[slot]) do
-            if IsValid(ent) then n = n + 1 end
-        end
+        local n = KARDS.HandCount(slot) -- 2026-08-15 C2：内联计数收敛至共享工具
         for ent, idx in pairs(KARDS.BattleState.realHandCards[slot]) do
-            -- 拖拽中 / 待打出确认 / 重排动画中的卡跳过（位置/角度由拖拽钩子或飞行/返回动画接管）
-            if IsValid(ent) and ent ~= KARDS.BattleState.pendingPlayEnt
-                and not KARDS.AnimPlayer:Active(ent, "mulliganToHand", "deckDraw", "dragReturn", "handRepos")
-                and not (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == ent) then
-                if ent:GetNoDraw() then ent:SetNoDraw(false) end
-                -- 悬停提升（仅本方手牌会命中 hoveredEnt；与 KardsHandSlotFacing 占位卡
-                -- 同款：新悬停记录实际位置为基线，提升中冻结基线避免逐帧叠加）
-                local st = handHoverCards[ent]
-                if st then
-                    st.hovered = (ent == hoveredEnt)
-                    local target = st.hovered and 1 or 0
-                    if st.cur < target then
-                        st.cur = math.min(st.cur + FrameTime() / HandSlotHoverDur, 1)
-                    elseif st.cur > target then
-                        st.cur = math.max(st.cur - FrameTime() / HandSlotHoverDur, 0)
-                    end
-                    if st.cur > 0 then
-                        -- 自身 y+ 轴方向（LocalToWorld 换算，随当前朝向变化，扇形各卡
-                        -- 方向略异）→ 父局部方向（SetLocalPos 使用父局部坐标；GMod 无
-                        -- WorldToLocalVector，用两次 WorldToLocal 点变换求差）
-                        local yp = ent:LocalToWorld(Vector(0, 1, 0)) - ent:GetPos()
-                        local parent = ent:GetParent()
-                        if IsValid(parent) then
-                            yp = parent:WorldToLocal(ent:LocalToWorld(Vector(0, 1, 0)))
-                                - parent:WorldToLocal(ent:GetPos())
-                        end
-                        -- 沿自身 y+ 轴方向移动（yp 为局部 +y；2026-08-10 反向后沿 +y 提升）
-                        ent:SetLocalPos(st.base + yp * (st.cur * HandSlotHoverLift))
-                    else
-                        handHoverCards[ent] = nil -- 已回落，交还常规位置（动画定格值）
-                    end
-                elseif ent == hoveredEnt then
-                    -- 新悬停：记录当前实际位置为基线（动画已结束，位置稳定）
-                    handHoverCards[ent] = { hovered = true, cur = 0, base = ent:GetLocalPos() }
-                end
-                if mine then
-                    -- 与动画定格同一预设扇形角度（n=当前手牌数；动画全部结束后
-                    -- n 与登记时 total 一致，角度不跳变）
-                    local _, ang = HandFanPos(slot, idx, n)
-                    local cur = ent:GetLocalAngles()
-                    if math.abs(cur.p - ang.p) > 0.01 or math.abs(cur.y - ang.y) > 0.01
-                        or math.abs(cur.r - ang.r) > 0.01 then
-                        ent:SetLocalAngles(ang)
-                    end
-                end
-            end
+            RealHandFacingCard(view, slot, mine, n, ent, idx, hoveredEnt)
         end
     end
 end)
@@ -3050,7 +2942,7 @@ end)
 --   依赖（均声明于本节之前）：HandSlotHoverRadius(L2193) / KARDS.BattleState.realHandCards(L103) /
 --   KARDS.BattleState.fieldLayouts(L137) / KARDS.BattleState.dragCard、KARDS.BattleState.pendingPlayEnt / KARDS.AnimPlayer（动画 busy 判定）/
 --   hqReveals(L1973) / InHQRevealAnim(L2718) / KARDS.RayPointDistSqr(L1187) /
---   DeckFindCardInfo(L1516) / KARDS.CardTextOverlay。
+--   KARDS.DeckFindCardInfo(L1516) / KARDS.CardTextOverlay。
 -- ====================================================================
 local HoverPreviewDelay = 0.4      -- 悬停持续时间阈值（秒）：达到后创建复制卡
 local HoverPreviewHandLift = 12    -- 手牌复制卡沿源卡自身 y+ 轴方向的偏移距离（xy 平面，俯视位于原卡上方；
@@ -3075,7 +2967,7 @@ local function HoverPreviewCardCanShow(src)
     if src:GetNWString("Kards_DeckModelID", "") == "" then return false end
     if KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == src then return false end
     if src == KARDS.BattleState.pendingPlayEnt then return false end
-    if KARDS.AnimPlayer:Active(src, "dragFlight", "dragReturn", "handRepos", "mulliganToHand", "deckDraw") then return false end
+    if KARDS.AnimPlayer:Active(src, DeployAnimGroup, "dragReturn", "handRepos", "mulliganToHand", "deckDraw") then return false end
     if InHQRevealAnim(src) then return false end
     return true
 end
@@ -3108,7 +3000,7 @@ local function HoverPreviewCreate(src)
     copy:SetSolid(SOLID_NONE)
     local phys = copy:GetPhysicsObject()
     if IsValid(phys) then phys:EnableMotion(false) end
-    local appearance, _, textureSize = DeckFindCardInfo(src:GetNWString("Kards_CardName", ""))
+    local appearance, _, textureSize = KARDS.DeckFindCardInfo(KARDS.GetCardIdentity(src)) -- 手牌卡面定向表优先（2026-08-18，规划 B1）
     if appearance and KARDS.CardTextOverlay then
         local texW, texH = 300, 400
         if textureSize and textureSize.w and textureSize.h then
@@ -3143,11 +3035,7 @@ hook.Add("Think", "KardsHoverCardPreview", function()
         HoverPreviewDestroy()
         return
     end
-    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-        dir = (KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-    end
+    local pos, dir = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
     local view = KARDS.Perspective and KARDS.Perspective.LocalView
     -- 扫描候选（取最近距离）：本方手牌（仅 P1/P2 视角）+ 双方战场卡（含总部）
     local bestD, bestEnt, bestHand, bestSlot = math.huge, nil, false, nil
@@ -3160,13 +3048,12 @@ hook.Add("Think", "KardsHoverCardPreview", function()
         end
     end
     if view == 1 or view == 2 then
-        for ent in pairs(KARDS.BattleState.realHandCards[view]) do
-            -- 手牌候选：射线命中卡面矩形才参与（2026-08-11 改，替代中心距离 12——
-            -- 过宽会抢走靠近手牌的战场单位预览）；radius 传 math.huge 仅让距离竞争
-            if IsValid(ent) and KARDS.RayCardHit(pos, dir, ent, KARDS.HandHitHalfW, KARDS.HandHitHalfL) then
-                Consider(ent, math.huge, true, view)
-            end
-        end
+        -- 手牌候选：射线命中卡面矩形才参与（2026-08-11 改，替代中心距离 12——
+        -- 过宽会抢走靠近手牌的战场单位预览）；重叠扇形卡先取最先命中（t 最小）＝
+        -- 视觉最上层卡（2026-08-14 修复悬停预览卡错位），再以中心距离与战场竞争
+        -- 2026-08-15 C2：收敛至 KARDS.HandHitTest（skipBusy=false：预览不跳过动画中的卡，保持原行为）
+        local be = KARDS.HandHitTest(pos, dir, view, false)
+        if be then Consider(be, math.huge, true, view) end
     end
     for slot = 1, 2 do
         for ent in pairs(KARDS.BattleState.fieldLayouts[slot] or {}) do
@@ -3201,11 +3088,8 @@ hook.Add("Think", "KardsHoverCardPreview", function()
         -- 下 z 偏移无 xy 位移，2026-08-11 用户澄清；与手牌悬停提升同向，见
         -- KardsRealHandFacing 的 yp 计算）；战场 → 桌面固定 +x + z 上方
         if hoverPreview.hand then
-            local yp = src:LocalToWorld(Vector(0, 1, 0)) - src:GetPos()
-            if IsValid(parent) then
-                yp = parent:WorldToLocal(src:LocalToWorld(Vector(0, 1, 0)))
-                    - parent:WorldToLocal(src:GetPos())
-            end
+            -- 2026-08-15 C2：局部 +y 方向收敛至 KARDS.LocalYAxis（含父局部换算）
+            local yp = KARDS.LocalYAxis(src)
             localPos = localPos + yp * HoverPreviewHandLift
         else
             localPos = localPos + Vector(HoverPreviewFieldX, 0, HoverPreviewZField)
@@ -3237,326 +3121,327 @@ hook.Add("Think", "KardsHoverCardPreview", function()
 end)
 
 -- ====================================================================
--- 手牌拿起 / 拖拽 / 打出（2026-08-10）：
---   悬停在本方手牌时按下左键 → 拿起（z 抬升至手牌扇形 z 理论最大值上方 0.1、xy 原点始终跟随
---   鼠标、悬停机制失效、播放「拿起卡牌」音效）；握着的牌是单位且鼠标位于本方
---   支援阵线、在支援阵线整体卡牌的一侧 → 该玩家视角下支援阵线所有卡（含总部）
---   往另一侧移动（腾位预览）；松手在手牌区域 → 渐变回原位；否则为打出（单位 →
---   KardsPlayCard 固定槽位部署 SimDeployFixed；指令 → 战斗系统 SimPlayCard）。
---   从打出开始由服务端战斗系统权威处理（反应、时间刻记录）。
+-- 跨文件桥接（续，2026-08-15）：下述 local 声明晚于 cl_battle_mulligan.lua 的
+-- include 点，于此处补挂供 cl_battle_drag.lua 使用（cl_init.lua 自身词法使用不变）
 -- ====================================================================
-hook.Add("Think", "KardsDragCardThink", function()
-    local now = CurTime()
-    local ply = LocalPlayer()
-    local view = KARDS.Perspective and KARDS.Perspective.LocalView
-    local inBattle = KARDS.BattleState.battleStarted and KARDS.BattleState.inTable and IsValid(KARDS.BattleState.inTable.ent)
-    local guiBlocked = gui.IsConsoleVisible() or gui.IsGameUIVisible()
-    local left = input.IsMouseDown(MOUSE_LEFT)
+KARDS.handHoverCards = handHoverCards
+KARDS.InHQRevealAnim = InHQRevealAnim
+KARDS.FieldPos = FieldPos
+KARDS.PreviewFieldPositions = PreviewFieldPositions
 
-    -- 相机视线与牌桌局部 z 平面交点 → 牌桌局部坐标（拖拽 xy 跟随鼠标的投影基准；
-    -- 与 StartHQReveal 的屏幕 → 桌面平面投影同法）
-    local function MouseLocalZ(z)
-        local pos = (KARDS.BattleCamera and KARDS.BattleCamera.ViewPos) or ply:EyePos()
-        local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-        if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-            dir = (KARDS.BattleCamera and KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-        end
-        if not inBattle or math.abs(dir.z) < 0.001 then return nil end
-        local planeZ = KARDS.BattleState.inTable.ent:LocalToWorld(Vector(0, 0, z)).z
-        local world = pos + dir * ((planeZ - pos.z) / dir.z)
-        return KARDS.BattleState.inTable.ent:WorldToLocal(world)
-    end
+-- ====================================================================
+-- 手牌拿起 / 拖拽 / 打出（2026-08-15 C1 拆分：KardsDragCardThink / KardsHandHover /
+-- KardsDragSync / KardsDragEnd / KardsRemoteDragThink 已迁移至 cl_battle_drag.lua）
+include("cl_battle_drag.lua")
+-- ====================================================================
 
-    -- 某槽当前手牌张数（真实手牌，含拖拽中/动画中）
-    local function HandCount(slot)
-        local n = 0
-        for e in pairs(KARDS.BattleState.realHandCards[slot]) do
-            if IsValid(e) then n = n + 1 end
-        end
-        return n
-    end
-
-    -- 最近列 index（鼠标投影 x → 支援阵线槽位列 1..5）
-    local function NearestCol(x)
-        local best, bd = 1, math.huge
-        for i = 1, 5 do
-            local d = math.abs(KARDS.Animation.Board2D.ColX[i] - x)
-            if d < bd then bd, best = d, i end
-        end
-        return best
-    end
-
-    -- 位置动画（返回手牌 / 打出飞行 / 战场复位）与手牌重排动画（位置+角度双插值）
-    -- 由 KARDS.AnimPlayer 单一 Think 驱动（re.md 重构），本钩子不再逐帧驱动
-
-    -- 拿起（左键上升沿 + 我方回合 + 视角本方 + 无 GUI + 无进行中的拖拽/待确认）
-    if not guiBlocked and inBattle and KARDS.BattleState.battleTurn == KARDS.BattleState.inTable.slot
-        and (view == 1 or view == 2) and not KARDS.BattleState.dragCard and not KARDS.BattleState.pendingPlayEnt
-        and not KARDS.BattleState.endedTurn and left and not KARDS.BattleState.prevDragLeft then
-        local pos = (KARDS.BattleCamera and KARDS.BattleCamera.ViewPos) or ply:EyePos()
-        local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-        if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-            dir = (KARDS.BattleCamera and KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-        end
-        -- 拿起判定（2026-08-11 改）：射线命中手牌卡面矩形才算点到手牌（替代原
-        -- 「到中心 3D 距离 <12」——过宽，鼠标指向靠近手牌的战场单位时被误判为
-        -- 拿起手牌）；重叠扇形卡取最近中心距离
-        local bestD, hit = math.huge, nil
-        for ent in pairs(KARDS.BattleState.realHandCards[view]) do
-            if IsValid(ent) and not KARDS.AnimPlayer:Active(ent, "mulliganToHand", "deckDraw", "handRepos") then
-                if KARDS.RayCardHit(pos, dir, ent, KARDS.HandHitHalfW, KARDS.HandHitHalfL) then
-                    local d = KARDS.RayPointDistSqr(pos, dir, ent:GetPos())
-                    if d < bestD then bestD, hit = d, ent end
-                end
-            end
-        end
-        if hit then
-            KARDS.BattleState.dragCard = {
-                ent = hit,
-                slot = view,
-                idx = KARDS.BattleState.realHandCards[view][hit],
-                zFrom = hit:GetLocalPos().z,
-                start = now,
-            }
-            handHoverCards[hit] = nil -- 悬停机制失效（位置/角度由本钩子接管）
-            KARDS.PlayKardsSound("pickup")
+-- ====================================================================
+-- 指令卡打出动画（2026-08-12，阶段 C；更名）：展示槽（打出方视角左侧）停留 →
+-- 左下出场 + 队列管理
+--   · 队列登记：KardsCardPlayed landed=0 时入队尾（commandAnimQueue）
+--   · 已有 ≥2 个未结束动画（含本卡 ≥3）→ 最早指令直接出场（跳过后台等待）
+--   · 已有 1 个未结束动画（含本卡 =2）→ 前一指令停留达 CommandHoldGate（1s）后
+--     z 下移 CommandZDn（2026-08-13 特殊处理：停留未达 1s 时 z 下移暂不生效，后一
+--     指令与本卡的 z 下移替换动画一起 delay 等待至该时刻；delay 期间前一指令保持
+--     停留姿态，视觉上无跳跃）
+--   · 本卡：当前位置 → 展示槽（CommandToSlotDur）→ 停留至 CommandHoldDur →
+--     左下出场（CommandExitDur）；开始前若前一指令停留未达 CommandHoldGate 则
+--     delay 等待（达 1s 即放行，不必等前一指令完全出场）
+--   · onComplete：从队列移除 + 通知服务端销毁实体（C3，仅本方槽位发送）
+-- ====================================================================
+local function RemoveFromCommandQueue(q, ent)
+    for i, e in ipairs(q) do
+        if e == ent then
+            table.remove(q, i)
+            break
         end
     end
+end
 
-    -- 拖拽（拿起后每帧）：z 抬升 + xy 跟随鼠标 + 保持扇形角度 + 腾位预览
-    if KARDS.BattleState.dragCard and IsValid(KARDS.BattleState.dragCard.ent) and inBattle then
-        local ent = KARDS.BattleState.dragCard.ent
-        local t = math.min((now - KARDS.BattleState.dragCard.start) / HandSlotLiftDur, 1)
-        local lift = 0.5 - 0.5 * math.cos(math.pi * t)
-        -- 拖拽抬升 z：手牌扇形 z 理论最大值（阶梯最高层，编号大的一侧）+ 0.1——
-        -- 仅略高于手牌层（原固定 40 落差过大，2026-08-10 反馈）
-        local dragZ = HandSlotBase.z + ((HandCount(KARDS.BattleState.dragCard.slot) - 1) / 2) * HandSlotZStep + 0.1
-        local targetZ = KARDS.BattleState.dragCard.zFrom + (dragZ - KARDS.BattleState.dragCard.zFrom) * lift
-        -- 水平位置用桌面投影（CardZ）：与松手落位（NearestCol 同样投影到 CardZ）一致，
-        -- 所见即所得——否则相机在宽边外斜视时，抬升高度（targetZ≈30.5）与桌面
-        --（CardZ=18.43）的投影横向偏差可达 1 列以上，单位会落到与视觉位置隔一空槽
-        --（2026-08-10 修复）；z 仍独立抬升（视觉浮起）
-        local lp = MouseLocalZ(KARDS.Animation.Board2D.CardZ)
-        local cp = ent:GetLocalPos()
-        ent:SetLocalPos(lp and Vector(lp.x, lp.y, targetZ) or Vector(cp.x, cp.y, targetZ))
-        -- 角度：被握住时不再遵循扇形分布（不在手牌中），平躺正面朝上（xy 位置由
-        -- 鼠标投影接管；松手回手牌时 KardsRealHandFacing 恢复扇形姿态、打出后
-        -- KardsFieldFacing 接管战场朝向）。yaw 取拿起前扇形基准 + 文字朝向偏移
-        --（P1 位置基准 0 + 文字 180 → 180 / P2 基准 180 + 文字 180 → 0），保持文字
-        -- 顶朝本方，避免从扇形角度（P1 ≈180±30）直接归 0 造成卡面 180° 翻转
-        --（2026-08-11 用户反馈握住后 yaw 反了）
-        local ang = Angle(0, (KARDS.BattleState.dragCard.slot == 1) and HandSlotTextYaw or 0, 0)
-        local cur = ent:GetLocalAngles()
-        if math.abs(cur.p - ang.p) > 0.01 or math.abs(cur.y - ang.y) > 0.01
-            or math.abs(cur.r - ang.r) > 0.01 then
-            ent:SetLocalAngles(ang)
-        end
-        -- 腾位预览：单位 + 鼠标在本方支援阵线行 → 预览整线居中后的结果
-        --（PreviewFieldPositions：按落点列插入拖拽单位 + GetCenteredStart 整线居中 +
-        -- 偶数整线 0.5 槽偏移，与服务端 SimDeploy 落位一致，所见即所得）
-        local ctype = ent:GetNWString("Kards_CardType", "")
-        local isUnit = (ctype == "unit")
-        local row = (KARDS.BattleState.dragCard.slot == 1) and 1 or -1
-        local layout = KARDS.BattleState.fieldLayouts[KARDS.BattleState.dragCard.slot]
-        local preview = nil
-        if isUnit and lp and layout then
-            if math.abs(lp.y - KARDS.Animation.Board2D.RowY[row]) <= SupportLineHover then
-                preview = PreviewFieldPositions(layout, KARDS.BattleState.dragCard.ent, NearestCol(lp.x), row)
-            end
-        end
-        for e, si in pairs(layout or {}) do
-            if IsValid(e) and e ~= KARDS.BattleState.dragCard.ent and e ~= KARDS.BattleState.pendingPlayEnt and not InHQRevealAnim(e) then
-                -- 预览目标优先；未参与预览（待确认/总部动画中）回布局数据槽位
-                local to = (preview and preview[e]) or FieldPos(layout, e, si, row)
-                local existing = KARDS.AnimPlayer:Get(e)
-                -- 目标变化或动画缺失时重建（避免每帧重建/中断抖动）
-                if not existing or not existing.toPos
-                    or (existing.toPos - to):LengthSqr() > 0.01 then
-                    KARDS.AnimPlayer:Play(e, {
-                        { t = 0 },
-                        { t = HandSlotReposDur, pos = to, easing = "cos" },
-                    }, { group = "fieldRepos" })
-                end
-            end
-        end
+-- 指令卡动画停留时长（秒，2026-08-13）：自到达展示槽（动画 t=CommandToSlotDur）起算；
+-- delay 等待未开始时为负。用于 CommandHoldGate 放行判定（后一指令开始 / z 下移生效）
+local function CommandHoldOf(ent)
+    local pc = KARDS.AnimPlayer:Get(ent)
+    if not pc or not pc.start then return 0 end
+    return CurTime() - pc.start - CommandToSlotDur
+end
+
+-- 指令出场完成通知：本卡动画结束 → 服务端据此销毁实体（C3；仅本方槽位发送，
+-- 对方/观战端的 KardsCardPlayed 也驱动同款动画，但不通知，服务端只收一次）
+local function NotifyCommandExited(slot, cardEnt)
+    if not IsValid(cardEnt) then return end
+    local inTable = KARDS.BattleState.inTable
+    if inTable and IsValid(inTable.ent) and inTable.slot == slot then
+        net.Start("KardsCommandExit")
+            net.WriteEntity(inTable.ent)
+            net.WriteEntity(cardEnt)
+        net.SendToServer()
     end
+end
 
-    -- 松手（左键下降沿 + 有拖拽中的卡）
-    if KARDS.BattleState.dragCard and IsValid(KARDS.BattleState.dragCard.ent) and not left and KARDS.BattleState.prevDragLeft then
-        local ent = KARDS.BattleState.dragCard.ent
-        -- 腾位预览复位：松手后战场卡回布局原位（无论回手牌 / 打出；打出成功时
-        -- 服务端 KardsFieldLayout 会按新布局再次复位，与本处目标一致不冲突；
-        -- 回手牌 / 打出被拒时保证战场卡归位）
-        local row = (KARDS.BattleState.dragCard.slot == 1) and 1 or -1
-        for e, si in pairs(KARDS.BattleState.fieldLayouts[KARDS.BattleState.dragCard.slot] or {}) do
-            if IsValid(e) and e ~= ent and not InHQRevealAnim(e) then
-                local to = FieldPos(KARDS.BattleState.fieldLayouts[KARDS.BattleState.dragCard.slot], e, si, row)
-                local existing = KARDS.AnimPlayer:Get(e)
-                if not existing or not existing.toPos
-                    or (existing.toPos - to):LengthSqr() > 0.01 then
-                    KARDS.AnimPlayer:Play(e, {
-                        { t = 0 },
-                        { t = HandSlotReposDur, pos = to, easing = "cos" },
-                    }, { group = "fieldRepos" })
-                end
-            end
-        end
-        -- 手牌区域判定：投影与当前本方手牌扇形各卡位置的水平距离
-        local lp = MouseLocalZ(HandSlotBase.z)
-        local inHand = false
-        if lp then
-            local n = HandCount(KARDS.BattleState.dragCard.slot)
-            local best = math.huge
-            for i = 1, n do
-                local p = HandFanPos(KARDS.BattleState.dragCard.slot, i, n)
-                local d = Vector(p.x - lp.x, p.y - lp.y, 0):LengthSqr()
-                if d < best then best = d end
-            end
-            inHand = best <= HandRegionDist * HandRegionDist
-        end
-        if inHand then
-            -- 渐变回到原位（扇形位；z 一并回落）
-            local handPos = HandFanPos(KARDS.BattleState.dragCard.slot, KARDS.BattleState.dragCard.idx, HandCount(KARDS.BattleState.dragCard.slot))
-            KARDS.AnimPlayer:Play(ent, {
+-- 播放指令卡出场动画（含队列管理，见上）
+-- @param slot    number 打出方槽位（1/2；展示槽取打出方视角左侧，出场终点向观者侧偏移按打出方取符号）
+-- @param cardEnt Entity 指令卡实体（已从手牌登记移除）
+local function PlayCommandExitAnim(slot, cardEnt)
+    if not IsValid(cardEnt) then return end
+    local q = KARDS.BattleState.commandAnimQueue
+    local exitPos = CommandExitPosFor(slot)
+    local slotPos = DisplaySlots[CommandSlotFor(slot)].pos -- 指令展示槽（打出方视角左侧）
+    table.insert(q, cardEnt)
+    -- 已有 ≥2 个未结束动画（含本卡 = ≥3）→ 最早指令直接出场（跳过后台等待）
+    if #q >= 3 then
+        local oldest = q[1]
+        RemoveFromCommandQueue(q, oldest) -- 直接出场接管其队列席位（实体失效先出队）
+        if IsValid(oldest) then
+            KARDS.AnimPlayer:Stop(oldest)
+            KARDS.AnimPlayer:Play(oldest, {
                 { t = 0 },
-                { t = HandSlotReturnDur, pos = handPos, easing = "cos" },
-            }, { group = "dragReturn" })
-            KARDS.BattleState.dragCard = nil
-        else
-            -- 打出：单位 → 目标槽位 = 鼠标投影最近列（与服务端 SimDeploy 受限选位
-            -- InsertCentered 排秩同源，与拖拽预览 PreviewFieldPositions 的落点列一致 →
-            -- 所见即所得）；指令 → 0
-            local ctype = ent:GetNWString("Kards_CardType", "")
-            local isUnit = (ctype == "unit")
-            local slotIndex = 0
-            if isUnit then
-                local lp2 = MouseLocalZ(KARDS.Animation.Board2D.CardZ)
-                if lp2 then
-                    -- 不再「被占则往鼠标侧找空槽」：服务端 InsertCentered 对占用列的
-                    -- 语义为「插入到该卡左侧 + 整线居中」（与预览 PreviewFieldPositions
-                    -- 相同）——悬停两卡之间（最近列被占）时改找空槽会把部署目标换到
-                    -- 别的列，与预览让位不符、落不到预览空位（2026-08-11 反馈）
-                    slotIndex = NearestCol(lp2.x)
-                end
-            end
-            KARDS.BattleState.pendingPlayEnt = ent -- 冻结位置，等待服务端确认（防重复打出）
-            net.Start("KardsPlayCard")
-                net.WriteEntity(KARDS.BattleState.inTable.ent)
-                net.WriteEntity(ent)
-                net.WriteUInt(slotIndex, 8)
-            net.SendToServer()
-            KARDS.BattleState.dragCard = nil
+                { t = CommandExitDur, pos = exitPos, easing = "easeOut" },
+            }, {
+                group = "commandExit",
+                noQueue = true, -- 直接出场：免排队立即播放（跳过后台等待）
+                onComplete = function()
+                    NotifyCommandExited(slot, oldest)
+                end,
+            })
         end
     end
-
-    KARDS.BattleState.prevDragLeft = left
-end)
+    -- 本卡开始延迟（2026-08-13 特殊处理）：前一指令停留未达 CommandHoldGate 时，
+    -- 后一指令等待至其停留达 1s 才允许开始（不必等其完全出场）；z 下移同此延迟。
+    local startDelay = 0
+    -- 已有 1 个未结束动画（含本卡 = 2）→ 前一指令：停留达 CommandHoldGate 后 z 下移
+    if #q >= 2 then
+        local prev = q[#q - 1]
+        if IsValid(prev) then
+            local hold = CommandHoldOf(prev)
+            if hold < CommandHoldDur then -- 前一指令仍停留阶段才处理（出场中不打扰）
+                if hold < CommandHoldGate then
+                    -- 停留未达 1s：z 下移暂不生效，与后一指令一起等待至停留达 1s
+                    startDelay = CommandHoldGate - hold
+                end
+                local prevPos = prev:GetLocalPos()
+                local zDnPos = Vector(prevPos.x, prevPos.y, slotPos.z - CommandZDn)
+                local holdRemain = math.max(0, CommandHoldDur - (hold + startDelay))
+                KARDS.AnimPlayer:Play(prev, {
+                    { t = 0 },
+                    { t = 0.2, pos = zDnPos, easing = "cos" },
+                    { t = 0.2 + holdRemain, pos = zDnPos },
+                    { t = 0.2 + holdRemain + CommandExitDur, pos = exitPos, easing = "easeOut" },
+                }, {
+                    group = "commandExit",
+                    delay = startDelay, -- 停留达 CommandHoldGate 时 z 下移生效
+                    onComplete = function()
+                        RemoveFromCommandQueue(q, prev)
+                        NotifyCommandExited(slot, prev)
+                    end,
+                })
+            end
+        end
+    end
+    -- 本卡：当前位置 → 展示槽 → 停留至 CommandHoldDur → 左下出场
+    --（delay 等待前一指令停留达 CommandHoldGate；期间保持打出时的位置姿态）
+    KARDS.AnimPlayer:Play(cardEnt, {
+        { t = 0 },
+        { t = CommandToSlotDur, pos = slotPos, easing = "cos" },
+        { t = CommandHoldDur, pos = slotPos },
+        { t = CommandHoldDur + CommandExitDur, pos = exitPos, easing = "easeOut" },
+    }, {
+        group = "commandExit",
+        delay = startDelay,
+        onComplete = function()
+            RemoveFromCommandQueue(q, cardEnt)
+            NotifyCommandExited(slot, cardEnt)
+        end,
+    })
+end
 
 -- 打出确认（服务端 OnPlayCard 广播）：本方收尾拖拽动画、对方/观战同步战场卡。
 -- 单位（landed>0）：登记战场布局 + 打出手牌 → 目标格飞行（角度交由 KardsFieldFacing
--- 接管）；指令（landed=0）：服务端已开始淡出移除（子物体系统），客户端仅从手牌登记移除。
+-- 接管）；指令（landed=0）：展示槽（打出方视角左侧）停留 → 左下出场（阶段 C，见 PlayCommandExitAnim）。
+-- 单位部署动画（2026-08-15 阶段四 C6）：KardsCardPlayed 接收器 landed>0 分支拆出——
+-- 源手牌实体 cardEnt 飞半程 → 切换小模型 unitEnt（应用单位外貌 + 3D2D 单位文字 +
+-- 隐蔽卡背）→ 小模型继续飞后半程落位；两段同组 DeployAnimGroup 并发无停顿。
+-- 上下文（fieldLayouts / FieldPos / CardManifest / AnimPlayer / CardTextOverlay）均
+-- 为 cl_init.lua 文件级 local 或 KARDS 命名空间，与接收器同文件词法可达。
+local function CardPlayedDeploy(ent, slot, cardEnt, landed, unitEnt, placeSnd, deploySnd)
+    -- 单位：登记战场槽位 + 两阶段飞行动画（2026-08-12 半程切换小模型）
+    -- 阶段 1（0→总部署动画一半）：源手牌实体 cardEnt 从当前位置飞至半程中点
+    --   （阶段 1 动画终点 = 总时长一半处）；到达后源卡在中点切换为小卡牌模型
+    --   unitEnt（应用单位外貌），通知服务端后销毁，小模型继续飞后半程。
+    --   两段动画同组 DeployAnimGroup（"deployFlight"）：同组并发调度，切换瞬间
+    --   不会被排队机制停顿。
+    KARDS.BattleState.fieldLayouts[slot][cardEnt] = landed
+    local row = (slot == 1) and 1 or -1
+    local targetPos = FieldPos(KARDS.BattleState.fieldLayouts[slot], cardEnt, landed, row)
+
+    -- 准备客户端本地 unit manifest（渲染按客户端 DATA 读 manifest；单机与服务器
+    -- 同 DATA 时幂等）+ UV 裁切材质预填（切换前同步完成，避免切换瞬间白屏）
+    local safeName = cardEnt:GetNWString("Kards_DeckSafeName", "")
+    local unitModelID = "kards_unit_" .. safeName
+    -- 以服务端实体 modelID 为准（2026-08-11 修复）：MaterialCache key =
+    -- modelID|子网格|imagePath 大小写敏感，而本处 NW safeName 与服务端
+    -- DeckSafeName 推导出的 modelID 大小写可能不一致（编辑器 ID 大写 hex /
+    -- battle 文件名小写），导致预填的 UV 裁切材质 miss、贴图拉伸铺满正面。
+    -- 实体 GetPMXModelID() 与渲染同源，故预填/清缓存均以它为准。
+    if IsValid(unitEnt) and unitEnt.GetPMXModelID then
+        local entModelID = unitEnt:GetPMXModelID()
+        if entModelID and entModelID ~= "" then
+            unitModelID = entModelID
+        end
+    end
+    if safeName ~= "" and KARDS.CardManifest and KARDS.CardManifest.CloneUnit then
+        KARDS.CardManifest.CloneUnit(unitModelID, "kards_deck/" .. safeName)
+        if PMXStaticImporter and PMXStaticImporter.ClearCache then
+            PMXStaticImporter.ClearCache(unitModelID)
+            KARDS.PrefillUnitCrop(unitModelID)
+        end
+    end
+
+    local halfDur = HandSlotFlightDur / 2
+    -- 放牌音效（2026-08-14）：放置在场动作直接播放——飞行开始时立即播放，
+    -- 与部署无关（指令卡 placeSnd 恒空串不播放）；2D 全屏（sound.PlayFile）
+    if placeSnd ~= "" and KARDS.PlaySoundPath then
+        KARDS.PlaySoundPath(placeSnd)
+    end
+    if IsValid(unitEnt) then
+        -- 半程中点（局部坐标）：源卡当前局部位置与落位点的中间。cos 缓动下
+        -- 两段各自 easeInOut、时程各半，拼接视觉为一条平滑飞行曲线。
+        local startLocal = cardEnt:GetLocalPos()
+        local midPos = (startLocal + targetPos) * 0.5
+        -- 半程前小模型暂不显示（服务端实体创建于手牌位，提前显形会在右侧出现）；
+        -- 并占位同组动画，使 KardsFieldLayout 的「部署单位」忙碌判定跳过它——
+        -- 防止布局广播提前把小模型复位到落位点（原 bug：小卡从右侧平移过原位）
+        unitEnt:SetNoDraw(true)
+        KARDS.AnimPlayer:Play(unitEnt, {
+            { t = 0, pos = unitEnt:GetLocalPos() },
+            { t = HandSlotFlightDur, pos = unitEnt:GetLocalPos() },
+        }, { group = DeployAnimGroup })
+        -- 阶段 1：源卡飞半程；切换由动画完成回调 onComplete 驱动（2026-08-12
+        -- 队列系统：动画可能排队，挂钟 timer.Simple 会在阶段 1 尚未开播时提前
+        -- 触发，故改为动画完成同步）
+        KARDS.AnimPlayer:Play(cardEnt, {
+            { t = 0 },
+            { t = halfDur, pos = midPos, easing = "cos" },
+        }, {
+            group = DeployAnimGroup,
+            onComplete = function()
+                if not IsValid(unitEnt) then
+                    -- 回退：unit 实体已失效，源卡继续飞后半程（保留显示与文字）
+                    print("[Kards] unit 战场实体已失效，源卡继续飞后半程")
+                    KARDS.AnimPlayer:Play(cardEnt, {
+                        { t = 0 },
+                        { t = halfDur, pos = targetPos, easing = "cos" },
+                    }, { group = DeployAnimGroup })
+                    return
+                end
+                -- 小模型落位半程中点（源卡当前所在位置），应用单位外貌
+                unitEnt:SetLocalPos(midPos)
+                if IsValid(cardEnt) then
+                    unitEnt:SetAngles(cardEnt:GetAngles())
+                end
+                -- 隐蔽单位（2026-08-13）：部署落位背面朝上（pitch=180 显示卡背，
+                -- 不渲染正面——3D2D 文字 hideWhenBack 在 pitch>90 时不绘制）。动画
+                -- 终点即卡背朝上；KardsFieldFacing 每帧只改 yaw 保留 pitch，故此处
+                -- 设定后隐蔽期始终保持卡背朝上（揭示翻面见 cl_battle_stealth.lua）
+                local hidden = unitEnt:GetNWBool("Kards_IsHidden", false)
+                if hidden then
+                    local ua = unitEnt:GetLocalAngles()
+                    unitEnt:SetLocalAngles(Angle(180, ua.y, ua.r))
+                end
+                unitEnt:SetNoDraw(false)
+                -- 部署音效（2026-08-14）：只有单位变身为小模型单位（本时刻）才算
+                -- 部署——半程切换完成即播放；2D 全屏（sound.PlayFile）
+                if deploySnd ~= "" and KARDS.PlaySoundPath then
+                    KARDS.PlaySoundPath(deploySnd)
+                end
+
+                -- 3D2D 文字：单位模式（仅攻击/防御/行动花费，行动花费替代卡牌花费位置）
+                if KARDS.CardTextOverlay then
+                    -- 闪卡判定：由源卡身份取外观模板，供文字层配色（2026-10-04，见 EntryIsFlash）
+                    local unitApp = (KARDS.DeckFindCardInfo and KARDS.GetCardIdentity and IsValid(cardEnt))
+                        and KARDS.DeckFindCardInfo(KARDS.GetCardIdentity(cardEnt)) or nil
+                    KARDS.CardTextOverlay:AddLocal(unitEnt, {
+                        cost = 0,
+                        actionCost = unitEnt:GetNWInt("Kards_CardActionCost", 0),
+                        attack = unitEnt:GetNWInt("Kards_CardAttack", 0),
+                        defense = unitEnt:GetNWInt("Kards_CardDefense", 0),
+                        cardTemplate = (unitApp and unitApp.cardTemplate) or "",
+                        _unitMode = true, -- DrawOverlay 据此跳过 cost/keywords/desc
+                        ownerSlot = slot, -- 归属槽（行动花费指挥点颜色判定，cl_battle_hud.lua KardsUnitActionCostColorThink 读取）
+                    }, 7.2, 8.528, 209, 290, hidden) -- hideWhenBack：隐蔽期卡背朝上不绘制正面属性
+                    -- 源保存文件值（t4 攻防颜色规则基准，2026-08-12）：注册时 NW 为
+                    -- 服务端部署初写（= 文件属性值），快照为 base——此后攻防与源值比较：
+                    -- 升绿 / 降红 / 持平恢复默认色（cl_card_text_overlay.lua UpdateStatFX）
+                    KARDS.CardTextOverlay:SetBaseStat(unitEnt, "attack", unitEnt:GetNWInt("Kards_CardAttack", 0))
+                    KARDS.CardTextOverlay:SetBaseStat(unitEnt, "defense", unitEnt:GetNWInt("Kards_CardDefense", 0))
+                end
+
+                -- 本地隐藏源卡（模型+文字），仅本客户端生效（对方/观战各自在本地
+                -- KardsCardPlayed 中执行同样切换，视角一致）
+                if IsValid(cardEnt) then
+                    cardEnt:SetNoDraw(true)
+                    if KARDS.CardTextOverlay then KARDS.CardTextOverlay:Remove(cardEnt) end
+                end
+
+                -- 上传服务端：源卡已切换为小模型（附带记录的小模型实体），服务端
+                -- 据此销毁源卡实体（仅部署方发送；对方/观战本地执行同样切换不发送）
+                if KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent == ent
+                    and KARDS.BattleState.inTable.slot == slot then
+                    net.Start("KardsDeploySwitch")
+                        net.WriteEntity(ent)
+                        net.WriteEntity(cardEnt)
+                        net.WriteEntity(unitEnt)
+                    net.SendToServer()
+                end
+
+                -- 阶段 2 动画：小模型从中点继续飞后半程（原位替换上方占位动画，
+                -- 同组并发，切换无停顿）
+                KARDS.AnimPlayer:Play(unitEnt, {
+                    { t = 0 },
+                    { t = halfDur, pos = targetPos, easing = "cos" },
+                }, { group = DeployAnimGroup })
+            end,
+        })
+    else
+        -- 无 unit 实体（指令卡或 unit 创建失败回退）：原实体直接飞全程
+        KARDS.AnimPlayer:Play(cardEnt, {
+            { t = 0 },
+            { t = HandSlotFlightDur, pos = targetPos, easing = "cos" },
+        }, { group = DeployAnimGroup })
+    end
+end
+
 net.Receive("KardsCardPlayed", function()
     local ent = net.ReadEntity()
     local slot = net.ReadUInt(8)
     local cardEnt = net.ReadEntity()
     local landed = net.ReadUInt(8)
     local unitEnt = net.ReadEntity() -- 单位>0：服务端 unit 战场实体；指令：NULL
+    -- 放牌/部署音效路径（2026-08-14 规模接入战斗系统，服务端随广播携带；空串 = 不播放）：
+    -- 放牌 = 放置在场动作直接播放（飞行开始）；部署 = 单位变身为小模型时播放（半程切换）
+    local placeSnd = net.ReadString()
+    local deploySnd = net.ReadString()
     if not IsValid(ent) or not IsValid(cardEnt) then return end
+    -- 2026-09-13 规划 S2：仅关注桌（参战桌/观战追踪桌）事件允许写本地单例状态。
+    -- 跨桌广播直接跳过（S1 全服对战锁下不存在并发对局；卡实体虽 SetParent 到各自
+    -- 牌桌，但部署会写全局 fieldLayouts、指令出场用全局队列、音效为 2D 全屏，
+    -- 跳过最安全）。载荷至此已全部读完
+    if slot ~= 1 and slot ~= 2 then return end
+    if not KARDS.BattleState:IsLocalTable(ent) then return end
     if KARDS.BattleState.pendingPlayEnt == cardEnt then KARDS.BattleState.pendingPlayEnt = nil end
+    KARDS.BattleState.remoteDrags[cardEnt] = nil -- 远程拖拽登记清除（打出接管；无登记的 no-op）
     KARDS.BattleState.realHandCards[slot][cardEnt] = nil -- 已离手（本/对方/观战均移除手牌登记）
     handHoverCards[cardEnt] = nil
     -- 剩余手牌索引重排（连续 1..n）+ 平滑过渡到新扇形位：手牌数量变化后扇形
     -- 按新张数收缩分布（2026-08-11 用户反馈打出后扇形仍按原数量分布）
     RenumberHand(slot)
     if landed > 0 then
-        -- 单位：登记战场槽位 + 两阶段飞行动画（2026-08-11 basic_card_unit 切换）
-        -- 阶段 1（0→HandSlotFlightDur/2）：原手牌实体（服务端保留作动画载体）飞半程
-        -- 阶段 2（半程→终点）：服务端 unit 战场实体从中点继续飞剩余半程
-        KARDS.BattleState.fieldLayouts[slot][cardEnt] = landed
-        local row = (slot == 1) and 1 or -1
-        local targetPos = FieldPos(KARDS.BattleState.fieldLayouts[slot], cardEnt, landed, row)
-
-        -- 准备客户端本地 unit manifest（渲染按客户端 DATA 读 manifest；单机与服务器
-        -- 同 DATA 时幂等）+ UV 裁切材质预填（切换前同步完成，避免切换瞬间白屏）
-        local safeName = cardEnt:GetNWString("Kards_DeckSafeName", "")
-        local unitModelID = "kards_unit_" .. safeName
-        -- 以服务端实体 modelID 为准（2026-08-11 修复）：MaterialCache key =
-        -- modelID|子网格|imagePath 大小写敏感，而本处 NW safeName 与服务端
-        -- DeckSafeName 推导出的 modelID 大小写可能不一致（编辑器 ID 大写 hex /
-        -- battle 文件名小写），导致预填的 UV 裁切材质 miss、贴图拉伸铺满正面。
-        -- 实体 GetPMXModelID() 与渲染同源，故预填/清缓存均以它为准。
-        if IsValid(unitEnt) and unitEnt.GetPMXModelID then
-            local entModelID = unitEnt:GetPMXModelID()
-            if entModelID and entModelID ~= "" then
-                unitModelID = entModelID
-            end
-        end
-        if safeName ~= "" and KARDS.CardManifest and KARDS.CardManifest.CloneUnit then
-            KARDS.CardManifest.CloneUnit(unitModelID, "kards_deck/" .. safeName)
-            if PMXStaticImporter and PMXStaticImporter.ClearCache then
-                PMXStaticImporter.ClearCache(unitModelID)
-                KARDS.PrefillUnitCrop(unitModelID)
-            end
-        end
-
-        local halfDur = HandSlotFlightDur / 2
-        -- 阶段 1：原实体飞半程
-        KARDS.AnimPlayer:Play(cardEnt, {
-            { t = 0 },
-            { t = halfDur, pos = targetPos, easing = "cos" },
-        }, { group = "dragFlight" })
-
-        if IsValid(unitEnt) then
-            -- 阶段 2：unit 战场实体从中点飞剩余半程（服务端实体，客户端 AnimPlayer
-            -- 驱动位置，与手牌实体同款；渲染由服务端 ApplyImportedModel 链路保证）
-            timer.Simple(halfDur, function()
-                if not IsValid(unitEnt) then
-                    -- 回退：unit 实体已失效，原实体飞完剩余半程（保留显示与文字）
-                    print("[Kards] unit 战场实体已失效，回退原实体飞完剩余半程")
-                    if IsValid(cardEnt) then
-                        KARDS.AnimPlayer:Play(cardEnt, {
-                            { t = 0 },
-                            { t = halfDur, pos = targetPos, easing = "cos" },
-                        }, { group = "dragFlight" })
-                    end
-                    return
-                end
-                local midPos = cardEnt:GetPos()
-                local midAng = cardEnt:GetAngles()
-                unitEnt:SetPos(midPos)
-                unitEnt:SetAngles(midAng)
-
-                -- 3D2D 文字：单位模式（仅攻击/防御/行动花费，行动花费替代卡牌花费位置）
-                if KARDS.CardTextOverlay then
-                    KARDS.CardTextOverlay:AddLocal(unitEnt, {
-                        cost = 0,
-                        actionCost = unitEnt:GetNWInt("Kards_CardActionCost", 0),
-                        attack = unitEnt:GetNWInt("Kards_CardAttack", 0),
-                        defense = unitEnt:GetNWInt("Kards_CardDefense", 0),
-                        _unitMode = true, -- DrawOverlay 据此跳过 cost/keywords/desc
-                    }, 7.2, 8.528, 209, 290)
-                end
-
-                -- 本地隐藏原手牌实体（模型+文字），仅本客户端生效（对方/观战各自
-                -- 在本地 KardsCardPlayed 中执行同样切换，视角一致）
-                cardEnt:SetNoDraw(true)
-                if KARDS.CardTextOverlay then KARDS.CardTextOverlay:Remove(cardEnt) end
-
-                -- 阶段 2 动画：unit 实体飞剩余半程
-                KARDS.AnimPlayer:Play(unitEnt, {
-                    { t = 0 },
-                    { t = halfDur, pos = targetPos, easing = "cos" },
-                }, { group = "dragFlight" })
-            end)
-        else
-            -- 无 unit 实体（指令卡或 unit 创建失败回退）：原实体直接飞全程
-            KARDS.AnimPlayer:Play(cardEnt, {
-                { t = 0 },
-                { t = HandSlotFlightDur, pos = targetPos, easing = "cos" },
-            }, { group = "dragFlight" })
-        end
+        -- 单位部署段（2026-08-15 C6 拆出，见 CardPlayedDeploy）
+        CardPlayedDeploy(ent, slot, cardEnt, landed, unitEnt, placeSnd, deploySnd)
+    else
+        -- 指令：展示槽（打出方视角左侧）停留 → 左下出场（2026-08-12 阶段 C）；realHandCards 已移除
+        PlayCommandExitAnim(slot, cardEnt)
     end
-    -- 指令：无额外动画（服务端淡出移除），KARDS.BattleState.realHandCards 已移除
 end)
 
 -- 支援阵线布局广播（服务端单位打出成功后）：重建 KARDS.BattleState.fieldLayouts[slot] 并按槽位复位各卡
@@ -3565,6 +3450,9 @@ net.Receive("KardsFieldLayout", function()
     local ent = net.ReadEntity()
     local slot = net.ReadUInt(8)
     if not IsValid(ent) then return end
+    -- 2026-09-13 规划 S2：布局表为全局单例，仅关注桌消费载荷后的写入与复位动画
+    -- 生效；跨桌广播先读完整个载荷（防污染 net 流），再直接 return
+    local localTbl = KARDS.BattleState:IsLocalTable(ent)
     -- slot=0：前线布局变体（2026-08-11 单位操作，服务端 BroadcastFrontlineLayout）。
     -- 读序与支援阵线不同：牌桌 → slot(0) → 前线归属槽 → 数量 → items
     if slot == 0 then
@@ -3576,14 +3464,74 @@ net.Receive("KardsFieldLayout", function()
             local e = net.ReadEntity()
             if IsValid(e) then layout[e] = idx end
         end
+        if not localTbl then return end
         KARDS.BattleState.frontlineLayout = layout
-        KARDS.BattleState.frontlineOwnerSlot = ownerSlot
+        if ownerSlot == 1 or ownerSlot == 2 then -- 越界载荷不污染归属槽（默认 0 无主）
+            KARDS.BattleState.frontlineOwnerSlot = ownerSlot
+        end
         local row = 0 -- 前线行
         for e, idx in pairs(layout) do
-            if IsValid(e) and e ~= KARDS.BattleState.pendingPlayEnt
-                and not KARDS.AnimPlayer:Active(e, "dragFlight")
-                and not (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == e) and not InHQRevealAnim(e) then
+            if IsValid(e) then
                 local to = FieldPos(layout, e, idx, row)
+                -- 加入阵线落点登记（2026-09-26 缺口 F）：加入动画广播比布局广播晚
+                -- 0.1 秒（服务端次序，实体需先传播），Target 据此在收到加入动画时立即接管
+                KARDS.JoinAnim.layoutTo[e] = to
+                if KARDS.JoinAnim:Target(e, to) then
+                    -- 加入动画已接管（自屏幕右外侧滑入落点），跳过常规复位
+                elseif e ~= KARDS.BattleState.pendingPlayEnt
+                    and not KARDS.AnimPlayer:Active(e, DeployAnimGroup)
+                    and not KARDS.AnimPlayer:Active(e, "joinField") -- 加入动画中：落位由其专用动画接管（缺口 F）
+                    and not KARDS.AnimPlayer:Active(e, "unitLunge") -- 攻击冲刺中：位移由其专用动画接管（缺口 G）
+                    -- 2026-10-03 联机排查 NEW-7/NEW-8：守卫改按动画组查询。原 active 标志
+                    -- 只在 onComplete 清除，动画被顶替时永不复位，该卡被布局永久跳过
+                    and not KARDS.AnimPlayer:Active(e, "unitConvert") -- 转换交接动画中：落位由其专用动画接管（缺口 J）
+                    and not KARDS.AnimPlayer:Active(e, "controlAnim") -- 控制动画中：落位由其专用动画接管（2026-08-16）
+                    and not (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == e)
+                    and not InHQRevealAnim(e) then
+                    local existing = KARDS.AnimPlayer:Get(e)
+                    if not existing or not existing.toPos
+                        or (existing.toPos - to):LengthSqr() > 0.01 then
+                        -- frontlineMove 组（2026-08-12，阶段五 P7 组名英文化）：与前线
+                        -- 标识同组并发——单位移动至前线时单位与前线标识同时移动
+                        -- （前线标识动画见 cl_battle_frontline_symbol.lua）
+                        KARDS.AnimPlayer:Play(e, {
+                            { t = 0 },
+                            { t = HandSlotReposDur, pos = to, easing = "cos" },
+                        }, { group = "frontlineMove" })
+                    end
+                end
+            end
+        end
+        return
+    end
+    -- slot 越界（合法仅 1/2，0 为上方前线变体）：无法解析后续布局，直接丢弃
+    if slot ~= 1 and slot ~= 2 then return end
+    local n = net.ReadUInt(8)
+    local layout = {}
+    for _ = 1, n do
+        local idx = net.ReadUInt(8)
+        local e = net.ReadEntity()
+        if IsValid(e) then layout[e] = idx end
+    end
+    if not localTbl then return end
+    KARDS.BattleState.fieldLayouts[slot] = layout
+    local row = (slot == 1) and 1 or -1
+    for e, idx in pairs(layout) do
+        if IsValid(e) then
+            local to = FieldPos(layout, e, idx, row)
+            -- 加入阵线落点登记（2026-09-26 缺口 F，见前线变体同段说明）
+            KARDS.JoinAnim.layoutTo[e] = to
+            if KARDS.JoinAnim:Target(e, to) then
+                -- 加入动画已接管，跳过常规复位
+            elseif e ~= KARDS.BattleState.pendingPlayEnt
+                and not KARDS.AnimPlayer:Active(e, DeployAnimGroup)
+                and not KARDS.AnimPlayer:Active(e, "joinField") -- 加入动画中：落位由其专用动画接管（缺口 F）
+                and not KARDS.AnimPlayer:Active(e, "unitLunge") -- 攻击冲刺中：位移由其专用动画接管（缺口 G）
+                -- 2026-10-03 联机排查 NEW-7/NEW-8：守卫改按动画组查询（同前线变体）
+                and not KARDS.AnimPlayer:Active(e, "unitConvert") -- 转换交接动画中：落位由其专用动画接管（缺口 J）
+                and not KARDS.AnimPlayer:Active(e, "controlAnim") -- 控制动画中：落位由其专用动画接管（2026-08-16）
+                and not (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == e)
+                and not InHQRevealAnim(e) then
                 local existing = KARDS.AnimPlayer:Get(e)
                 if not existing or not existing.toPos
                     or (existing.toPos - to):LengthSqr() > 0.01 then
@@ -3594,32 +3542,96 @@ net.Receive("KardsFieldLayout", function()
                 end
             end
         end
-        return
     end
-    local n = net.ReadUInt(8)
-    local layout = {}
-    for _ = 1, n do
-        local idx = net.ReadUInt(8)
-        local e = net.ReadEntity()
-        if IsValid(e) then layout[e] = idx end
+end)
+
+-- ====================================================================
+-- 控制/解除控制动画（2026-08-16 用户规格，测试版实现）
+-- ====================================================================
+-- 服务端 SimControl/SimUncontrol 成功 → BroadcastControlAnim 广播本消息（被控单位
+-- 实体 + 是否解除 + 落位阵线/槽位），随后广播布局（KardsFieldLayout）。动画与
+-- CardPlayedDeploy 同款 AnimPlayer 关键帧驱动：
+--   控制：0.7s 移到牌桌中心（z 上升）→ 中心停留播放控制图标动画（词条图标闪烁，
+--   见 cl_battle_keyword_icons.lua TriggerControlFlash）→ 落位（前线第 3 位置 /
+--   新控制者支援阵线右侧——落位目标由随后到达的布局广播计算 FieldPos）。
+--   解除控制：同样飞向中心停留后落位回原阵线位置（返回手牌路径服务端已跳过，
+--   走既有 KardsReturnToHand 动画）。
+-- 动画期间布局复位跳过该卡（2026-10-03 联机排查 NEW-7 起改按动画组查询，见上方
+-- KardsFieldLayout 判定的 AnimPlayer:Active(e, "controlAnim")，原 active 标志表已移除）；
+-- noQueue 免排队：不阻塞其它卡（fieldRepos/frontlineMove）复位动画并发播放。
+KARDS.ControlAnim = KARDS.ControlAnim or {}
+KARDS.ControlAnim.FlyDur = 0.7   -- 0.7s 移向牌桌中心
+KARDS.ControlAnim.HoldDur = 0.4  -- 中心停留（控制图标动画）
+KARDS.ControlAnim.LandDur = 0.4  -- 落位动画
+KARDS.ControlAnim.LiftZ = 7      -- z 上升量（桌面 CardZ 之上）
+
+net.Receive("KardsControlAnim", function()
+    local tableEnt = net.ReadEntity() -- 牌桌（2026-09-13 规划 S2：跨桌过滤）
+    local cardEnt = net.ReadEntity()
+    local isUncontrol = net.ReadBool()
+    local landingFront = net.ReadUInt(8) == 1 -- 1=前线 0=支援
+    local landingSlot = net.ReadUInt(8)
+    local fromSlot = net.ReadUInt(8) -- 观察者 yaw 旋转起点归属（控制=原方 / 解除=控制者）
+    local toSlot = net.ReadUInt(8)   -- 旋转终点归属（控制=新控制者 / 解除=原方）
+    if not IsValid(cardEnt) then return end
+    -- 落位目标从本地单例布局表（关注桌）查询，跨桌卡片查不到会滞留中心；跨桌广播
+    -- 直接跳过（实体落位由 KardsFieldLayout 复位动画覆盖）
+    if not KARDS.BattleState:IsLocalTable(tableEnt) then return end
+    -- 观察者视角（LocalView=nil）：第一段飞向中心（z+）期间 yaw 从原归属方旋转到新归属方
+    --（控制）/ 旋转回原方（解除）；在场玩家视角（LocalView=1/2）：yaw 恒朝向自身
+    --（180/0，与归属无关）不旋转——动画期间 Think 跳过（active），动画结束后按新归属接管。
+    local fromYaw, toYaw
+    local obs = KARDS.Perspective and not KARDS.Perspective.LocalView
+    if obs and KARDS.Perspective.FacingYaw and fromSlot ~= toSlot then
+        fromYaw = KARDS.Perspective:FacingYaw(nil, fromSlot)
+        toYaw = KARDS.Perspective:FacingYaw(nil, toSlot)
     end
-    KARDS.BattleState.fieldLayouts[slot] = layout
-    local row = (slot == 1) and 1 or -1
-    for e, idx in pairs(layout) do
-        if IsValid(e) and e ~= KARDS.BattleState.pendingPlayEnt
-            and not KARDS.AnimPlayer:Active(e, "dragFlight")
-            and not (KARDS.BattleState.dragCard and KARDS.BattleState.dragCard.ent == e) and not InHQRevealAnim(e) then
-            local to = FieldPos(layout, e, idx, row)
-            local existing = KARDS.AnimPlayer:Get(e)
-            if not existing or not existing.toPos
-                or (existing.toPos - to):LengthSqr() > 0.01 then
-                KARDS.AnimPlayer:Play(e, {
-                    { t = 0 },
-                    { t = HandSlotReposDur, pos = to, easing = "cos" },
-                }, { group = "fieldRepos" })
+    -- 落位目标：控制 → 前线第 3 / 支援阵线右侧；解除 → 原阵线位置。均由随后到达的
+    -- 布局广播（KardsFieldLayout）重建布局表，落位时（中心停留结束）已就绪，按实体
+    -- 所在布局表 FieldPos 计算；找不到（异常）则原地收尾（不落位）。
+    local function landTarget(ent)
+        local BS = KARDS.BattleState
+        local idx = BS.frontlineLayout and BS.frontlineLayout[ent]
+        if idx then return FieldPos(BS.frontlineLayout, ent, idx, 0) end
+        for s = 1, 2 do
+            local layout = BS.fieldLayouts and BS.fieldLayouts[s]
+            if layout and layout[ent] then
+                return FieldPos(layout, ent, layout[ent], (s == 1) and 1 or -1)
             end
         end
+        return nil
     end
+    local center = Vector(KARDS.Animation.Board2D.ColX[3], KARDS.Animation.Board2D.RowY[0],
+        KARDS.Animation.Board2D.CardZ + KARDS.ControlAnim.LiftZ)
+    -- 观察者旋转帧：首帧显式原方 yaw（动画起始即原归属朝向），飞向中心过程
+    -- cos 缓动旋转到新方 yaw，中心停留保持新方（toYaw 为 nil 时省略 ang 轴 →
+    -- 仅位置动画，yaw 保持动画开始时的当前值——在场玩家朝向自身）
+    KARDS.AnimPlayer:Play(cardEnt, {
+        { t = 0, ang = fromYaw and Angle(0, fromYaw, 0) or nil },
+        { t = KARDS.ControlAnim.FlyDur, pos = center, ang = toYaw and Angle(0, toYaw, 0) or nil, easing = "cos", event = "center" },
+        { t = KARDS.ControlAnim.FlyDur + KARDS.ControlAnim.HoldDur, pos = center, ang = toYaw and Angle(0, toYaw, 0) or nil },
+    }, {
+        group = "controlAnim",
+        noQueue = true, -- 免排队：不阻塞其它卡布局复位动画
+        onKeyframe = function(ent, name)
+            -- 到达中心：播放控制图标动画（图标闪烁）；解除时图标正在消失，不播
+            if not isUncontrol and name == "center" and KARDS.KeywordIcons
+                and KARDS.KeywordIcons.TriggerControlFlash then
+                KARDS.KeywordIcons.TriggerControlFlash(ent)
+            end
+        end,
+        onComplete = function(ent)
+            local to = landTarget(ent)
+            if not to then return end
+            KARDS.AnimPlayer:Play(ent, {
+                { t = 0 },
+                { t = KARDS.ControlAnim.LandDur, pos = to, ang = toYaw and Angle(0, toYaw, 0) or nil, easing = "cos" },
+            }, {
+                group = "controlAnim",
+                noQueue = true,
+            })
+        end,
+    })
 end)
 
 -- 打出被拒（服务端校验失败：非当前回合 / 指挥点不足 / 阵线已满等）：渐变退回手牌
@@ -3628,6 +3640,8 @@ net.Receive("KardsPlayCardRejected", function()
     local slot = net.ReadUInt(8)
     local cardEnt = net.ReadEntity()
     if not IsValid(cardEnt) then return end
+    -- 2026-10-03 联机排查 NEW-11：槽位门控（同族接收器均有），防越界 slot 索引手牌表报错
+    if slot ~= 1 and slot ~= 2 then return end
     if KARDS.BattleState.pendingPlayEnt == cardEnt then KARDS.BattleState.pendingPlayEnt = nil end
     local idx = KARDS.BattleState.realHandCards[slot][cardEnt]
     if idx then
@@ -3635,17 +3649,20 @@ net.Receive("KardsPlayCardRejected", function()
         for e in pairs(KARDS.BattleState.realHandCards[slot]) do
             if IsValid(e) then n = n + 1 end
         end
-        local handPos = HandFanPos(slot, idx, n)
+        local handPos, handAng = HandFanPos(slot, idx, n)
+        -- 角度一并恢复扇形位（2026-08-12：远程拖拽同步后对方/观战端卡保持平躺角度，
+        -- 只动画位置会残留平躺；本方端动画期间 KardsRealHandFacing 跳过、结束才归位，
+        -- 加角度关键帧平滑过渡且两端一致）
         KARDS.AnimPlayer:Play(cardEnt, {
-            { t = 0 },
-            { t = HandSlotReturnDur, pos = handPos, easing = "cos" },
+            { t = 0, ang = cardEnt:GetLocalAngles() },
+            { t = HandSlotReturnDur, pos = handPos, ang = handAng, easing = "cos" },
         }, { group = "dragReturn" })
     end
 end)
 
 -- ====================================================================
--- 手牌卡牌花费文字颜色（2026-08-11 拆分 B1：KardsHandCostColorThink 钩子与颜色
--- 常量/目标色表已迁移至 cl_battle_hud.lua）
+-- 手牌/单位花费文字颜色（2026-08-11 拆分 B1：花费颜色 Think 已迁移至
+-- cl_battle_hud.lua；2026-08-15 C8 合并为 KardsCostColorThink）
 -- ====================================================================
 
 -- ====================================================================
@@ -3664,67 +3681,34 @@ end)
 -- 未来部署卡实体设置 Kards_IsFieldCard + Kards_DeckSlot 后自动跟随本驱动。
 -- ====================================================================
 
-hook.Add("Think", "KardsFieldFacing", function()
-    if not KARDS.Perspective or not KARDS.Perspective.IsFieldCard then return end
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-        -- 待打出确认的卡跳过（确认前冻结，避免 NW 先于 KardsCardPlayed 到达时被提前
-        -- 驱动到战场朝向，与拖拽收尾动画冲突；确认后由飞行动画收尾、本驱动接管）
-        if IsValid(ent) and KARDS.Perspective:IsFieldCard(ent) and ent ~= KARDS.BattleState.pendingPlayEnt then
-            if ent:GetNWString("Kards_DeckRole", "") == "hq" then
-                -- 总部：仅已离开卡组槽（battleHQLeft）且不在动画中时由本模块接管朝向
-                if battleHQLeft[ent] and not InHQRevealAnim(ent) then
-                    KARDS.Perspective:ApplyFacing(ent)
-                end
-            else
-                KARDS.Perspective:ApplyFacing(ent)
-            end
-        end
-    end
-end)
-
-
--- ====================================================================
--- 手牌槽卡三视角朝向驱动（见 cl_perspective.lua ApplyHandFacing）：
---   P1/P2 视角（进入牌桌，LocalView=1/2）：本方手牌保持扇形姿态（正面朝上，
---   看到 front"正面"）/ 对方手牌绕卡长轴翻转 180°（背面朝上，看到 back 卡背）
---   ——各视角只看得到自己的牌面；
---   观战视角（LocalView=nil）：使用独立于 P1/P2 视角的扇形分布计算方法（最早
---   方法：135° 倾斜基准 + ψ 绕面法线、ψ 取负，保持最早"手拿手牌"观感），角度
---   由服务端独立计算写入 Kards_LegacyFanAng NW，再绕卡长轴翻转 180° 使正面
---   （front）朝上（观战看到的是卡正面空白占位，而非背面纹理）。
--- 扇形基准角度来自服务端 Kards_HandBaseAng NW（CreateHandCardSlots 写入），
--- 归属槽位来自 Kards_DeckSlot NW（SpawnHandSlotCard 写入）。
--- 抽牌动画的临时卡（battleDeckDrawn）非手牌槽卡（无 Kards_IsHandSlotCard），
--- 不在此驱动，角度由抽牌动画自行控制；手牌槽左移动画（deckDrawShift）只改
--- 位置 x、不动角度与 z，与本驱动无冲突。
--- 悬停提升（仅 P1/P2 视角、本方手牌）：鼠标悬停某张本方手牌时，该卡沿自身
--- y+ 轴（实体局部 +y，随当前朝向变化）在 HandSlotHoverDur 秒内移动
--- HandSlotHoverLift 到满量，离开同样时长回落（见本钩子手牌悬停检测）。
--- ====================================================================
-
-hook.Add("Think", "KardsHandSlotFacing", function()
-    if not KARDS.Perspective or not KARDS.Perspective.IsHandSlotCard then return end
-    -- 手牌 z 视角修正：P1/P2 视角（LocalView=1/2）用服务端基础 z（Kards_HandSlotBasePos）；
-    -- 观察者视角（LocalView=nil，含未进入牌桌 / 未开始对战）还原到更低基线
-    --（基础 z − HandSlotZViewOffset），不跟随 P1/P2 的 z 抬升。只改 z、保留 x/y
-    --（不干扰抽牌左移动画）。
-    local zOff = (KARDS.Perspective.LocalView == 1 or KARDS.Perspective.LocalView == 2)
-        and 0 or -HandSlotZViewOffset
+-- 战场实体统一驱动（2026-08-15 阶段四 C4 合并）：原 KardsFieldFacing /
+-- KardsHandSlotFacing / KardsBattleDeckStackVisible 三个每帧全量遍历
+-- ents.FindByClass("sent_pmx_static_imported") 的 Think 合并——共享一次实体遍历
+-- 结果，按原注册顺序分派（卡堆可见 → 战场朝向 → 手牌槽朝向）。行为等价：原三
+-- 钩子每帧独立全量遍历，同帧内实体列表一致；各阶段判定只依赖 NW / 状态表
+-- （ApplyFacing / ApplyHandFacing / SetNoDraw 不改变他卡判定输入），逐实体顺序与
+-- 分段顺序等价；守卫条件分别保留（卡堆可见仅需 inTable；朝向需 Perspective）。
+hook.Add("Think", "KardsTableEntitiesThink", function()
+    local list = ents.FindByClass("sent_pmx_static_imported")
+    local inTable = KARDS.BattleState.inTable
+    local persp = KARDS.Perspective
+    local hasFacing = persp and persp.IsFieldCard and persp.IsHandSlotCard
+    -- 手牌 z 视角修正（原 KardsHandSlotFacing 帧头）：P1/P2 视角（LocalView=1/2）用
+    -- 服务端基础 z（Kards_HandSlotBasePos）；观察者视角（LocalView=nil，含未进入牌桌 /
+    -- 未开始对战）还原到更低基线（基础 z − HandSlotZViewOffset），不跟随 P1/P2 的 z
+    -- 抬升。只改 z、保留 x/y（不干扰抽牌左移动画）。
+    local view = hasFacing and persp.LocalView or nil
+    local zOff = (view == 1 or view == 2) and 0 or -HandSlotZViewOffset
     -- 悬停检测（仅 P1/P2 视角 + 本方手牌）：相机射线到各手牌中心的最近距离判定
     --（同卡堆悬停 KardsDeckHoverDetect 的 KARDS.RayPointDistSqr 方法）
-    local view = KARDS.Perspective.LocalView
     local hoveredEnt = nil
     if view == 1 or view == 2 then
         local ply = LocalPlayer()
         if IsValid(ply) and not gui.IsConsoleVisible() and not gui.IsGameUIVisible() then
-            local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-            local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-            if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-                dir = (KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-            end
+            local pos, dir = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
             local bestD = HandSlotHoverRadius * HandSlotHoverRadius
-            for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-                if KARDS.Perspective:IsHandSlotCard(ent)
+            for _, ent in ipairs(list) do
+                if persp:IsHandSlotCard(ent)
                     and ent:GetNWInt("Kards_DeckSlot", 0) == view then
                     local d = KARDS.RayPointDistSqr(pos, dir, ent:GetPos())
                     if d < bestD then
@@ -3734,47 +3718,64 @@ hook.Add("Think", "KardsHandSlotFacing", function()
             end
         end
     end
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-        if KARDS.Perspective:IsHandSlotCard(ent) then
-            KARDS.Perspective:ApplyHandFacing(ent)
-            local v = ent:GetNWVector("Kards_HandSlotBasePos")
-            if v then
-                local st = handHoverCards[ent]
-                if st then
-                    -- 悬停提升中（含回落）：位置 = 悬停起始基线 st.base（冻结，避免
-                    -- 逐帧叠加造成无上限移动）+ 沿自身 y+ 轴提升量
-                    st.hovered = (ent == hoveredEnt)
-                    local target = st.hovered and 1 or 0
-                    if st.cur < target then
-                        st.cur = math.min(st.cur + FrameTime() / HandSlotHoverDur, 1)
-                    elseif st.cur > target then
-                        st.cur = math.max(st.cur - FrameTime() / HandSlotHoverDur, 0)
+    for _, ent in ipairs(list) do
+        -- 卡组槽堆叠可见性（原 KardsBattleDeckStackVisible）：仅兜底保证卡组槽卡
+        -- （含抽牌临时卡）可见。卡堆档位实体（Kards_IsBattleDeckPile）的可见性由
+        -- 服务端 SetDeckPileTier 驱动、总部（Kards_DeckRole="hq"）的隐藏由服务端
+        -- SetNoDraw(true) 驱动（动画时 StartHQReveal 显式 SetNoDraw(false)），均不在
+        -- 此处处理——若此处对总部 SetNoDraw(false)，会把服务端隐藏的总部提前显示。
+        -- 被抽的卡（battleDeckDrawn）与已离开卡组槽的总部（battleHQLeft）不在此处
+        -- 设置：其显示/朝向由抽牌动画 / 总部对局开始动画驱动接管。
+        -- 2026-10-03 联机排查 NEW-2：补「任一动画在播即让位」（洗入载体动画收尾隐藏后
+        -- 原会被下方兜底复活；battleDeckDrawn / battleHQLeft 两个豁免名单保留作第二层）
+        if inTable and IsValid(ent) and not battleDeckDrawn[ent] and not battleHQLeft[ent]
+            and not KARDS.AnimPlayer:Active(ent)
+            and ent:GetNWString("Kards_CardRole", "") == "battledeck" then
+            ent:SetNoDraw(false)
+        end
+        if hasFacing and IsValid(ent) then
+            -- 战场朝向（原 KardsFieldFacing）：待打出确认的卡跳过（确认前冻结，避免
+            -- NW 先于 KardsCardPlayed 到达时被提前驱动到战场朝向，与拖拽收尾动画冲突；
+            -- 确认后由飞行动画收尾、本驱动接管）；控制/解除控制动画中的卡跳过
+            --（2026-08-16：yaw 由控制动画驱动——观察者第一段飞向中心期间旋转到新归属
+            -- 方、在场玩家 yaw 恒朝向自身，动画结束后本驱动按新归属 NW 接管）
+            if persp:IsFieldCard(ent) and ent ~= KARDS.BattleState.pendingPlayEnt
+                -- 2026-10-03 联机排查 NEW-7：改按动画组查询（active 标志被顶替后不复位）
+                and not KARDS.AnimPlayer:Active(ent, "controlAnim") then
+                if ent:GetNWString("Kards_DeckRole", "") == "hq" then
+                    -- 总部：仅已离开卡组槽（battleHQLeft）且不在动画中时由本模块接管朝向
+                    if battleHQLeft[ent] and not InHQRevealAnim(ent) then
+                        persp:ApplyFacing(ent)
                     end
-                    if st.cur > 0 then
-                        -- 自身 y+ 轴方向（LocalToWorld 换算，随当前朝向变化，扇形各卡
-                        -- 方向略异）→ 父局部方向（SetLocalPos 使用父局部坐标；GMod 无
-                        -- WorldToLocalVector，用两次 WorldToLocal 点变换求差）
-                        local yp = ent:LocalToWorld(Vector(0, 1, 0)) - ent:GetPos()
-                        local parent = ent:GetParent()
-                        if IsValid(parent) then
-                            yp = parent:WorldToLocal(ent:LocalToWorld(Vector(0, 1, 0)))
-                                - parent:WorldToLocal(ent:GetPos())
-                        end
-                        -- 沿自身 y+ 轴方向移动（yp 为局部 +y；2026-08-10 反向后沿 +y 提升）
-                        ent:SetLocalPos(st.base + yp * (st.cur * HandSlotHoverLift))
-                    else
-                        handHoverCards[ent] = nil -- 已回落，交还常规位置修正
-                    end
-                elseif ent == hoveredEnt then
-                    -- 新悬停：记录当前实际位置为基线（含视角 z 修正与抽牌左移）
-                    handHoverCards[ent] = { hovered = true, cur = 0, base = ent:GetLocalPos() }
                 else
-                    -- 常规位置修正：z 按视角（P1/P2 服务端 z / 观战还原基线），
-                    -- 保留 x/y（不干扰抽牌左移动画）
-                    local pos = ent:GetLocalPos()
-                    local wantZ = v.z + zOff
-                    if math.abs(pos.z - wantZ) > 0.01 then
-                        ent:SetLocalPos(Vector(pos.x, pos.y, wantZ))
+                    persp:ApplyFacing(ent)
+                end
+            end
+            -- 手牌槽朝向（原 KardsHandSlotFacing）：扇形基准角度来自服务端
+            -- Kards_HandBaseAng NW（CreateHandCardSlots 写入），归属槽位来自
+            -- Kards_DeckSlot NW（SpawnHandSlotCard 写入）。抽牌动画的临时卡
+            -- （battleDeckDrawn）非手牌槽卡（无 Kards_IsHandSlotCard），不在此驱动，
+            -- 角度由抽牌动画自行控制；手牌槽左移动画（deckDrawShift）只改位置 x、
+            -- 不动角度与 z，与本驱动无冲突。悬停提升（仅 P1/P2 视角、本方手牌）：
+            -- 鼠标悬停某张本方手牌时，该卡沿自身 y+ 轴（实体局部 +y，随当前朝向
+            -- 变化）在 HandSlotHoverDur 秒内移动 HandSlotHoverLift 到满量，离开同样
+            -- 时长回落（共享状态机 KARDS.UpdateHandHover，2026-08-15 C9 收敛）。
+            if persp:IsHandSlotCard(ent) then
+                persp:ApplyHandFacing(ent)
+                local v = ent:GetNWVector("Kards_HandSlotBasePos")
+                if v then
+                    -- 悬停提升状态机：提升中位置 = 基线 st.base 冻结 + 沿自身 y+ 轴
+                    -- 提升量，避免逐帧叠加无上限；新悬停记录实际位置为基线（含视角
+                    -- z 修正与抽牌左移）；返回 true = 状态机已接管位置，跳过常规修正
+                    local hovered = KARDS.UpdateHandHover(ent, ent == hoveredEnt, "y")
+                    if not hovered then
+                        -- 常规位置修正：z 按视角（P1/P2 服务端 z / 观战还原基线），
+                        -- 保留 x/y（不干扰抽牌左移动画）
+                        local pos = ent:GetLocalPos()
+                        local wantZ = v.z + zOff
+                        if math.abs(pos.z - wantZ) > 0.01 then
+                            ent:SetLocalPos(Vector(pos.x, pos.y, wantZ))
+                        end
                     end
                 end
             end
@@ -3791,3 +3792,7 @@ end)
 -- 指挥点 HUD 面板绘制（2026-08-11 拆分 B1：HUDPaint 钩子 KardsCommandPointsHUD 与
 -- CPCycleBand 数字带已迁移至 cl_battle_command_points.lua）
 -- ====================================================================
+
+-- 指向机制（2026-08-15 C1 拆分：GetCardEffectNodeInfo / GetPointingTarget /
+-- PointingFailReason / KardsPointingDraw 绘制已迁移至 cl_battle_pointing.lua）
+include("cl_battle_pointing.lua")

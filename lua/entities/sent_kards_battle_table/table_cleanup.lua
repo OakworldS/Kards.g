@@ -39,11 +39,43 @@ end
 -- ====================================================================
 
 --[[
+    按牌桌清理全部共享层实例（2026-08-18 规划 D8/D9）：OnRemove 与 EntityRemoved
+    兜底共用，幂等（各实例键不存在时安全置空）。此前 OnRemove 仅调 VarLib.Destroy，
+    数据层实例 / 渲染层 CardEnts / EffectRegistry 订阅闭包按 tableID 键残留——卡牌
+    对象被 CardEnts 强引用阻止 GC、订阅闭包强引用牌桌实体、TableID 键随 EntIndex
+    递增永不回收 → 长期运行表持续增长。
+]]
+function ENT:DestroyTableState()
+    local tid = self.TableID
+    if not tid then return end
+    self:ClearTurnTimer() -- 回合超时定时器一并清理（防实体销毁后定时器残留回调）
+    -- 数据层按桌状态统一收口（2026-09-13 规划 S3/R6）：VarLib / EffectRegistry /
+    -- Deck / Battlefield / BattlefieldCenter / CommandPoints / TickLog（含激活视图）/
+    -- KeywordStates·TurnNumbers·EnteredTurns·CurTurnPlayer·PincerPartners·六张回调表 /
+    -- EngineHooks / NetSync，清单见 sh_battle_stub.lua ClearTableState
+    if KARDS.Battle and KARDS.Battle.ClearTableState then
+        KARDS.Battle:ClearTableState(tid)
+    end
+    -- 渲染层实例清理为实体层专属，数据层总入口不覆盖
+    if KARDS.BattleRender and KARDS.BattleRender.DestroyTable then
+        KARDS.BattleRender:DestroyTable(tid)
+    end
+    -- 释放全服正式对战锁（规划 S1：牌桌销毁兜底，正常结束/人去桌空路径已释放，幂等）
+    if KARDS.FormalBattleLock then KARDS.FormalBattleLock.Release(self) end
+    self.TableID = nil
+end
+
+--[[
     实体销毁清理（方案 A，规划 16.5）：经会话状态机强制退出全部槽内玩家
     （恢复移动/无敌/武器/位置/视角 + 清理卡组槽，幂等）、删除牌桌全局变量库（幂等），
     并透传前置实体清理。
 ]]
 function ENT:OnRemove()
+    -- 牌桌销毁：战斗 BGM 立即停止（2026-08-15 用户规格「对局途中牌桌被销毁为立即
+    -- 结束」；对局结束正常退出为淡出，见 cl_init.lua KardsTableExited）
+    if CLIENT and KARDS.StopBattleBGM then
+        KARDS.StopBattleBGM()
+    end
     -- 先解冻并恢复所有槽内玩家（会话状态机 ForceExitAll：恢复 + 广播 + 按需熄灭灯具）
     if self._kardsSession then
         self._kardsSession:ForceExitAll()
@@ -73,9 +105,8 @@ function ENT:OnRemove()
         self._kardsLight:Remove()
         self._kardsLight = nil
     end
-    if self.TableID then
-        KARDS.VarLib.Destroy(self.TableID)
-    end
+    -- 共享层实例清理（2026-08-18 规划 D8/D9，见 DestroyTableState）
+    self:DestroyTableState()
     if self.BaseClass and self.BaseClass.OnRemove then
         self.BaseClass.OnRemove(self)
     end
@@ -102,7 +133,7 @@ if SERVER then
             end
         end
         if ent.TableID then
-            KARDS.VarLib.Destroy(ent.TableID)
+            ent:DestroyTableState() -- 共享层实例清理（2026-08-18 规划 D8/D9，幂等）
         end
     end)
 end

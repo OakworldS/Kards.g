@@ -1044,7 +1044,8 @@ function INE:RegisterTemplates()
     return registered
 end
 
--- 手动重载节点模板的控制台命令（修改 lua/node_templates/*.json 后无需重启游戏）
+-- 手动重载节点模板的控制台命令（修改 data_static/kards/node_templates/ 模板或本地
+-- data/kards/node_templates/ 副本后无需重启游戏；2026-08-14 模板源已由 lua/node_templates/ 移入 data_static）
 concommand.Add("kards_reload_templates", function()
     local INE = KARDS.CardEditor.IndependentNodeEditor
     if not INE then
@@ -1183,7 +1184,8 @@ function INE:CreateNewNodeInstance(nodeName, editor, x, y)
         isInvalid = false,                                -- 是否标记为无效（不属于当前面板）
         isUnregistered = false,                           -- 是否节点类型未注册
         editor = editor,                                   -- 所属编辑器引用
-        hasSecondOutput = template.hasSecondOutput or false -- 是否有第二个输出点（双分支：满足/不满足，来自模板字段）
+        hasSecondOutput = template.hasSecondOutput or false, -- 是否有第二个输出点（双分支：满足/不满足，来自模板字段）
+        outputLabels = template.outputLabels                -- 双输出端口显示标签（可选；缺省 {"满足","不满足"}，「抉择」为 {"效果一","效果二"}）
     }
     
     -- 兼容旧式 config 末尾 "2" 标记：无显式 hasSecondOutput 字段时，config 末尾为 "2" 也视为双分支输出点
@@ -1558,6 +1560,11 @@ function INE:AddHooks()
     
     -- 注册鼠标滚轮捕获钩子（使用 CreateMove 因为 WasMousePressed 仅在 Move 钩子中生效）
     hook.Add("CreateMove", "INE_WheelCapture", function(cmd)
+        -- BGM 菜单（曲目列表/展开面板）打开时滚轮由菜单消费：跳过 INE 滚轮标记，
+        -- 防止滚轮穿透到 INE 面板导致误缩放（2026-08-14 用户反馈「滚轮会穿透到INE面板使得INE面板也随滚轮缩放」）
+        if IsValid(KARDS.CardEditor.Canvas.BGMTrackListMask) or IsValid(KARDS.CardEditor.Canvas.BGMMenuMask) then
+            return
+        end
         if input.WasMousePressed(MOUSE_WHEEL_UP) then
             INE._wheelZoomIn = true
             INE._filterWheelUp = true
@@ -1642,10 +1649,16 @@ function INE:CreateStartNodesForEditor(editor)
     
     for idx, title in ipairs(startNodeDefs) do
         -- 钳击及钳击对象开始点仅在卡牌选中"钳击"词条时显示
+        -- "升级"开始点仅在卡牌选中"可升为老兵"词条时显示
         local skipNode = false
         if title == "钳击" or title == "钳击对象" then
             local keywords = KARDS.CardEditor.Canvas.CardAppearance.keywords or {}
             if not table.HasValue(keywords, "pincer") then
+                skipNode = true
+            end
+        elseif title == "升级" then
+            local keywords = KARDS.CardEditor.Canvas.CardAppearance.keywords or {}
+            if not table.HasValue(keywords, "can_elevate_to_veteran") then
                 skipNode = true
             end
         end
@@ -1722,6 +1735,107 @@ function INE:CreateStartNodesForEditor(editor)
                 })
             end
         end
+    end
+end
+
+--[[
+    按当前卡牌关键词对指定编辑器执行词条开始点增量刷新。
+    与 CreateStartNodesForEditor 的过滤规则一致，但只增删与关键词相关的开始点
+    （钳击/钳击对象/升级），不动基础开始点（抽取/部署/在场/阵亡/移除/弃牌），
+    保留其节点 ID 与既有连线，避免在词条编辑区勾选词条时破坏已搭建的效果逻辑。
+
+    @param  editor  {table} 编辑器实例对象
+]]
+function INE:RefreshKeywordStartNodes(editor)
+    if not editor then return end
+
+    local keywords = KARDS.CardEditor.Canvas.CardAppearance.keywords or {}
+    local startNodeDefs = INE.StartNodeDefinitions[editor.editorMode or "unit"] or INE.StartNodeDefinitions.unit
+    local spacing = 120
+
+    -- 计算各标题当前是否应存在（与 CreateStartNodesForEditor 的过滤规则一致）
+    local shouldExist = {}
+    for idx, title in ipairs(startNodeDefs) do
+        local skip = false
+        if title == "钳击" or title == "钳击对象" then
+            skip = not table.HasValue(keywords, "pincer")
+        elseif title == "升级" then
+            skip = not table.HasValue(keywords, "can_elevate_to_veteran")
+        end
+        shouldExist[idx] = not skip
+    end
+
+    local changed = false
+
+    -- 1) 移除不应再存在的词条开始点（连同指向/来自它的连线）
+    local i = 1
+    while i <= #editor.nodes do
+        local n = editor.nodes[i]
+        local idx = nil
+        if n.isStartNode and n.data and n.data.title then
+            for k, title in ipairs(startNodeDefs) do
+                if title == n.data.title then idx = k; break end
+            end
+        end
+        if idx and not shouldExist[idx] then
+            for j = #editor.connections, 1, -1 do
+                local c = editor.connections[j]
+                if c.fromNode == n.id or c.toNode == n.id then
+                    table.remove(editor.connections, j)
+                end
+            end
+            for j = #editor.dataConnections, 1, -1 do
+                local c = editor.dataConnections[j]
+                if c.fromNode == n.id or c.toNode == n.id then
+                    table.remove(editor.dataConnections, j)
+                end
+            end
+            table.remove(editor.nodes, i)
+            changed = true
+        else
+            i = i + 1
+        end
+    end
+
+    -- 2) 补建缺失的词条开始点（位置与 CreateStartNodesForEditor 相同）
+    for idx, title in ipairs(startNodeDefs) do
+        if shouldExist[idx] then
+            local exists = false
+            for _, n in ipairs(editor.nodes) do
+                if n.isStartNode and n.data and n.data.title == title then
+                    exists = true
+                    break
+                end
+            end
+            if not exists then
+                local nodeName = "start_point"
+                if title == "钳击对象" then nodeName = "data_start_point" end
+                local node = INE:CreateNewNodeInstance(nodeName, editor, 0, (idx - 1) * spacing)
+                node.data.title = title
+                node.canDelete = false
+                if title == "钳击对象" then
+                    node.availableOutputTypes = node.availableOutputTypes or {}
+                    table.insert(node.availableOutputTypes, {
+                        type = "e",
+                        name = "钳击对象",
+                        label = "钳击对象"
+                    })
+                    node.selectedOutputTypes = node.selectedOutputTypes or {}
+                    table.insert(node.selectedOutputTypes, {
+                        type = "e",
+                        name = "钳击对象",
+                        label = "钳击对象"
+                    })
+                end
+                table.insert(editor.nodes, node)
+                changed = true
+            end
+        end
+    end
+
+    -- 有增删时重新适配视图，保证新增开始点可见
+    if changed then
+        INE:FitAllNodes(editor)
     end
 end
 

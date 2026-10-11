@@ -13,7 +13,6 @@
     钩子类型：
       TYPE_EFFECT  -- 效果钩子：事件生效前调用，可拦截/替换事件（Hx 权杖号）
       TYPE_MODIFY  -- 修饰钩子：数值计算时调用，可偏移数值（海鹰：敌方伤害 -1）
-      TYPE_REPLACE -- 替换钩子：完全替换默认处理逻辑（自定义战斗规则）
 
     使用示例（节点运行时）：
       KARDS.EngineHooks.Register(tableID, KARDS.EngineHooks.HookPoints.OnModifyDamage,
@@ -29,15 +28,15 @@ KARDS.EngineHooks = KARDS.EngineHooks or {}
 
 -- 钩子点定义（战斗系统预设的触发位置）
 KARDS.EngineHooks.HookPoints = {
-    OnModifyDamage   = "OnModifyDamage",   -- 计算最终伤害值时
-    OnBeforePlayCard = "OnBeforePlayCard", -- 打出卡牌生效前
-    OnModifyStat     = "OnModifyStat",     -- 读写卡牌属性时
+    OnModifyDamage    = "OnModifyDamage",    -- 计算最终伤害值时
+    OnBeforePlayCard  = "OnBeforePlayCard",  -- 打出卡牌生效前
+    OnBeforeOperation = "OnBeforeOperation", -- 任一操作生效前（args.opType 为 KARDS.TickLog.OpTypes 键）
+    OnModifyStat      = "OnModifyStat",      -- 读写卡牌属性时
 }
 
 -- 钩子类型
 KARDS.EngineHooks.TYPE_EFFECT  = "effect"   -- 效果钩子：可拦截/替换事件
 KARDS.EngineHooks.TYPE_MODIFY  = "modify"   -- 修饰钩子：数值偏移
-KARDS.EngineHooks.TYPE_REPLACE = "replace"  -- 替换钩子：替换默认处理
 
 -- 注册表：KARDS.EngineHooks.Registry[tableID][hookPoint][id] = { type, callback, boundEntity }
 -- 按牌桌隔离，与 Varlib 的 tableID 体系一致
@@ -143,6 +142,23 @@ function KARDS.EngineHooks.Trigger(tableID, hookPoint, args)
         end
     end
     return current
+end
+
+--[[
+    统一操作拦截入口：任一操作生效前由战斗系统调用
+
+    把操作类型写入 args.opType 后触发 OnBeforeOperation 钩子点，便于全部操作入口
+    共用同一调用形态（反制可声明拦截的操作类型即 args.opType）。
+
+    @param tableID string 牌桌唯一标识符
+    @param opType  string 操作类型（KARDS.TickLog.OpTypes 键之一）
+    @param args    table|nil 操作上下文（player / card / targets 等）
+    @return table 修改后的 args（args.intercepted = true 表示该操作已被拦截）
+]]
+function KARDS.EngineHooks.TriggerOperation(tableID, opType, args)
+    args = args or {}
+    args.opType = opType
+    return KARDS.EngineHooks.Trigger(tableID, KARDS.EngineHooks.HookPoints.OnBeforeOperation, args)
 end
 
 -- 获取指定钩子点的已注册数量（供调试/UI 显示）

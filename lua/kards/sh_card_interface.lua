@@ -6,6 +6,9 @@
     未来真实卡牌系统（牌桌/卡组/手牌）就绪后，实现相同方法即可替换
     MockCard —— 时间刻 / 钩子 / 测试脚本零改动迁移（依赖倒置）。
 
+    卡牌规模音效（CardSounds：DeployMap/GetDeploySound/GetAttackSound 等）
+    已拆分为独立模块 sh_card_sounds.lua（re.md 阶段二 B4）。
+
     接口方法（MockCard 已实现，真实卡牌需按此约定实现）：
       :GetID()             卡牌唯一标识
       :GetType()           卡牌类型："unit" / "command" / "counter_command" / "headquarter"
@@ -13,7 +16,7 @@
                            "infantry" / "artillery"；非单位卡恒为 nil
       :GetOwner()          归属玩家标识
       :SetOwner(owner)     转移归属（控制/召唤等效果用；返回新归属）
-      :GetName()           显示名（Mock 回退为 ID）
+      :GetName()           显示名（Mock 回退为 ID；克隆卡回退源卡标识 _faceName）
       :GetStat(stat)       属性值（stat ∈ "attack" / "defense"）
       :GetCost()           卡牌花费（指挥点，打出/部署消耗，readme 7.1 操作；所有卡牌类型均有，缺省 0）
       :GetActionCost()     行动花费（指挥点，单位移动/攻击消耗，readme 7.1 操作）；
@@ -100,11 +103,29 @@ KARDS.CardInterface.Keywords = {
     exile = true,       -- 流亡：可投入包含本国或流亡国的卡组（构筑规则，战斗系统仅标记）
     -- 7.1 明牌
     overwatch = true,   -- 明牌：仅卡牌在手中时可具有效果，敌方可浏览
+    -- 注：「抉择」（readme 7.1 综合规则）不是战斗词条（7.2.2/7.2.3），不登记于此白名单；
+    -- 其效果由节点编辑器 choice 节点承担，卡面「抉择：T1 或 T2」文本由描述区手写，
+    -- 加粗高亮由 KeywordsForHighlight 自动处理（2026-10-04 用户口径）
     -- 7.2.1 效果能力（老兵 / 被守护 / 免疫）
     veteran = true,     -- 老兵：进阶状态，触发条件由单卡定义
+    can_elevate_to_veteran = true, -- 可升为老兵：标记卡牌可升级为老兵版本（升级条件由效果文本定义）
     guarded = true,     -- 被守护：只能被轰炸机和炮兵攻击（readme 7.2.1；拦截：战斗机有被守护则完全封锁该阵线，readme 7.3）
     immune = true,      -- 免疫：单位或总部具有免疫时不会受到伤害（readme 7.2.1）
 }
+
+-- 次词条（隐藏词条，2026-10-04）：不在卡面与战场 3D2D 显示、不建立词条状态，
+-- 仅作内部标记，供条件「关键字检查」与动作读写（如亡计「使其算作海军」）。
+-- id 与战斗词条同构（HasKeyword/GetKeywords 可直接命中）。
+KARDS.CardInterface.HiddenKeywords = {
+    navy = true, -- 海军：算作海军（隐藏词条，不显示在卡面）
+}
+
+-- 是否为隐藏词条（次词条）：显示与状态建立处应据此跳过
+-- @param id string 词条 id
+-- @return boolean
+function KARDS.CardInterface.IsHiddenKeyword(id)
+    return KARDS.CardInterface.HiddenKeywords[id] == true
+end
 
 -- 编辑器词条 key → 战斗系统词条 id 翻译映射（2026-08-11）：
 -- 卡牌外貌属性编辑器保存的词条 key（sh_card_data.lua）与战斗系统白名单 id 不一致
@@ -121,6 +142,253 @@ KARDS.CardInterface.EditorKeywordToBattle = {
     conceal     = "stealth",     -- 隐蔽
     cooperation = "unity",       -- 协力
 }
+
+-- Mock 卡牌方法表（re.md 阶段二 B4：CreateMockCard 的闭包方法收敛为共享方法表，
+-- card 经 setmetatable 挂接本表；真实卡牌系统就绪后按 CardInterface 接口约定
+-- 实现相同方法替换 MockCard）
+KARDS.MockCardMethods = {}
+
+function KARDS.MockCardMethods:GetID()
+    return self._id
+end
+
+function KARDS.MockCardMethods:GetType()
+    return self._type
+end
+
+-- 单位类型（readme 7.3）；非单位卡（总部/指令/反制）恒为 nil
+function KARDS.MockCardMethods:GetUnitType()
+    return self._stats.unitType
+end
+
+-- 国籍（readme 国籍/国家）；未配置为 nil
+function KARDS.MockCardMethods:GetCountry()
+    return self._country
+end
+
+-- 品质（编辑器外观属性 quality）：normal/limited/special/elite；缺省 "normal"
+function KARDS.MockCardMethods:GetQuality()
+    return self._quality
+end
+
+-- 事件音效路径表（编辑器属性页音效选择器保存；键见 sh_battle_combat.lua
+-- NotifyEventSound：deploy/attack/death/play/activate/trigger，未配置槽位恒缺省）
+function KARDS.MockCardMethods:GetSounds()
+    return self._sounds
+end
+
+-- 规模（卡牌外貌属性编辑器「规模」：small 少量 / medium 中量 / large 巨大；缺省 "small"）
+-- 放置在场音效（放牌）与部署音效按规模分配（见 KARDS.CardSounds.GetPlaceSound / GetDeploySound）
+function KARDS.MockCardMethods:GetCardScale()
+    return self._cardScale
+end
+
+-- 是否可升为老兵（编辑器词条 can_elevate_to_veteran；升级后词条被替换为老兵词条，随即失效）
+function KARDS.MockCardMethods:CanElevateToVeteran()
+    return self:HasKeyword("can_elevate_to_veteran")
+end
+
+-- 老兵外观数据（升级时套用：费用/攻防/行动花费/词条/品质等，结构同编辑器 veteranAppearance）
+function KARDS.MockCardMethods:GetVeteranAppearance()
+    return self._veteranAppearance
+end
+
+-- 转换目标卡文件名（2026-09-26 缺口 J）：本卡被转换效果作用后变成哪张卡；
+-- 空/nil 表示不换卡（维持既有「仅记录 convert 刻」语义）
+function KARDS.MockCardMethods:GetConvertTarget()
+    return self._convertTarget
+end
+
+-- 是否已是老兵状态（防止重复升级）
+function KARDS.MockCardMethods:IsVeteran()
+    return self._isVeteran
+end
+
+-- 标记为老兵（SimVeteran 套用外观后调用）
+function KARDS.MockCardMethods:SetVeteran()
+    self._isVeteran = true
+end
+
+-- 转移归属（控制/召唤等效果用，readme 7.1 控制规则；返回新归属）
+function KARDS.MockCardMethods:SetOwner(owner)
+    if owner ~= nil then self._owner = owner end
+    return self._owner
+end
+
+-- 更换单位类型（转换效果用，readme 7.3）；非单位卡拒绝，非法类型拒绝并返回 nil
+function KARDS.MockCardMethods:SetUnitType(unitType)
+    if self._type ~= "unit" then return nil end
+    if unitType ~= nil and not KARDS.CardInterface.UnitTypes[unitType] then
+        print("[MockCard] 错误: 非法单位类型: " .. tostring(unitType) .. "（readme 7.3：fighter/tank/bomber/infantry/artillery）")
+        return nil
+    end
+    self._stats.unitType = unitType
+    return unitType
+end
+
+function KARDS.MockCardMethods:GetOwner()
+    return self._owner
+end
+
+function KARDS.MockCardMethods:GetName()
+    -- 克隆卡（节点「复制」）：ID 带 _copy 后缀以隔离实例（卡牌全局变量按 ID 分桶、
+    -- 对象比较按 ID 判等），卡面标识则须沿用源卡（_faceName，见 sh_node_acts_field.lua
+    -- CloneCard）——卡面外观 / 3D2D 文字 / 效果链（指向）均按显示名查卡牌信息。
+    return self._faceName or self._id
+end
+
+function KARDS.MockCardMethods:GetStat(stat)
+    local v = self._stats[stat] or 0
+    -- 属性修饰钩子（OnModifyStat）：读取属性时应用 register_hook 注册的攻击力/防御力修饰
+    if KARDS.EngineHooks and KARDS.EngineHooks.OnStatRead then
+        v = KARDS.EngineHooks.OnStatRead(self, stat, v)
+    end
+    return v
+end
+
+-- 卡牌花费（指挥点，打出/部署消耗，readme 7.1 操作）
+function KARDS.MockCardMethods:GetCost()
+    return self._cost
+end
+
+-- 行动花费（指挥点，单位移动/攻击消耗）；非单位卡（总部/指令/反制）恒为 nil
+function KARDS.MockCardMethods:GetActionCost()
+    return self._actionCost
+end
+
+-- 词条数组（readme 7.2.2 战斗词条能力 / 7.2.3 特别战斗词条 / 7.1 明牌）
+-- 带数值词条（情报/倒计时/重甲）项为 { 词条id, 数值 }，其余为单独词条 id
+function KARDS.MockCardMethods:GetKeywords()
+    return self._keywords
+end
+
+-- 是否具有指定词条（词条项为 { id, x } 数组时取其 [1] 作 id）
+function KARDS.MockCardMethods:HasKeyword(id)
+    for _, kw in ipairs(self._keywords) do
+        if (type(kw) == "table" and kw[1] or kw) == id then
+            return true
+        end
+    end
+    return false
+end
+
+function KARDS.MockCardMethods:ApplyChange(stat, modifier, amount)
+    if not KARDS.CardInterface.Stats[stat] then
+        print("[MockCard] 错误: 非法属性名: " .. tostring(stat))
+        return self._stats[stat] or 0
+    end
+    local cur = self._stats[stat] or 0
+    if modifier == "increase" then
+        self._stats[stat] = cur + amount
+    elseif modifier == "decrease" then
+        self._stats[stat] = cur - amount
+    elseif modifier == "set" then
+        self._stats[stat] = amount
+    else
+        print("[MockCard] 错误: 非法修饰符: " .. tostring(modifier) .. "（应为 increase / decrease / set）")
+        return cur
+    end
+    -- kards 数值上限（2026-08-13）：所有数值最大 99，不防负值（允许负属性，
+    -- 如防御被扣成负数即不存活；编辑器输入约定 0~99 不在此层）。
+    self._stats[stat] = math.min(99, self._stats[stat])
+    -- 变更记录剥离为可插拔观察者（re.md B-M2）：测试断言记录 / 真实卡牌 NW 同步
+    -- 均由调用方经 SetObserver 注入，卡牌接口本身不再承载测试职责
+    if self._observer then
+        self._observer(self, stat, modifier, amount, self._stats[stat])
+    end
+    return self._stats[stat]
+end
+
+-- 注入/移除可插拔观察者（re.md B-M2）：数值变更后回调 fn(card, stat, modifier, amount, newValue)
+function KARDS.MockCardMethods:SetObserver(fn)
+    self._observer = fn
+end
+
+function KARDS.MockCardMethods:IsAlive()
+    return (self._stats.defense or 0) > 0
+end
+
+--[[
+    添加伤害/受伤害倍率规则（与卡牌外貌属性编辑器的 combatModifiers 一致）
+
+    @param kind       string "outgoing"（伤害倍率）/ "incoming"（受伤害倍率）
+    @param path       string 目标（outgoing）/ 来源（incoming）的 Varlib 路径，如 "Battle.EnemyGroundUnits"
+    @param multiplier number 倍率（必须 > 0）
+    @param name       string|nil 目标/来源显示名（缺省用 path）
+    @return boolean 是否成功；倍率为 1 时视为无规则（不入数组，覆盖时移除同路径条目）
+]]
+function KARDS.MockCardMethods:AddCombatMultiplier(kind, path, multiplier, name)
+    -- 仅单位卡可配置倍率（非单位卡两个数组恒空）
+    if self._type ~= "unit" then
+        print("[MockCard] 错误: 非单位卡不能配置伤害/受伤害倍率（两个数组恒空）")
+        return false
+    end
+    if not KARDS.CardInterface.CombatKinds[kind] then
+        print("[MockCard] 错误: 非法倍率类型: " .. tostring(kind) .. "（应为 outgoing / incoming）")
+        return false
+    end
+    if type(path) ~= "string" or path == "" then
+        print("[MockCard] 错误: 倍率规则缺少目标/来源路径")
+        return false
+    end
+    if type(multiplier) ~= "number" or multiplier <= 0 then
+        print("[MockCard] 错误: 非法倍率: " .. tostring(multiplier) .. "（应 > 0）")
+        return false
+    end
+    local list = self._combat[kind]
+    local isOutgoing = kind == "outgoing"
+    -- 规范化：倍率为 1 不入数组（等价无规则）——移除已存在的同路径条目后视为完成
+    if multiplier == 1 then
+        for i = #list, 1, -1 do
+            local rule = list[i]
+            if (isOutgoing and rule.targetPath or rule.sourcePath) == path then
+                table.remove(list, i)
+            end
+        end
+        return true
+    end
+    -- 同路径规则覆盖更新（条目结构随类型：outgoing 用 targetPath/targetName，incoming 用 sourcePath/sourceName）
+    for _, rule in ipairs(list) do
+        if (isOutgoing and rule.targetPath or rule.sourcePath) == path then
+            rule.multiplier = multiplier
+            return true
+        end
+    end
+    local entry = isOutgoing
+        and { targetPath = path, multiplier = multiplier, targetName = name or path }
+        or  { sourcePath = path, multiplier = multiplier, sourceName = name or path }
+    table.insert(list, entry)
+    return true
+end
+
+--[[
+    查询伤害/受伤害倍率（伤害计算解析用）
+
+    遍历匹配 path 的规则返回其倍率；未匹配返回 1（默认倍率——
+    伤害计算解析时发现不存在则默认 1 倍率，与倍率 1 不入数组的规范一致）。
+
+    @param kind string "outgoing" / "incoming"
+    @param path string 目标（outgoing）/ 来源（incoming）的 Varlib 路径
+    @return number 倍率（未匹配默认 1）
+]]
+function KARDS.MockCardMethods:GetCombatMultiplier(kind, path)
+    if not KARDS.CardInterface.CombatKinds[kind] then
+        print("[MockCard] 错误: 非法倍率类型: " .. tostring(kind) .. "（应为 outgoing / incoming）")
+        return 1
+    end
+    local isOutgoing = kind == "outgoing"
+    for _, rule in ipairs(self._combat[kind]) do
+        if (isOutgoing and rule.targetPath or rule.sourcePath) == path then
+            return rule.multiplier
+        end
+    end
+    return 1 -- 默认倍率
+end
+
+-- 倍率数组结构（与卡牌外貌属性编辑器的 combatModifiers 一致，调用方可读取）
+function KARDS.MockCardMethods:GetCombatModifiers()
+    return self._combat
+end
 
 --[[
     创建 Mock 卡牌（测试占位实现）
@@ -172,7 +440,7 @@ function KARDS.CardInterface.CreateMockCard(id, cardType, owner, stats)
             kwId = KARDS.CardInterface.EditorKeywordToBattle[kwId] or kwId
             if unitType == "fighter" and kwId == "smoke" then
                 print("[MockCard] 错误: 战斗机无法具有烟幕（readme 7.3），已剔除")
-            elseif not KARDS.CardInterface.Keywords[kwId] then
+            elseif not KARDS.CardInterface.Keywords[kwId] and not KARDS.CardInterface.IsHiddenKeyword(kwId) then
                 print("[MockCard] 错误: 非法词条: " .. tostring(kwId) .. "（已剔除）")
             else
                 table.insert(keywords, type(kw) == "table" and { kwId, kw[2] } or kwId)
@@ -195,6 +463,14 @@ function KARDS.CardInterface.CreateMockCard(id, cardType, owner, stats)
         _cost = (stats and stats.cost) or 0,                    -- 卡牌花费（指挥点；所有卡牌类型均有）
         _actionCost = (cardType == "unit") and ((stats and stats.actionCost) or 0) or nil, -- 行动花费仅单位
         _keywords = keywords, -- 词条数组（带数值词条为 { id, x }，其余为 id 字符串）
+        -- 老兵（readme 7.2.1）：编辑器词条 can_elevate_to_veteran 标记「可升为老兵」，
+        -- 升级条件由效果文本（节点效果）定义，升为老兵时套用 veteranAppearance 重置属性；
+        -- 可升为老兵判定直接查词条（见 CanElevateToVeteran）
+        _veteranAppearance = (stats and stats.veteranAppearance) or nil, -- 老兵外观数据（升级时套用）
+        _isVeteran = false, -- 是否已是老兵状态（防止重复升级）
+        -- 转换目标卡（2026-09-26 缺口 J）：编辑器「转换目标卡」字段（卡文件名），
+        -- 非空时转换效果会把本卡整体置换为该卡（见 sh_battle_unit.lua SimConvert）
+        _convertTarget = (stats and stats.convertTarget) or nil,
         -- 伤害/受伤害倍率数组（与卡牌外貌属性编辑器的 combatModifiers 一致）：
         -- outgoing = { { targetPath, multiplier, targetName } }（该卡牌攻击匹配目标 ×N 伤害）
         -- incoming = { { sourcePath, multiplier, sourceName } }（受到匹配来源伤害 ×N）
@@ -202,205 +478,15 @@ function KARDS.CardInterface.CreateMockCard(id, cardType, owner, stats)
         _combat = { outgoing = {}, incoming = {} },
         -- 可插拔观察者（re.md B-M2）：数值变更后回调（测试记录 / NW 同步等由调用方注入）
         _observer = nil,
+        -- 事件音效路径表（编辑器属性页音效选择器保存，sounds = { deploy/attack/death/play/activate/trigger = 相对路径 }）
+        -- 键与 sh_battle_combat.lua 事件音效回调一致；未配置槽位恒缺省；非单位卡同样挂上（指令=play、反制=activate/trigger）
+        _sounds = (stats and stats.sounds) or {},
+        -- 规模（卡牌外貌属性编辑器「规模」：small 少量 / medium 中量 / large 巨大；缺省 "small"）
+        -- 决定放置在场音效（放牌）与部署音效分配（见 KARDS.CardSounds），随卡牌持久化
+        _cardScale = (stats and stats.cardScale) or "small",
     }
-
-    function card:GetID()
-        return self._id
-    end
-
-    function card:GetType()
-        return self._type
-    end
-
-    -- 单位类型（readme 7.3）；非单位卡（总部/指令/反制）恒为 nil
-    function card:GetUnitType()
-        return self._stats.unitType
-    end
-
-    -- 国籍（readme 国籍/国家）；未配置为 nil
-    function card:GetCountry()
-        return self._country
-    end
-
-    -- 品质（编辑器外观属性 quality）：normal/limited/special/elite；缺省 "normal"
-    function card:GetQuality()
-        return self._quality
-    end
-
-    -- 转移归属（控制/召唤等效果用，readme 7.1 控制规则；返回新归属）
-    function card:SetOwner(owner)
-        if owner ~= nil then self._owner = owner end
-        return self._owner
-    end
-
-    -- 更换单位类型（转换效果用，readme 7.3）；非单位卡拒绝，非法类型拒绝并返回 nil
-    function card:SetUnitType(unitType)
-        if self._type ~= "unit" then return nil end
-        if unitType ~= nil and not KARDS.CardInterface.UnitTypes[unitType] then
-            print("[MockCard] 错误: 非法单位类型: " .. tostring(unitType) .. "（readme 7.3：fighter/tank/bomber/infantry/artillery）")
-            return nil
-        end
-        self._stats.unitType = unitType
-        return unitType
-    end
-
-    function card:GetOwner()
-        return self._owner
-    end
-
-    function card:GetName()
-        return self._id
-    end
-
-    function card:GetStat(stat)
-        local v = self._stats[stat] or 0
-        -- 属性修饰钩子（OnModifyStat）：读取属性时应用 register_hook 注册的攻击力/防御力修饰
-        if KARDS.EngineHooks and KARDS.EngineHooks.OnStatRead then
-            v = KARDS.EngineHooks.OnStatRead(self, stat, v)
-        end
-        return v
-    end
-
-    -- 卡牌花费（指挥点，打出/部署消耗，readme 7.1 操作）
-    function card:GetCost()
-        return self._cost
-    end
-
-    -- 行动花费（指挥点，单位移动/攻击消耗）；非单位卡（总部/指令/反制）恒为 nil
-    function card:GetActionCost()
-        return self._actionCost
-    end
-
-    -- 词条数组（readme 7.2.2 战斗词条能力 / 7.2.3 特别战斗词条 / 7.1 明牌）
-    -- 带数值词条（情报/倒计时/重甲）项为 { 词条id, 数值 }，其余为单独词条 id
-    function card:GetKeywords()
-        return self._keywords
-    end
-
-    -- 是否具有指定词条（词条项为 { id, x } 数组时取其 [1] 作 id）
-    function card:HasKeyword(id)
-        for _, kw in ipairs(self._keywords) do
-            if (type(kw) == "table" and kw[1] or kw) == id then
-                return true
-            end
-        end
-        return false
-    end
-
-    function card:ApplyChange(stat, modifier, amount)
-        if not KARDS.CardInterface.Stats[stat] then
-            print("[MockCard] 错误: 非法属性名: " .. tostring(stat))
-            return self._stats[stat] or 0
-        end
-        local cur = self._stats[stat] or 0
-        if modifier == "increase" then
-            self._stats[stat] = cur + amount
-        elseif modifier == "decrease" then
-            self._stats[stat] = cur - amount
-        elseif modifier == "set" then
-            self._stats[stat] = amount
-        else
-            print("[MockCard] 错误: 非法修饰符: " .. tostring(modifier) .. "（应为 increase / decrease / set）")
-            return cur
-        end
-        -- 变更记录剥离为可插拔观察者（re.md B-M2）：测试断言记录 / 真实卡牌 NW 同步
-        -- 均由调用方经 SetObserver 注入，卡牌接口本身不再承载测试职责
-        if self._observer then
-            self._observer(self, stat, modifier, amount, self._stats[stat])
-        end
-        return self._stats[stat]
-    end
-
-    -- 注入/移除可插拔观察者（re.md B-M2）：数值变更后回调 fn(card, stat, modifier, amount, newValue)
-    function card:SetObserver(fn)
-        self._observer = fn
-    end
-
-    function card:IsAlive()
-        return (self._stats.defense or 0) > 0
-    end
-
-    --[[
-        添加伤害/受伤害倍率规则（与卡牌外貌属性编辑器的 combatModifiers 一致）
-
-        @param kind       string "outgoing"（伤害倍率）/ "incoming"（受伤害倍率）
-        @param path       string 目标（outgoing）/ 来源（incoming）的 Varlib 路径，如 "Battle.EnemyGroundUnits"
-        @param multiplier number 倍率（必须 > 0）
-        @param name       string|nil 目标/来源显示名（缺省用 path）
-        @return boolean 是否成功；倍率为 1 时视为无规则（不入数组，覆盖时移除同路径条目）
-    ]]
-    function card:AddCombatMultiplier(kind, path, multiplier, name)
-        -- 仅单位卡可配置倍率（非单位卡两个数组恒空）
-        if self._type ~= "unit" then
-            print("[MockCard] 错误: 非单位卡不能配置伤害/受伤害倍率（两个数组恒空）")
-            return false
-        end
-        if not KARDS.CardInterface.CombatKinds[kind] then
-            print("[MockCard] 错误: 非法倍率类型: " .. tostring(kind) .. "（应为 outgoing / incoming）")
-            return false
-        end
-        if type(path) ~= "string" or path == "" then
-            print("[MockCard] 错误: 倍率规则缺少目标/来源路径")
-            return false
-        end
-        if type(multiplier) ~= "number" or multiplier <= 0 then
-            print("[MockCard] 错误: 非法倍率: " .. tostring(multiplier) .. "（应 > 0）")
-            return false
-        end
-        local list = self._combat[kind]
-        local isOutgoing = kind == "outgoing"
-        -- 规范化：倍率为 1 不入数组（等价无规则）——移除已存在的同路径条目后视为完成
-        if multiplier == 1 then
-            for i = #list, 1, -1 do
-                local rule = list[i]
-                if (isOutgoing and rule.targetPath or rule.sourcePath) == path then
-                    table.remove(list, i)
-                end
-            end
-            return true
-        end
-        -- 同路径规则覆盖更新（条目结构随类型：outgoing 用 targetPath/targetName，incoming 用 sourcePath/sourceName）
-        for _, rule in ipairs(list) do
-            if (isOutgoing and rule.targetPath or rule.sourcePath) == path then
-                rule.multiplier = multiplier
-                return true
-            end
-        end
-        local entry = isOutgoing
-            and { targetPath = path, multiplier = multiplier, targetName = name or path }
-            or  { sourcePath = path, multiplier = multiplier, sourceName = name or path }
-        table.insert(list, entry)
-        return true
-    end
-
-    --[[
-        查询伤害/受伤害倍率（伤害计算解析用）
-
-        遍历匹配 path 的规则返回其倍率；未匹配返回 1（默认倍率——
-        伤害计算解析时发现不存在则默认 1 倍率，与倍率 1 不入数组的规范一致）。
-
-        @param kind string "outgoing" / "incoming"
-        @param path string 目标（outgoing）/ 来源（incoming）的 Varlib 路径
-        @return number 倍率（未匹配默认 1）
-    ]]
-    function card:GetCombatMultiplier(kind, path)
-        if not KARDS.CardInterface.CombatKinds[kind] then
-            print("[MockCard] 错误: 非法倍率类型: " .. tostring(kind) .. "（应为 outgoing / incoming）")
-            return 1
-        end
-        local isOutgoing = kind == "outgoing"
-        for _, rule in ipairs(self._combat[kind]) do
-            if (isOutgoing and rule.targetPath or rule.sourcePath) == path then
-                return rule.multiplier
-            end
-        end
-        return 1 -- 默认倍率
-    end
-
-    -- 倍率数组结构（与卡牌外貌属性编辑器的 combatModifiers 一致，调用方可读取）
-    function card:GetCombatModifiers()
-        return self._combat
-    end
+    -- 挂接共享方法表（re.md 阶段二 B4：方法收敛为 KARDS.MockCardMethods，避免逐卡闭包）
+    setmetatable(card, { __index = KARDS.MockCardMethods })
 
     -- 创建时规范化倍率数组（在方法定义之后调用，复用 AddCombatMultiplier 的规则；
     -- 仅单位卡接收，倍率 1 的条目由 AddCombatMultiplier 丢弃，非单位卡两数组恒空）

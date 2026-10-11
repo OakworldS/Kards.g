@@ -1,0 +1,59 @@
+{
+	"runtime_no_cull": true,
+	"scale": 10,
+	"build_id": "e30bf079a1f4",
+	"model_id": "frontline_nottaken_pii",
+	"flip_v": true,
+	"material_count": 1,
+	"manifest_hash": "657e5a3d9391",
+	"source_name_en": "frontlinenottaken-P2",
+	"pmx_bone_count": 0,
+	"axis_preset": "x,-z,y",
+	"bounds": {
+		"mins": [
+			-219.999967,
+			-4.022766,
+			0
+		],
+		"maxs": [
+			220.000033,
+			-0.022687,
+			0
+		]
+	},
+	"mesh_file": "pmx_static_importer/models/frontline_nottaken_pii/mesh.json",
+	"winding_flipped_baked": false,
+	"source_name_local": "frontlinenottaken-P2",
+	"source_format": "glb",
+	"source_file": "frontlinenottaken-P2.glb",
+	"vertex_count": 88,
+	"pmx_morph_count": 0,
+	"triangle_count": 44,
+	"static_only_warning": false,
+	"submeshes": [
+		{
+			"no_cull": true,
+			"double_sided": false,
+			"pmx_double_sided": false,
+			"diffuse": [
+				0.8,
+				0.8,
+				0.8,
+				1
+			],
+			"vertex_count": 132,
+			"alpha": 1,
+			"triangle_count": 44,
+			"translucent": false,
+			"index": 0,
+			"image_path": "data/pmx_static_importer/frontline_nottaken_pii/front.png",
+			"texture_source": "generated-diffuse-color",
+			"name": "平面",
+			"safe_name": "mat_000_item_f9106a70"
+		}
+	],
+	"safe_display_name": "frontline_nottaken_pii",
+	"display_name": "Frontline nottaken Pii",
+	"render_vertex_count": 132,
+	"format": 2
+}

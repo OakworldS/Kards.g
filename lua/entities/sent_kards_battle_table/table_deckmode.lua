@@ -51,6 +51,14 @@ if SERVER then
             net.Start("KardsTableMsg") net.WriteString("卡组名不能为空") net.Send(ply)
             return
         end
+        -- 保存冷却（2026-08-18 规划 D4）：防反复 file.Write 磁盘写入风暴（5 秒窗口）
+        if ply._kardsDeckSaveLast and CurTime() - ply._kardsDeckSaveLast < 5 then
+            net.Start("KardsTableMsg") net.WriteString("保存过于频繁，请稍后再试") net.Send(ply)
+            return
+        end
+        -- 卡组名截断（2026-08-18 规划 D4）：防超长卡组名撑大存档（32 字符）
+        if #name > 32 then name = name:sub(1, 32) end
+        ply._kardsDeckSaveLast = CurTime()
         -- 汇总卡组数据：总部（pile[1]）+ 普通卡（fileName → count）
         local hqFile = nil
         local nameByModel = {} -- modelID → fileName（网格卡映射，modelID 的 safeName 不可逆）
@@ -95,6 +103,12 @@ if SERVER then
             end
             net.Start("KardsTableMsg") net.WriteString(("卡组「%s」已保存（%d 张）"):format(name, total)) net.Send(ply)
             print(("[Kards] 卡组保存: %s（%d 张，归属 %s）"):format(name, total, deckFileName))
+            -- 保存成功动画（本桌所有人可见）：广播牌桌，客户端自行收集堆叠卡
+            -- （Kards_PileIndex 排序）播「收拢为总部竖列 → 回落摊开」两段动画，
+            -- 组卡构建者额外叠加抗视差，见 cl_deck_pile.lua
+            net.Start("KardsDeckSaved")
+                net.WriteEntity(tableEnt)
+            net.Broadcast()
         else
             net.Start("KardsTableMsg") net.WriteString("卡组保存失败: " .. tostring(err)) net.Send(ply)
         end
@@ -105,6 +119,26 @@ if SERVER then
         if IsValid(ent) and ent:GetClass() == "sent_kards_battle_table" then
             ent:ToggleMode(ply)
         end
+    end)
+
+    -- 组卡搜索输入：接收 P2 构建者文本，校验后广播给所有客户端
+    -- 2026-09-05 规划：卡牌名称搜索，最多 6 字，所有玩家实时可见
+    net.Receive("KardsDeckSearchInput", function(_, ply)
+        local data = ply._kardsTable
+        if not data or not IsValid(data.ent) then return end
+        if data.ent.Mode ~= "deck" then return end
+        if data.slot ~= 2 then return end -- 仅 P2（构建者）可输入
+        local text = net.ReadString()
+        if #text > 6 then text = text:sub(1, 6) end
+        -- 更新本地实例
+        if KARDS.Input3D2D then
+            KARDS.Input3D2D:SetText(data.ent.TableID, text)
+        end
+        -- 广播给所有客户端
+        net.Start("KardsDeckSearchInputBC")
+            net.WriteEntity(data.ent)
+            net.WriteString(text)
+        net.Broadcast()
     end)
 end
 
@@ -251,6 +285,7 @@ function ENT:EnterDeckMode(ply)
         if IsValid(pent) then
             pent:SetNWString("Kards_DeckRole", "hq")
             pent:SetNWInt("Kards_PileCount", 0)
+            pent:SetNWInt("Kards_PileIndex", 1) -- 堆叠序号：总部恒为第 1 张（客户端抗视差/动画读取）
             if self._kardsChildSystem and self._kardsChildSystem:RegisterChild(pent, pilePos) then
                 pileHQ = { card = card, ent = pent, srcEntry = nil, modelID = modelID, isHQ = true }
             else
@@ -265,6 +300,21 @@ function ENT:EnterDeckMode(ply)
     self._kardsDeckPile = {}
     if pileHQ then self._kardsDeckPile[1] = pileHQ end -- 卡组第一张始终是总部（不占网格）
     self._kardsDeckCounts = {} -- 卡组各卡携带数量（modelID → 总数，品质上限判定）
+    -- 初始化 3D2D 搜索输入框（2026-09-05）：卡组堆叠上方，P2 构建者输入，最多 6 字
+    -- 清空旧实例文本（切换组卡模式时重置搜索）
+    if KARDS.Input3D2D then
+        KARDS.Input3D2D:Destroy(self.TableID)
+        KARDS.Input3D2D:Create(self.TableID, {
+            owner       = 2,  -- 仅 P2（槽位 2）可输入
+            text        = "",
+            pos         = Vector(self.DeckPileBase.x, self.DeckPileBase.y, self.DeckPileBase.z + 5),
+            scale       = 0.02,
+            width       = 180,
+            height      = 40,
+            maxChars    = 6,
+            placeholder = "搜索卡牌",
+        })
+    end
     print(("[Kards] 组卡模式：铺 %d/%d 张卡（5×3 网格）+ 总部 1 张"):format(#cards, math.min(#infos, maxSlots)))
 end
 
@@ -286,6 +336,18 @@ function ENT:SpawnDeckCardEntity(card, modelID, relPos)
     if not card or not relPos then return nil, "卡牌对象/相对坐标无效" end
     if not PMXStaticImporter or not PMXStaticImporter.NormalizeModelID then
         return nil, "前置模组未加载（PMXStaticImporter 不可用）"
+    end
+    -- 卡面 PNG 先落盘再建实体（2026-10-03 白图修复）：调用方此前已 EnsureDeck 创建 manifest，
+    -- 若此刻 data/kards_deck/<safeName>/front.png 尚不存在，实体首次渲染按 image_path 请求材质时
+    -- 引擎会缓存错误材质到本会话结束，卡面永久纯白（监听服务器上客户端与服务端共用 data 目录，
+    -- 客户端来不及在实体首帧前落盘）。模板缺失时本调用返回 false，维持既有白色兜底。
+    local deckSafe = modelID:match("^kards_deck_(.+)$")
+    if deckSafe and KARDS.CardManifest and KARDS.CardManifest.WriteDeckCardImages then
+        local texPath = card._texturePath and card._texturePath.template or nil
+        local deckCountry = (card._app and card._app.country) or "usa"
+        -- 总部卡卡背固定 usa（同客户端 Kards_DeckRole="hq" 分支）
+        if deckSafe:sub(1, 3) == "hq_" then deckCountry = "usa" end
+        KARDS.CardManifest.WriteDeckCardImages(deckSafe, texPath, deckCountry)
     end
     local ent = ents.Create("sent_pmx_static_imported")
     if not IsValid(ent) then return nil, "创建实体失败（sent_pmx_static_imported）" end
@@ -329,6 +391,10 @@ end
     退出组卡模式：移除全部组卡卡牌实体并清空对应渲染表（幂等，OnRemove 兜底调用）
 ]]
 function ENT:ExitDeckMode()
+    -- 销毁 3D2D 搜索输入框（2026-09-05）
+    if KARDS.Input3D2D then
+        KARDS.Input3D2D:Destroy(self.TableID)
+    end
     if not self._kardsDeckCards then return end
     for _, entry in ipairs(self._kardsDeckCards) do
         if IsValid(entry.ent) then
@@ -360,6 +426,7 @@ function ENT:_CreateDeckCard(info)
     local card = {
         _fileName = info.fileName,
         _app = app,
+        _texturePath = info.texturePath, -- 模板渲染 PNG 路径（卡面来源，SpawnDeckCardEntity 落盘用）
         pos = { x = 0, y = 0, z = 0 }, -- 牌桌相对坐标（EnterDeckMode 按 2D 网格写入）
         ang = { p = 0, y = 0, r = 0 }, -- 相对牌桌局部朝向（平躺面朝上）
     }
@@ -485,11 +552,14 @@ end
 
 -- 更新卡组堆叠顶层标志：仅最后一张（最顶层）为 true，其余 false。
 -- 客户端据此给非顶层堆叠卡只绘制卡牌花费，其余文字不绘制（性能优化）
+-- 同时写入堆叠序号 Kards_PileIndex（客户端抗视差按屏幕等距反算与保存动画排序
+-- 读取，见 cl_deck_pile.lua）
 function ENT:UpdatePileTopFlags()
     local pile = self._kardsDeckPile or {}
     for i, e in ipairs(pile) do
         if IsValid(e.ent) then
             e.ent:SetNWBool("Kards_IsPileTop", i == #pile)
+            e.ent:SetNWInt("Kards_PileIndex", i)
         end
     end
 end

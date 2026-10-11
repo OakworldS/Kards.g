@@ -46,6 +46,24 @@ function INE:ExportEditorToFile(editor, fileName)
     end
     local serializedNodes = {}
     for _, node in ipairs(editor.nodes) do
+        -- 保存端运行时迁移：写出模板 base + runtimeData（修复编辑器混合计数与运行时
+        -- 类型独立计数的组件键错位；服务端 LoadEffectForRuntime 应用 runtimeData 后执行）。
+        -- 无 config 的节点（开始点/var-op 等由类型分派，不走 base 解析）不生成。
+        local nodeBase, runtimeData
+        local hasConfig = node.config and node.config ~= ""
+        if hasConfig then
+            local template = INE.RegisteredNodes[node.name]
+            local tplBase = template and template._templateBase
+            nodeBase = (tplBase and tplBase ~= "" and not tplBase:match("^AUTO:")) and tplBase
+                       or INE.GenerateBaseFromConfig(node.config)
+            local ok, rd = pcall(INE.BuildRuntimeData, node.config, nodeBase, node.data or {})
+            if ok then
+                runtimeData = rd
+            else
+                print("[INE] ExportEditorToFile: BuildRuntimeData 失败（节点 " .. tostring(node.name)
+                    .. "）: " .. tostring(rd))
+            end
+        end
         table.insert(serializedNodes, {
             id = node.id,
             name = node.name,
@@ -65,6 +83,8 @@ function INE:ExportEditorToFile(editor, fileName)
             selectedOutputTypes = node.selectedOutputTypes,
             isStartNode = node.isStartNode,
             canDelete = node.canDelete,
+            base = nodeBase,
+            runtimeData = runtimeData,
             data = node.data or {}
         })
     end

@@ -21,7 +21,7 @@
   - StartHistoryImageDownload / StartImageDownload（图片下载）
   - DrawHistoryEditArea（历史编辑区）
 
-源文件：cl_canvas_editor.lua
+源文件：cl_canvas_editor.lua（下列行号为拆分时的历史行号，非当前行号；当前定义位置见本文件内各函数）
   - DrawSliderBar：行 6708~6883
   - DrawHoverButton：行 6885~6905
   - DrawApplePillChip：行 6907~6931
@@ -316,9 +316,42 @@ KARDS.CardEditor.Canvas.DrawHoverButton = DrawHoverButton
 -- @param isHovered: 是否悬停
 -- @param radii: 圆角半径（默认 APPLE_RADII.pill）
 -- @param showHairline: 未选中时是否显示 hairline 边框（默认 true）
-local function DrawApplePillChip(bx, by, w, h, text, isSelected, isHovered, radii, showHairline)
+-- 背景图片材质缓存（2026-08-16）：路径 → { mat, iw, ih }（原始纹理宽高，供等比缩放）
+local BgMatCache = {}
+local function GetBgMatSize(path)
+    local cached = BgMatCache[path]
+    if cached == nil then
+        local mat = Material(path, "noclamp smooth")
+        local iw, ih = 1, 1
+        local tex = mat and mat:GetTexture("$basetexture")
+        if tex then
+            iw = tex:GetMappingWidth() or 1
+            ih = tex:GetMappingHeight() or 1
+            if iw <= 0 then iw = 1 end
+            if ih <= 0 then ih = 1 end
+        end
+        cached = { mat = mat, iw = iw, ih = ih }
+        BgMatCache[path] = cached
+    end
+    return cached
+end
+
+-- 药片按钮（2026-08-16 增参）：bgMat = 背景图片路径字符串（nil 不绘制）；bgPad = 填充
+-- 大小（图片距按钮边缘的内边距 px，缺省 6——保证 pill 圆角（半径=h/2）常见尺寸下
+-- 图片四角落在圆角内，视觉上完全「只在按钮中渲染」）；bgZoom = 图片整体缩放倍数
+-- （缺省 2）；sugImg = 建议图（悬停时上报给左下角建议板的图片，可单独配置，缺省
+-- 用 bgMat）。图片**保持原始宽高比**，整体缩放值 = min(可用宽/图宽, 可用高/图高)
+-- × bgZoom（可用 = 按钮内缩 bgPad 后的区域），以按钮中心居中放置；图片上叠加半透明
+-- 黑色矩形叠层压暗，文字绘制于最上层。
+local function DrawApplePillChip(bx, by, w, h, text, isSelected, isHovered, radii, showHairline, bgMat, bgPad, bgZoom, sugImg)
     radii = radii or APPLE_RADII.pill
     if showHairline == nil then showHairline = true end
+
+    -- 悬停：上报建议图给左下角建议板（sugImg 单独配置优先，否则用按钮图 bgMat；
+    -- 无图按钮悬停时不更新，与 SuggestionText 的遗留行为一致）
+    if isHovered then
+        KARDS.CardEditor.Canvas.SuggestionImage = sugImg or bgMat
+    end
 
     if isSelected then
         draw.RoundedBox(radii, bx, by, w, h, isHovered and APPLE_BLUE_HOVER or APPLE_BLUE)
@@ -329,11 +362,91 @@ local function DrawApplePillChip(bx, by, w, h, text, isSelected, isHovered, radi
         draw.RoundedBox(radii, bx, by, w, h, isHovered and APPLE_DARK_HOVER or APPLE_PARCHMENT)
     end
 
+    if bgMat then
+        local px = bgPad or 6
+        local bg = GetBgMatSize(bgMat)
+        local availW = w - px * 2
+        local availH = h - px * 2
+        local s = math.min(availW / bg.iw, availH / bg.ih) * (bgZoom or 2)
+        local dw = bg.iw * s
+        local dh = bg.ih * s
+        local dx = bx + (w - dw) / 2
+        local dy = by + (h - dh) / 2
+        -- 裁剪到按钮矩形：图片超出按钮的部分不渲染（2026-08-16，放大 2 倍后
+        -- dw/dh 会超出按钮，仅保留按钮范围内的图片与叠层）
+        render.SetScissorRect(bx, by, bx + w, by + h, true)
+        surface.SetMaterial(bg.mat)
+        surface.SetDrawColor(255, 255, 255, 255)
+        surface.DrawTexturedRect(dx, dy, dw, dh)
+        -- 半透明黑色矩形叠层（2026-08-16）：覆盖图片区域压暗，突出上层文字
+        surface.SetDrawColor(0, 0, 0, 90)
+        surface.DrawRect(dx, dy, dw, dh)
+        render.SetScissorRect(0, 0, 0, 0, false)
+    end
+
     if text then
         local textColor = isSelected and APPLE_TEXT_ON_BLUE or APPLE_INK
         draw.SimpleText(text, "SourceHan_Heavy_14", bx + w / 2, by + h / 2, textColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 end
+
+-- ====================================================================
+-- 不稳定警告标识（红色三角 + 感叹号，标题右侧复用）
+-- 2026-10-05：图标在调用处即时绘制；悬停提示写入待绘状态，
+-- 由 DrawCardAppearanceEditor 在页面内容全部绘制完成后统一绘制，保证最高层不被遮挡。
+-- 顶点必须顺时针（顶点 → 右下 → 左下），逆时针会被 surface.DrawPoly 背面剔除而不可见。
+-- ====================================================================
+local UNSTABLE_WARN_TEXT = "该配置极其不稳定或尚未完成"
+local UNSTABLE_WARN_SIZE = 24
+
+function KARDS.CardEditor.Canvas.DrawUnstableWarnIcon(x, y, mx, my)
+    local size = UNSTABLE_WARN_SIZE
+    local hov = IsMouseIn(mx, my, x, y, size, size)
+    local triVerts = {
+        { x = x + size / 2, y = y + 2 },
+        { x = x + size - 2, y = y + size - 2 },
+        { x = x + 2, y = y + size - 2 },
+    }
+    draw.NoTexture()
+    surface.SetDrawColor(210, 45, 45, 255)
+    surface.DrawPoly(triVerts)
+    draw.SimpleText("!", "SourceHan_Heavy_16", x + size / 2, y + size / 2 + 1, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    if hov then
+        KARDS.CardEditor.Canvas.SuggestionText = UNSTABLE_WARN_TEXT
+        KARDS.CardEditor.Canvas._UnstableWarnTooltip = { x = x, y = y }
+    end
+    return hov
+end
+
+-- 在标题文本右侧放置警告标识（按标题字号测量宽度）
+function KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(titleX, titleY, titleText, font, mx, my)
+    surface.SetFont(font or "SourceHan_Heavy_16")
+    local w = surface.GetTextSize(titleText)
+    return KARDS.CardEditor.Canvas.DrawUnstableWarnIcon(titleX + w + 10, titleY, mx, my)
+end
+
+-- 绘制本帧待处理的不稳定警告提示（页面内容之后调用以保证最高层），随后清空状态
+function KARDS.CardEditor.Canvas.DrawPendingUnstableWarnTooltip()
+    local t = KARDS.CardEditor.Canvas._UnstableWarnTooltip
+    KARDS.CardEditor.Canvas._UnstableWarnTooltip = nil
+    if not t then return end
+    local size = UNSTABLE_WARN_SIZE
+    surface.SetFont("SourceHan_Heavy_16")
+    local tipW = surface.GetTextSize(UNSTABLE_WARN_TEXT)
+    local tipX = t.x + size + 6
+    local tipY = t.y - 4
+    draw.RoundedBox(4, tipX, tipY, tipW + 16, 30, Color(0, 0, 0, 210))
+    draw.SimpleText(UNSTABLE_WARN_TEXT, "SourceHan_Heavy_16", tipX + (tipW + 16) / 2, tipY + 15, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+end
+
+-- 单位类型规则（readme 7.3）：悬停或点击卡牌类型 chip 时写入 SuggestionText
+local UNIT_TYPE_RULES = {
+    infantry  = "步兵：步兵只能攻击相邻战线的敌人",
+    tank      = "坦克：坦克能在同一回合移动并攻击，只能攻击相邻战线的敌人",
+    artillery = "炮兵：炮兵在攻击时不会受到反击伤害，且能攻击被守护的单位",
+    fighter   = "战斗机：战斗机可以攻击任意阵线的目标，且能够拦截敌方轰炸机攻击同一阵线的友军。战斗机无法具有烟幕",
+    bomber    = "轰炸机：轰炸机在攻击除战斗机以外的目标时不会受到反击伤害，但被攻击时也不会造成反击伤害。轰炸机能攻击被守护的单位，但会被战斗机拦截",
+}
 
 function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local anchorX = trX + 15
@@ -365,26 +478,23 @@ function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
         local chipW = textW + 24
         local isHov = IsMouseIn(mx, my, leftX, optY, chipW, chipH)
 
-        -- Apple pill chip 风格
-        DrawApplePillChip(leftX, optY, chipW, chipH, name, isSelected, isHov, APPLE_RADII.pill, true)
+        -- Apple pill chip 风格（2026-08-16：单位类型图标，materials/kards/icons/cardtype_*.png）
+        DrawApplePillChip(leftX, optY, chipW, chipH, name, isSelected, isHov, APPLE_RADII.pill, true,
+            "materials/kards/icons/cardtype_" .. typeIds[i] .. ".png")
 
         -- 点击检测
         if isLeftPressed and isHov and isUnit then
             app.cardType = typeIds[i]
             app.veteranAppearance.cardType = typeIds[i]
-            KARDS.CardEditor.Canvas.SuggestionText = "当前卡牌类型: " .. name
+            -- 单位类型变更时重新按（单位类型 × 规模）分配部署/攻击音效
+            KARDS.CardSounds.AutoAssignDeploySound(app)
+            KARDS.CardSounds.AutoAssignAttackSound(app)
+            KARDS.CardEditor.Canvas.SuggestionText = UNIT_TYPE_RULES[typeIds[i]] or ("当前卡牌类型: " .. name)
         end
 
-        -- 悬停时更新SuggestionText
+        -- 悬停时把该单位类型规则写入 SuggestionText（readme 7.3）
         if isHov and not isLeftPressed then
-            local curText = KARDS.CardEditor.Canvas.SuggestionText
-            local isTypeText = false
-            for _, tn in ipairs(typeNames) do
-                if curText == "当前卡牌类型: " .. tn then isTypeText = true; break end
-            end
-            if isTypeText or curText == "" or curText == nil then
-                KARDS.CardEditor.Canvas.SuggestionText = "当前卡牌类型: " .. name
-            end
+            KARDS.CardEditor.Canvas.SuggestionText = UNIT_TYPE_RULES[typeIds[i]] or ("当前卡牌类型: " .. name)
         end
     end
 
@@ -443,6 +553,10 @@ function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
 
         if isHov and isLeftPressed and isUnit then
             KARDS.CardEditor.Canvas.SelectedCardScale = opt.id
+            app.cardScale = opt.id
+            -- 选择规模时自动分配部署/攻击音效（按单位类型 × 规模；缺失文件会提示准备）
+            KARDS.CardSounds.AutoAssignDeploySound(app)
+            KARDS.CardSounds.AutoAssignAttackSound(app)
         end
     end
 
@@ -460,33 +574,8 @@ function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local effX = anchorX + otherColW + colGap + otherColW + colGap
     draw.SimpleText("特效", "SourceHan_Heavy_16", effX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
-    -- 三角形感叹号提示标
-    local warnX = effX + 36
-    local warnY = anchorY
-    local warnSize = 16
-    local isWarnHovered = IsMouseIn(mx, my, warnX, warnY, warnSize, warnSize)
-    local triVerts = {
-        { x = warnX + warnSize / 2, y = warnY + 2 },
-        { x = warnX + 2, y = warnY + warnSize - 2 },
-        { x = warnX + warnSize - 2, y = warnY + warnSize - 2 },
-    }
-    surface.SetDrawColor(220, 180, 40)
-    draw.NoTexture()
-    surface.DrawPoly(triVerts)
-    draw.SimpleText("!", "SourceHan_Heavy_10", warnX + warnSize / 2, warnY + warnSize / 2 + 1, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    surface.SetDrawColor(220, 180, 40)
-    draw.NoTexture()
-    surface.DrawPoly(triVerts)
-
-    if isWarnHovered then
-        local tipText = "该配置极其不稳定或尚未完成"
-        surface.SetFont("SourceHan_Heavy_12")
-        local tipW = surface.GetTextSize(tipText)
-        local tipX2 = warnX + warnSize + 4
-        local tipY2 = warnY
-        draw.RoundedBox(4, tipX2, tipY2, tipW + 10, 22, Color(0, 0, 0, 200))
-        draw.SimpleText(tipText, "SourceHan_Heavy_12", tipX2 + (tipW + 10) / 2, tipY2 + 11, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    end
+    -- 不稳定警告标识（特效列，标题右侧；悬停提示由页面末尾统一绘制，2026-10-05）
+    KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(effX, anchorY, "特效", "SourceHan_Heavy_16", mx, my)
 
     -- 文件管理器
     local fmW = effColW
@@ -506,6 +595,10 @@ function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     draw.SimpleText("闪卡", "SourceHan_Heavy_16", newX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
     local fc = KARDS.CardEditor.Canvas.FlashCardToggle
+    -- 与 app.cardTemplate 同步（2026-10-04：此前开关只改 fc.isOn，从不写 app，开启不生效）
+    if not fc.isPressed then
+        fc.isOn = (app.cardTemplate == "flash")
+    end
     local toggleX = newX
     local toggleY = anchorY + 22
     local toggleHov = IsMouseIn(mx, my, toggleX, toggleY, toggleW, toggleH)
@@ -527,6 +620,12 @@ function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     if fc.lastLeft and not isLeftPressed and fc.isPressed and toggleHov then
         fc.isOn = not fc.isOn
         fc.isPressed = false
+        -- 写回卡牌模板（2026-10-04）：开启闪卡 → app.cardTemplate = "flash"，关闭 → "card"。
+        -- 该字段即卡牌预览卡面模板键的来源（TemplateKeyOf = cardTemplate .. "_" .. cardType）。
+        -- 闪卡模板覆盖单位/指令/反制（见 ImagePaths.template）；总部无 flash_headquarter，排除。
+        if app.cardType ~= "headquarter" then
+            app.cardTemplate = fc.isOn and "flash" or "card"
+        end
     end
     fc.lastLeft = isLeftPressed
 
@@ -595,13 +694,14 @@ function DrawTypeEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     -- 子类型标题
     local subtypeTitleY = toggleY + toggleH + 14
     draw.SimpleText("子类型选择器", "SourceHan_Heavy_16", newX, subtypeTitleY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(newX, subtypeTitleY, "子类型选择器", "SourceHan_Heavy_16", mx, my)
 
     -- 子类型选择器
     local subFMX = newX
     local subFMY = subtypeTitleY + 22
     local subFMW = newColW
     local subFMH = math.Clamp(trY + trH - subFMY - 15, 60, 160)
-    KARDS.CardEditor.Canvas.DrawSubtypeSelector(subFMX, subFMY, subFMW, subFMH, mx, my, isLeftPressed, dt)
+    KARDS.CardEditor.Canvas.DrawSubtypeSelector(subFMX, subFMY, subFMW, subFMH, mx, my, isLeftPressed, dt, app)
 end
 
 -- ================================================================
@@ -704,6 +804,105 @@ local function DrawSliderWithInput(x, y, colW, title, tipText, app, fieldName, s
     end
 end
 
+-- 转换目标卡选择器（2026-09-26 缺口 J）
+-- 位于老兵属性区第四行左列：点击按钮展开卡牌文件列表，选择本卡被转换效果作用后
+-- 变成的目标卡；列表首项「（无）」表示不换卡。列表本体延后到 DrawAttrEditArea
+-- 末尾绘制以覆盖底部条控件，本函数只负责标题/按钮绘制与交互，并返回列表绘制数据。
+-- 返回: overlay(列表绘制数据表或 nil), blockStrip(是否应屏蔽底部条控件交互)
+local function DrawConvertTargetSelector(x, y, colW, app, mx, my, isLeftPressed, bottomLimit)
+    local C = KARDS.CardEditor.Canvas
+
+    -- 标题
+    draw.SimpleText("转换目标卡", "SourceHan_Heavy_16", x, y, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+    -- 按钮：显示当前目标卡文件名（空为「（无）」）
+    local btnX, btnY, btnW, btnH = x, y + 26, colW, 32
+    local btnHover = IsMouseIn(mx, my, btnX, btnY, btnW, btnH)
+    draw.RoundedBox(APPLE_RADII.xs, btnX, btnY, btnW, btnH, btnHover and APPLE_DARK_HOVER or Color(40, 40, 40))
+    surface.SetDrawColor(APPLE_HAIRLINE)
+    surface.DrawOutlinedRect(btnX, btnY, btnW, btnH)
+
+    local value = app.convertTarget or ""
+    local label = "（无）"
+    if value ~= "" then
+        label = (KARDS.CardEditor.SaveSystem and KARDS.CardEditor.SaveSystem.UnescapeFileName)
+            and KARDS.CardEditor.SaveSystem.UnescapeFileName(value) or value
+    end
+    draw.SimpleText(label, "SourceHan_Heavy_14", btnX + 8, btnY + btnH / 2, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+
+    -- 右侧展开指示箭头
+    local arrowX = btnX + btnW - 12
+    local arrowY = btnY + btnH / 2
+    surface.SetDrawColor(150, 150, 150, 255)
+    if C._convertTargetExpanded then
+        surface.DrawLine(arrowX - 5, arrowY + 2, arrowX, arrowY - 2)
+        surface.DrawLine(arrowX, arrowY - 2, arrowX + 5, arrowY + 2)
+    else
+        surface.DrawLine(arrowX - 5, arrowY - 2, arrowX, arrowY + 2)
+        surface.DrawLine(arrowX, arrowY + 2, arrowX + 5, arrowY - 2)
+    end
+    surface.SetDrawColor(255, 255, 255, 255)
+
+    -- 点击按钮：切换展开/收起；重新展开时刷新卡牌文件列表（缓存于 _convertTargetList）
+    if isLeftPressed and btnHover then
+        if C._convertTargetExpanded then
+            C._convertTargetExpanded = false
+        else
+            C._convertTargetExpanded = true
+            C._convertTargetList = (KARDS.CardEditor.SaveSystem and KARDS.CardEditor.SaveSystem.GetCardFiles)
+                and KARDS.CardEditor.SaveSystem.GetCardFiles() or {}
+            C._convertTargetScroll = 0
+        end
+    end
+
+    if not C._convertTargetExpanded then return nil, false end
+
+    -- 列表几何：按钮下方展开，限制最大高度，空间不足时收窄
+    local list = C._convertTargetList or {}
+    local itemCount = #list + 1 -- 首项为「（无）」
+    local itemH = 22
+    local listX, listW = btnX, btnW
+    local listTop = btnY + btnH + 2
+    local avail = math.max(itemH + 8, bottomLimit - listTop)
+    local visible = math.max(1, math.floor((math.min(184, avail) - 8) / itemH))
+    visible = math.min(visible, itemCount)
+    local listH = visible * itemH + 8
+
+    -- 滚动偏移钳制 + 滚轮滚动（复用 CreateMove 设置的滚轮标记，鼠标悬停列表时生效；
+    -- 在此提前消费滚轮标记，避免被覆盖的底部条音效列表同时滚动）
+    local maxScroll = math.max(0, itemCount - visible)
+    C._convertTargetScroll = math.max(0, math.min(C._convertTargetScroll or 0, maxScroll))
+    local listHover = IsMouseIn(mx, my, listX, listTop, listW, listH)
+    if listHover then
+        if C._wheelZoomIn then
+            C._wheelZoomIn = false
+            C._convertTargetScroll = math.max(0, C._convertTargetScroll - 1)
+        elseif C._wheelZoomOut then
+            C._wheelZoomOut = false
+            C._convertTargetScroll = math.min(maxScroll, C._convertTargetScroll + 1)
+        end
+    end
+
+    -- 点击列表项：首项置空字符串（不换卡），其余写入文件名并收起列表
+    if isLeftPressed and listHover then
+        for i = 1, visible do
+            local idx = C._convertTargetScroll + i
+            if idx > itemCount then break end
+            local itemY = listTop + 4 + (i - 1) * itemH
+            if IsMouseIn(mx, my, listX, itemY, listW, itemH) then
+                app.convertTarget = (idx == 1) and "" or (list[idx - 1] or "")
+                C._convertTargetExpanded = false
+                break
+            end
+        end
+    end
+
+    return {
+        x = listX, y = listTop, w = listW, h = listH,
+        itemH = itemH, visible = visible, scroll = C._convertTargetScroll, list = list,
+    }, listHover
+end
+
 function DrawAttrEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local anchorX = trX + 15
     local anchorY = trY + 15
@@ -713,6 +912,9 @@ function DrawAttrEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local col1X = anchorX
     local col2X = anchorX + colW + colGap
     local rowH = 26 + 36 + 14 -- 每行高度（标题26 + 滑块36 + 间距14）
+
+    -- 转换目标卡下拉列表绘制数据（延后到函数末尾绘制，以覆盖底部条控件；2026-09-26 缺口 J）
+    local convOverlay, convBlockStrip = nil, false
 
     -- 总部模式：属性仅防御力（默认 20），隐藏攻击/设置花费/行动花费/老兵属性
     if app.cardType == "headquarter" then
@@ -725,18 +927,15 @@ function DrawAttrEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
 
     -- 指令/反制模式：无攻击力/防御力/行动花费（指令与反制卡不参与攻防），属性区仅保留设置花费
     -- 同时清除从单位卡切换类型时可能残留的攻击/防御/行动花费输入框状态，防止幽灵输入框写入无效字段
+    local isUnit = app.cardType == "infantry" or app.cardType == "tank" or app.cardType == "artillery" or app.cardType == "fighter" or app.cardType == "bomber"
     if app.cardType == "command" or app.cardType == "counter_command" then
         for _, key in ipairs({ "_attrInputState", "_defenseInputState", "_actionCostInputState" }) do
             local st = KARDS.CardEditor.Canvas[key]
             if st then st.active = false end
         end
-        draw.SimpleText("卡牌花费", "SourceHan_Heavy_16", anchorX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-        DrawSliderWithInput(anchorX, anchorY + 30, usable, "设置花费", "指令/反制卡仅可设置花费", app, "cost",
-            KARDS.CardEditor.Canvas._costSliderState, KARDS.CardEditor.Canvas._costInputState,
-            mx, my, isLeftPressed, dt)
-        return
     end
 
+    if isUnit then
     -- 第一行：攻击力 | 防御力
     DrawSliderWithInput(col1X, anchorY, colW, "攻击力", "拖动滑块设置攻击力 (0-99)", app, "attack",
         KARDS.CardEditor.Canvas._attackSliderState, KARDS.CardEditor.Canvas._attrInputState,
@@ -753,33 +952,69 @@ function DrawAttrEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     DrawSliderWithInput(col2X, costRowY, colW, "行动花费", nil, app, "actionCost",
         KARDS.CardEditor.Canvas._actionCostSliderState, KARDS.CardEditor.Canvas._actionCostInputState,
         mx, my, isLeftPressed, dt)
+    else
+        -- 指令/反制模式：仅卡牌花费
+        draw.SimpleText("卡牌花费", "SourceHan_Heavy_16", anchorX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        DrawSliderWithInput(anchorX, anchorY + 30, usable, "设置花费", "指令/反制卡仅可设置花费", app, "cost",
+            KARDS.CardEditor.Canvas._costSliderState, KARDS.CardEditor.Canvas._costInputState,
+            mx, my, isLeftPressed, dt)
+    end
 
-    -- 老兵模式：老兵属性置于页面最底（从底部向上布局）
-    local isUnit = app.cardType == "infantry" or app.cardType == "tank" or app.cardType == "artillery" or app.cardType == "fighter" or app.cardType == "bomber"
+    -- 底部条（效果类型多选 + 各类型音效选择器）与老兵属性区（2026-08-13）：
+    -- 老兵属性区可折叠——点击"— 老兵属性 —"分界线切换展开/折叠（app.vetExpanded，
+    -- 默认折叠）。展开（单位+可升为老兵词条+用户点击）时保持原样式：老兵滑块在
+    -- 底部条上方；折叠（含无词条——也算关闭）时底部条上移扩大、覆盖老兵滑块区域，
+    -- 仅保留灰色分界线。
     local isVet = isUnit and table.HasValue(app.keywords or {}, "can_elevate_to_veteran")
-    if isVet then
-        local vet = app.veteranAppearance
-        if not vet then
-            vet = {}
-            app.veteranAppearance = vet
-        end
+    local vetExpanded = isVet and app.vetExpanded -- 有词条且用户展开；无词条恒为折叠
+    local vetTitleH = 28       -- 标题行高
+    local vetSectionH = vetTitleH + 10 + rowH * 2 -- 标题 + 间距 + 两行滑块
+    local barBottom = trY + trH - 15
+    local baseStripH = 172
+    local openStripY = barBottom - baseStripH
+    -- 分界线固定于老兵区顶（底部条贴底 172 时的上方）；单位卡均显示（灰色=折叠/无词条）
+    local sepY = isUnit and (openStripY - 20 - vetSectionH) or nil
+    local StripY, StripH
+    if vetExpanded then
+        -- 展开：底部条贴底保持原样式，老兵滑块在分界线下方
+        StripY, StripH = openStripY, baseStripH
+    elseif isUnit then
+        -- 折叠（未展开或无可升为老兵词条）：底部条上移覆盖老兵滑块区，仅保留分界线
+        StripY = sepY + vetTitleH + 6
+        StripH = barBottom - StripY
+    else
+        -- 指令/反制卡：无老兵概念，底部条贴底原样式
+        StripY, StripH = openStripY, baseStripH
+    end
+    -- 极限保护：折叠上移不越出编辑区顶（极小窗口兜底；正常编辑区高度下不触发）
+    StripY = math.max(StripY, trY + 20)
+    StripH = math.max(60, barBottom - StripY)
 
-        -- 从底部向上计算位置
-        local vetTitleH = 28       -- 放大后的标题行高
-        local vetSectionH = vetTitleH + 10 + rowH * 2  -- 标题 + 间距 + 两行滑块
-        local vetStartY = trY + trH - 15 - vetSectionH  -- 底部留 15px padding
-
-        -- 分割线 + 放大标题 "— 老兵属性 —"
-        local sepY = vetStartY
+    -- 分界线 "— 老兵属性 —"（单位卡专属；点击切换展开/折叠，无词条时恒灰不可切换）
+    if sepY then
+        local sepHov = IsMouseIn(mx, my, anchorX, sepY, usable, vetTitleH)
         surface.SetFont("SourceHan_Heavy_18")
         local titleW = surface.GetTextSize("— 老兵属性 —")
         local lineY = sepY + 14
         local lineLeft = anchorX
         local lineRight = anchorX + usable
+        local sepColor = vetExpanded and APPLE_BLUE or Color(130, 130, 140)
         surface.SetDrawColor(APPLE_HAIRLINE)
         surface.DrawLine(lineLeft, lineY, math.floor((anchorX + usable / 2) - titleW / 2 - 8), lineY)
         surface.DrawLine(math.ceil((anchorX + usable / 2) + titleW / 2 + 8), lineY, lineRight, lineY)
-        draw.SimpleText("— 老兵属性 —", "SourceHan_Heavy_18", anchorX + usable / 2, sepY, APPLE_BLUE, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        draw.SimpleText("— 老兵属性 —", "SourceHan_Heavy_18", anchorX + usable / 2, sepY, sepColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        if isLeftPressed and sepHov and isVet then
+            app.vetExpanded = not app.vetExpanded
+        end
+    end
+
+    -- 老兵属性滑块（仅展开且有词条时绘制，保持原样式）
+    if vetExpanded then
+        local vet = app.veteranAppearance
+        if not vet then
+            vet = {}
+            app.veteranAppearance = vet
+        end
 
         -- 第三行：老兵攻击力 | 老兵防御力
         local vetRow1Y = sepY + vetTitleH + 6
@@ -795,6 +1030,100 @@ function DrawAttrEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
         DrawSliderWithInput(col2X, vetRow2Y, colW, "老兵行动花费", nil, vet, "actionCost",
             KARDS.CardEditor.Canvas._vetActionCostSliderState, KARDS.CardEditor.Canvas._vetActionCostInputState,
             mx, my, isLeftPressed, dt)
+
+        -- 第四行左列：转换目标卡选择器（返回列表绘制数据与底部条交互屏蔽标记）
+        convOverlay, convBlockStrip = DrawConvertTargetSelector(col1X, vetRow2Y, colW, app, mx, my, isLeftPressed, barBottom)
+    end
+
+    -- 老兵区收起时复位转换目标卡列表展开状态（2026-09-26 缺口 J）
+    if not vetExpanded then
+        KARDS.CardEditor.Canvas._convertTargetExpanded = false
+    end
+
+    -- ===== 底部条：效果类型多选（左下角）+ 各类型音效文件选择器（右侧） =====
+    -- 转换目标卡下拉列表覆盖底部条时，本帧屏蔽底部条控件的点击，防止点击穿透
+    local stripLeftPressed = isLeftPressed and not convBlockStrip
+    -- 效果类型：主动效果 / 被动效果（长方形块状多选，非胶囊；可同时选中两者）
+    app.effectTypes = app.effectTypes or {}
+    draw.SimpleText("效果类型", "SourceHan_Heavy_16", anchorX, StripY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    local chipW, chipH, chipGap = 78, 28, 8
+    local chipY = StripY + 30
+    local effectOptions = {
+        { id = "active", name = "主动效果" },
+        { id = "passive", name = "被动效果" },
+    }
+    for i, opt in ipairs(effectOptions) do
+        local cxp = anchorX + (i - 1) * (chipW + chipGap)
+        local selected = table.HasValue(app.effectTypes, opt.id)
+        local hover = IsMouseIn(mx, my, cxp, chipY, chipW, chipH)
+        DrawApplePillChip(cxp, chipY, chipW, chipH, opt.name, selected, hover, 6, true,
+            "materials/kards/effects/3d2d/" .. opt.id .. "_effect.png") -- 圆角6：长方形外貌；2026-08-16 效果类型图标
+        if stripLeftPressed and hover then
+            if selected then
+                for j = #app.effectTypes, 1, -1 do
+                    if app.effectTypes[j] == opt.id then table.remove(app.effectTypes, j) end
+                end
+            else
+                table.insert(app.effectTypes, opt.id)
+            end
+        end
+    end
+
+    -- 分隔竖线
+    local sepX = anchorX + 158
+    surface.SetDrawColor(APPLE_HAIRLINE)
+    surface.DrawLine(sepX, StripY, sepX, StripY + StripH)
+
+    -- 右侧：音效文件选择器（按卡牌类型给事件槽位：单位 部署/攻击/阵亡；指令 打出；反制 激活时/触发）
+    local sndX0 = anchorX + 170
+    local sndAvail = (anchorX + usable) - sndX0
+    local slots = {}
+    if app.cardType == "command" then
+        slots = { { key = "play" } }
+    elseif app.cardType == "counter_command" then
+        slots = { { key = "activate" }, { key = "trigger" } }
+    else
+        slots = { { key = "deploy" }, { key = "attack" }, { key = "death" } }
+    end
+    local boxGap = 10
+    local boxW = math.floor((sndAvail - boxGap * (#slots - 1)) / #slots)
+    for i, slot in ipairs(slots) do
+        local bx = sndX0 + (i - 1) * (boxW + boxGap)
+        KARDS.CardEditor.Canvas.DrawSoundFileManager(bx, StripY, boxW, StripH, mx, my, stripLeftPressed, dt, slot.key, app)
+    end
+
+    -- ===== 转换目标卡下拉列表（最后绘制以覆盖底部条控件；2026-09-26 缺口 J） =====
+    if convOverlay then
+        local ox, oy, ow, oh = convOverlay.x, convOverlay.y, convOverlay.w, convOverlay.h
+        local itemH = convOverlay.itemH
+        local visible = convOverlay.visible
+        local scroll = convOverlay.scroll
+        local list = convOverlay.list or {}
+        local currentValue = app.convertTarget or ""
+        draw.RoundedBox(APPLE_RADII.xs, ox, oy, ow, oh, Color(35, 35, 38))
+        surface.SetDrawColor(APPLE_HAIRLINE)
+        surface.DrawOutlinedRect(ox, oy, ow, oh)
+        for i = 1, visible do
+            local idx = scroll + i
+            local itemY = oy + 4 + (i - 1) * itemH
+            local value, label
+            if idx == 1 then
+                value, label = "", "（无）"
+            else
+                value = list[idx - 1]
+                if not value then break end
+                label = (KARDS.CardEditor.SaveSystem and KARDS.CardEditor.SaveSystem.UnescapeFileName)
+                    and KARDS.CardEditor.SaveSystem.UnescapeFileName(value) or value
+            end
+            local selected = (currentValue == value)
+            if selected then
+                draw.RoundedBox(3, ox + 2, itemY, ow - 4, itemH, APPLE_BLUE)
+            elseif IsMouseIn(mx, my, ox, itemY, ow, itemH) then
+                draw.RoundedBox(3, ox + 2, itemY, ow - 4, itemH, Color(60, 60, 64))
+            end
+            draw.SimpleText(label, "SourceHan_Heavy_14", ox + 8, itemY + itemH / 2,
+                selected and APPLE_TEXT_ON_BLUE or APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        end
     end
 end
 
@@ -830,8 +1159,10 @@ function DrawCountryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
             KARDS.CardEditor.Canvas.SuggestionText = c.desc
         end
 
-        -- Apple pill chip 风格
-        DrawApplePillChip(bx, by, chipW, chipH, c.name, isSel, isHov, APPLE_RADII.pill, true)
+        -- Apple pill chip 风格（2026-08-16：国家图标，materials/kards/icons/country_*.png；
+        -- "无"无图标；bgZoom = 4 比全局默认 ×2 再放大一倍）
+        local countryIcon = c.id ~= "none" and ("materials/kards/icons/country_" .. c.id .. ".png") or nil
+        DrawApplePillChip(bx, by, chipW, chipH, c.name, isSel, isHov, APPLE_RADII.pill, true, countryIcon, nil, 4)
 
         if isHov and isLeftPressed then
             KARDS.CardEditor.Canvas.SelectCountry(c.id)
@@ -873,9 +1204,11 @@ local function DrawKeywordChipGrid(anchorX, anchorY, chipW, cols, keywordsList, 
             KARDS.CardEditor.Canvas.SuggestionText = kwDesc
         end
 
-        DrawApplePillChip(bx, by, chipW, chipH, nil, isSel, isHov, chipR, true)
+        DrawApplePillChip(bx, by, chipW, chipH, nil, isSel, isHov, chipR, true, kw.bg, kw.bgPad)
 
         local handledByNum = false
+        -- 钳击输入框内点击标志（2026-10-04）：避免点击输入框时又触发下方的词条勾选切换而取消钳击
+        local handledByInput = false
         if kw.hasNum and isSel then
             local numVal = (targetKeywordValues and targetKeywordValues[kw.numKey]) or 0
             local numW = 68
@@ -980,6 +1313,7 @@ local function DrawKeywordChipGrid(anchorX, anchorY, chipW, cols, keywordsList, 
                 if isLeftPressed then
                     if mx >= inputX and mx <= inputX + inputW and my >= inputY and my <= inputY + inputH then
                         KARDS.CardEditor.Canvas.PincerInputState.active = true
+                        handledByInput = true
                     elseif not (mx >= bx and mx <= bx + chipW and my >= by and my <= by + chipH) then
                         -- 点击输入框外才失活
                         KARDS.CardEditor.Canvas.PincerInputState.active = false
@@ -991,7 +1325,7 @@ local function DrawKeywordChipGrid(anchorX, anchorY, chipW, cols, keywordsList, 
             end
         end
 
-        if isHov and isLeftPressed and not handledByNum then
+        if isHov and isLeftPressed and not handledByNum and not handledByInput then
             if isSel then
                 local newKeys = {}
                 for _, kid in ipairs(targetKeywords) do
@@ -1025,6 +1359,23 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
     local chipGap = 8
     local chipH = 36
 
+    -- 词条勾选后刷新已打开的 INE 效果编辑器开始点（钳击/钳击对象/升级）：
+    -- 修复"勾选钳击/可升为老兵时开始点不出现"——效果编辑器已存在时从不刷新。
+    -- 仅监听普通词条（app.keywords），与 CreateStartNodesForEditor 读取来源一致；
+    -- 老兵面板词条（vetApp.keywords）不驱动开始点，不在此监听。
+    do
+        local kwSig = table.concat(app.keywords or {}, ",")
+        local lastSig = KARDS.CardEditor.Canvas._keywordSigForStartNodes
+        if kwSig ~= lastSig then
+            KARDS.CardEditor.Canvas._keywordSigForStartNodes = kwSig
+            local ineM = KARDS.CardEditor.IndependentNodeEditor
+            local effectEd = ineM and ineM.Editors["card_effect_editor"]
+            if effectEd then
+                ineM:RefreshKeywordStartNodes(effectEd)
+            end
+        end
+    end
+
     -- 同步钳击输入框文本
     if KARDS.CardEditor.Canvas.PincerInputState then
         KARDS.CardEditor.Canvas.PincerInputState.text = app.pincerValue or ""
@@ -1032,19 +1383,19 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
 
     local allKeywords = {
         { id = "blitz",       name = "闪击",     hasNum = false },
-        { id = "impact",      name = "冲击",     hasNum = false },
-        { id = "smoke",       name = "烟幕",     hasNum = false },
-        { id = "conceal",     name = "隐蔽",     hasNum = false },
-        { id = "fight_hard",  name = "奋战",     hasNum = false },
-        { id = "guard",       name = "守护",     hasNum = false },
+        { id = "impact",      name = "冲击",     hasNum = false, bg = "materials/kards/effects/3d2d/shock.png" },
+        { id = "smoke",       name = "烟幕",     hasNum = false, bg = "materials/kards/effects/3d2d/smoke.png" },
+        { id = "conceal",     name = "隐蔽",     hasNum = false, bg = "materials/kards/effects/3d2d/stealth.png" },
+        { id = "fight_hard",  name = "奋战",     hasNum = false, bg = "materials/kards/effects/3d2d/frenzy.png" },
+        { id = "guard",       name = "守护",     hasNum = false, bg = "materials/kards/effects/3d2d/guard.png" },
         { id = "mountain",    name = "山地",     hasNum = false },
-        { id = "death_plan",  name = "亡计",     hasNum = false },
-        { id = "ambush",      name = "伏击",     hasNum = false },
-        { id = "mobilize",    name = "动员",     hasNum = false },
-        { id = "intel",       name = "情报",     hasNum = true,  numKey = "intel",       maxVal = 9 },
-        { id = "countdown",   name = "倒计时",   hasNum = true,  numKey = "countdown",   maxVal = 9 },
-        { id = "heavy_armor", name = "重甲",     hasNum = true,  numKey = "heavy_armor", maxVal = 3 },
-        { id = "pincer",      name = "钳击",     hasNum = false },
+        { id = "death_plan",  name = "亡计",     hasNum = false, bg = "materials/kards/effects/3d2d/deathrattle.png" },
+        { id = "ambush",      name = "伏击",     hasNum = false, bg = "materials/kards/effects/3d2d/ambush.png" },
+        { id = "mobilize",    name = "动员",     hasNum = false, bg = "materials/kards/effects/3d2d/mobilize.png" },
+        { id = "intel",       name = "情报",     hasNum = true,  numKey = "intel",       maxVal = 9, bg = "materials/kards/effects/other/intel.png" },
+        { id = "countdown",   name = "倒计时",   hasNum = true,  numKey = "countdown",   maxVal = 9, bg = "materials/kards/effects/3d2d/countdown.png" },
+        { id = "heavy_armor", name = "重甲",     hasNum = true,  numKey = "heavy_armor", maxVal = 3, bg = "materials/kards/effects/3d2d/armor.png" },
+        { id = "pincer",      name = "钳击",     hasNum = false, bg = "materials/kards/effects/3d2d/pincer.png" },
         { id = "cooperation", name = "协力",     hasNum = false },
         { id = "forecast",    name = "预报",     hasNum = false },
     }
@@ -1076,9 +1427,10 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
         -- 左侧特别词条
         local specialY = startY + leftTotalH + 16
         draw.SimpleText("特别词条", "SourceHan_Heavy_14", anchorX, specialY, APPLE_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(anchorX, specialY, "特别词条", "SourceHan_Heavy_14", mx, my)
         local specialKeywords = {
             { id = "exile",                  name = "流亡",        desc = "流亡牌可投入包含本国的卡组，也可投入包含流亡国的卡组" },
-            { id = "can_elevate_to_veteran", name = "可升为老兵",  desc = "该卡牌可以升级为老兵状态，拥有一套独立的老兵外观和升级效果" },
+            { id = "can_elevate_to_veteran", name = "可升为老兵",  desc = "该卡牌可以升级为老兵状态，拥有一套独立的老兵外观和升级效果", bg = "materials/kards/effects/3d2d/veteran.png" },
         }
         for i, skw in ipairs(specialKeywords) do
             local spW = math.max(80, math.floor((halfW - chipGap) / 2))
@@ -1090,7 +1442,7 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
             end
             local isHov = IsMouseIn(mx, my, sbx, sby, spW, chipH)
             if isHov then KARDS.CardEditor.Canvas.SuggestionText = skw.desc end
-            DrawApplePillChip(sbx, sby, spW, chipH, skw.name, isSel, isHov, math.floor(chipH / 2), false)
+            DrawApplePillChip(sbx, sby, spW, chipH, skw.name, isSel, isHov, math.floor(chipH / 2), false, skw.bg, skw.bgPad)
             if isHov and isLeftPressed then
                 if isSel then
                     local newKeys = {}
@@ -1123,37 +1475,8 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
         end
 
         local rightTotalH = DrawKeywordChipGrid(rightX, startY, chipW, cols, activeKeywords, vetApp.keywords, vetApp.keywordValues, mx, my, isLeftPressed)
-
-        -- 右侧特别词条
-        local vetSpecialY = startY + rightTotalH + 16
-        draw.SimpleText("老兵特别词条", "SourceHan_Heavy_14", rightX, vetSpecialY, APPLE_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-        local vetSpecialKw = {
-            { id = "exile",    name = "流亡",    desc = "流亡牌可投入包含本国的卡组，也可投入包含流亡国的卡组" },
-        }
-        for i, skw in ipairs(vetSpecialKw) do
-            local spW = math.max(80, math.floor((halfW - chipGap) / 2))
-            local sbx = rightX + (i - 1) * (spW + chipGap)
-            local sby = vetSpecialY + 20
-            local isSel = false
-            for _, kid in ipairs(vetApp.keywords) do
-                if kid == skw.id then isSel = true; break end
-            end
-            local isHov = IsMouseIn(mx, my, sbx, sby, spW, chipH)
-            if isHov then KARDS.CardEditor.Canvas.SuggestionText = skw.desc end
-            DrawApplePillChip(sbx, sby, spW, chipH, skw.name, isSel, isHov, math.floor(chipH / 2), false)
-            if isHov and isLeftPressed then
-                if isSel then
-                    local newKeys = {}
-                    for _, kid in ipairs(vetApp.keywords) do
-                        if kid ~= skw.id then table.insert(newKeys, kid) end
-                    end
-                    for i = #vetApp.keywords, 1, -1 do vetApp.keywords[i] = nil end
-                    for _, v in ipairs(newKeys) do table.insert(vetApp.keywords, v) end
-                else
-                    table.insert(vetApp.keywords, skw.id)
-                end
-            end
-        end
+        -- 2026-08-16：老兵侧不提供特别战斗词条配置——特别战斗词条仅「流亡/老兵」两种：
+        -- 流亡属卡组配组时配置（左侧普通词条）；可升为老兵的对象升为老兵后即此面板，无需再配「老兵」
     else
         -- 非老兵模式：保持原有布局
         draw.SimpleText("战斗词条", "SourceHan_Heavy_16", anchorX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
@@ -1169,9 +1492,10 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
             -- 特别词条
             local specialY = startY + totalH + 16
             draw.SimpleText("特别词条", "SourceHan_Heavy_14", anchorX, specialY, APPLE_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(anchorX, specialY, "特别词条", "SourceHan_Heavy_14", mx, my)
             local specialKeywords = {
                 { id = "exile",                  name = "流亡",        desc = "流亡牌可投入包含本国的卡组，也可投入包含流亡国的卡组" },
-                { id = "can_elevate_to_veteran", name = "可升为老兵",  desc = "该卡牌可以升级为老兵状态，拥有一套独立的老兵外观和升级效果" },
+                { id = "can_elevate_to_veteran", name = "可升为老兵",  desc = "该卡牌可以升级为老兵状态，拥有一套独立的老兵外观和升级效果", bg = "materials/kards/effects/3d2d/veteran.png" },
             }
             local spCols = 2
             local spW = math.max(100, math.floor((trW - 30 - (spCols - 1) * chipGap) / spCols))
@@ -1185,7 +1509,7 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
             end
             local isHov = IsMouseIn(mx, my, sbx, sby, spW, chipH)
             if isHov then KARDS.CardEditor.Canvas.SuggestionText = skw.desc end
-            DrawApplePillChip(sbx, sby, spW, chipH, skw.name, isSel, isHov, math.floor(chipH / 2), false)
+            DrawApplePillChip(sbx, sby, spW, chipH, skw.name, isSel, isHov, math.floor(chipH / 2), false, skw.bg, skw.bgPad)
             if isHov and isLeftPressed then
                 if isSel then
                     local newKeys = {}
@@ -1206,6 +1530,55 @@ function DrawKeywordsEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt
     if KARDS.CardEditor.Canvas.PincerInputState then
         app.pincerValue = KARDS.CardEditor.Canvas.PincerInputState.text or ""
     end
+
+    -- ===== 流亡国家多选（2026-08-16） =====
+    -- 选择「流亡」词条后，页底显示所有国家多选区；保存时随 app 一并落盘：
+    -- 普通流亡（app.keywords）→ app.exileCountries；老兵流亡（vetApp.keywords）
+    -- → app.veteranAppearance.exileCountries（readme 7.2.3 流亡=可投入含本国/流亡国的卡组）
+    local exileTarget
+    if isUnit then
+        if table.HasValue(app.keywords or {}, "exile") then
+            exileTarget = app
+        elseif IsVeteranMode(app) and app.veteranAppearance
+            and table.HasValue(app.veteranAppearance.keywords or {}, "exile") then
+            exileTarget = app.veteranAppearance
+        end
+    end
+    if exileTarget then
+        exileTarget.exileCountries = exileTarget.exileCountries or {}
+        local ExileCountries = {
+            { id = "usa", name = "美国" }, { id = "germany", name = "德国" },
+            { id = "soviet", name = "苏联" }, { id = "uk", name = "英国" },
+            { id = "japan", name = "日本" }, { id = "italy", name = "意大利" },
+            { id = "france", name = "法国" }, { id = "poland", name = "波兰" },
+        }
+        local exY = trY + trH - 44
+        draw.SimpleText("流亡国家", "SourceHan_Heavy_14", anchorX, exY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        local exW, exH2, exGap = 76, 24, 6
+        local exX = anchorX + 84
+        for i, c in ipairs(ExileCountries) do
+            if exX + exW > anchorX + (trW - 30) then
+                exX = anchorX
+                exY = exY + exH2 + exGap
+            end
+            local isSel2 = table.HasValue(exileTarget.exileCountries, c.id)
+            local isHov2 = IsMouseIn(mx, my, exX, exY, exW, exH2)
+            if isHov2 then KARDS.CardEditor.Canvas.SuggestionText = "流亡国家：" .. c.name end
+            DrawApplePillChip(exX, exY, exW, exH2, c.name, isSel2, isHov2, math.floor(exH2 / 2), false)
+            if isHov2 and isLeftPressed then
+                if isSel2 then
+                    local newC = {}
+                    for _, v in ipairs(exileTarget.exileCountries) do
+                        if v ~= c.id then table.insert(newC, v) end
+                    end
+                    exileTarget.exileCountries = newC
+                else
+                    table.insert(exileTarget.exileCountries, c.id)
+                end
+            end
+            exX = exX + exW + exGap
+        end
+    end
 end
 
 -- SourceHan_Heavy 已注册的所有有效字号（参见 Oak_world_Library sh_fonts.lua）
@@ -1223,6 +1596,43 @@ local function SnapToValidFontSize(val)
 end
 
 -- ===== 描述编辑区 =====
+-- 富文本工具栏（描述页，2026-10-04）：在光标处插入 <b></b> / <i></i>，
+-- 与渲染端 ParseRichText（cl_card_preview.lua）支持的标签一致；关键词高亮由渲染端按
+-- KeywordsForHighlight 自动处理，无需标签。
+-- stateTable 为对应输入状态（_descInputState / _vetDescInputState），app 为外观数据表。
+local function DrawRichTextToolbar(x, y, stateTable, app, isVetPanel, mx, my, isLeftPressed)
+    local btns = {
+        { label = "B", openTag = "<b>", closeTag = "</b>" },
+        { label = "I", openTag = "<i>", closeTag = "</i>" },
+    }
+    local bw, bh, gap = 26, 22, 6
+    local bx = x
+    for _, b in ipairs(btns) do
+        local hov = IsMouseIn(mx, my, bx, y, bw, bh)
+        draw.RoundedBox(4, bx, y, bw, bh, hov and Color(70, 130, 220) or Color(90, 90, 96))
+        draw.SimpleText(b.label, "SourceHan_Heavy_14", bx + bw / 2, y + bh / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        if hov and isLeftPressed and stateTable then
+            local text = stateTable.text or ""
+            local n = #text
+            -- caretPos 为字节偏移（DTextEntry 语义），初值可能来自 utf8.len（字符数）。
+            -- 统一按字节处理并钳制，避免 utf8.offset 落在续字节上抛 "initial position is a continuation byte"（2026-10-04）
+            local cp = tonumber(stateTable.caretPos)
+            if cp == nil or cp < 0 or cp > n then cp = n end
+            stateTable.text = string.sub(text, 1, cp) .. b.openTag .. b.closeTag .. string.sub(text, cp + 1)
+            stateTable.caretPos = cp + #b.openTag
+            -- 同步写回外观数据（输入框未激活时 DTextEntry 的 OnTextChanged 不会触发）
+            if app then
+                if isVetPanel then
+                    if app.veteranAppearance then app.veteranAppearance.specialEffect = stateTable.text end
+                else
+                    app.specialEffect = stateTable.text
+                end
+            end
+        end
+        bx = bx + bw + gap
+    end
+end
+
 function DrawDescriptionEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local anchorX = trX + 15
     local anchorY = trY + 15
@@ -1322,6 +1732,8 @@ function DrawDescriptionEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed,
         local descState = KARDS.CardEditor.Canvas._descInputState or {}
         local isActive = descState.active or false
         local searchText = descState.text or ""
+        -- 富文本工具栏（加粗/斜体），插入到光标处（2026-10-04）
+        DrawRichTextToolbar(anchorX + 90, descLabelY, descState, app, false, mx, my, isLeftPressed)
 
         if isActive then
             draw.RoundedBox(APPLE_RADII.sm, leftInputX, leftInputY, leftInputW, leftInputH, APPLE_WHITE)
@@ -1400,6 +1812,8 @@ function DrawDescriptionEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed,
         local vetDescState = KARDS.CardEditor.Canvas._vetDescInputState or {}
         local vetIsActive = vetDescState.active or false
         local vetText = vetDescState.text or ""
+        -- 富文本工具栏（加粗/斜体），插入到光标处（2026-10-04）
+        DrawRichTextToolbar(rightInputX + 130, descLabelY, vetDescState, app, true, mx, my, isLeftPressed)
 
         if vetIsActive then
             draw.RoundedBox(APPLE_RADII.sm, rightInputX, rightInputY, rightInputW, rightInputH, APPLE_WHITE)
@@ -1475,6 +1889,8 @@ function DrawDescriptionEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed,
         local descState = KARDS.CardEditor.Canvas._descInputState or {}
         local isActive = descState.active or false
         local searchText = descState.text or ""
+        -- 富文本工具栏（加粗/斜体），插入到光标处（2026-10-04）
+        DrawRichTextToolbar(anchorX + 90, descLabelY, descState, app, false, mx, my, isLeftPressed)
 
         if isActive then
             draw.RoundedBox(APPLE_RADII.sm, inputX, inputY, inputW_val, inputH_val, APPLE_WHITE)
@@ -1869,27 +2285,31 @@ function DrawIllustrationEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed
             pv.mat = nil
         end
     end
-    -- 新槽淡入（无效材质不淡入），旧槽持续淡出（约 0.17 秒到位）
-    pv.alpha = math.Approach(pv.alpha, pv.mat and 1 or 0, dt * 6)
-    pvOld.alpha = math.Approach(pvOld.alpha, 0, dt * 6)
-    -- 绘制：先旧后新，新图覆盖旧图实现交叉淡入淡出
-    if pvOld.alpha > 0.02 and pvOld.mat then
-        local a = math.floor(220 * pvOld.alpha)
-        draw.RoundedBox(APPLE_RADII.sm, pvOld.x - 4, pvOld.y - 4, pvOld.w + 8, pvOld.h + 8, Color(40, 40, 40, a))
-        surface.SetDrawColor(255, 255, 255, math.floor(255 * pvOld.alpha))
-        surface.SetMaterial(pvOld.mat)
-        surface.DrawTexturedRect(pvOld.x, pvOld.y, pvOld.w, pvOld.h)
-    end
-    if pv.alpha > 0.02 and pv.mat then
-        local a = math.floor(220 * pv.alpha)
-        draw.RoundedBox(APPLE_RADII.sm, pv.x - 4, pv.y - 4, pv.w + 8, pv.h + 8, Color(40, 40, 40, a))
-        surface.SetDrawColor(255, 255, 255, math.floor(255 * pv.alpha))
-        surface.SetMaterial(pv.mat)
-        surface.DrawTexturedRect(pv.x, pv.y, pv.w, pv.h)
-    end
-    -- 旧槽淡出完成后清除材质
-    if pvOld.alpha <= 0.02 then
-        pvOld.mat = nil
+    -- 悬停预览的绘制推迟到本区全部内容之后（2026-10-04：保证在最高层，不被底部预览框等后续内容遮挡）。
+    -- 此处仅定义绘制函数，实际调用在 DrawIllustrationEditArea 末尾。
+    local function DrawIllustrationHoverPreview()
+        -- 新槽淡入（无效材质不淡入），旧槽持续淡出（约 0.17 秒到位）
+        pv.alpha = math.Approach(pv.alpha, pv.mat and 1 or 0, dt * 6)
+        pvOld.alpha = math.Approach(pvOld.alpha, 0, dt * 6)
+        -- 绘制：先旧后新，新图覆盖旧图实现交叉淡入淡出
+        if pvOld.alpha > 0.02 and pvOld.mat then
+            local a = math.floor(220 * pvOld.alpha)
+            draw.RoundedBox(APPLE_RADII.sm, pvOld.x - 4, pvOld.y - 4, pvOld.w + 8, pvOld.h + 8, Color(40, 40, 40, a))
+            surface.SetDrawColor(255, 255, 255, math.floor(255 * pvOld.alpha))
+            surface.SetMaterial(pvOld.mat)
+            surface.DrawTexturedRect(pvOld.x, pvOld.y, pvOld.w, pvOld.h)
+        end
+        if pv.alpha > 0.02 and pv.mat then
+            local a = math.floor(220 * pv.alpha)
+            draw.RoundedBox(APPLE_RADII.sm, pv.x - 4, pv.y - 4, pv.w + 8, pv.h + 8, Color(40, 40, 40, a))
+            surface.SetDrawColor(255, 255, 255, math.floor(255 * pv.alpha))
+            surface.SetMaterial(pv.mat)
+            surface.DrawTexturedRect(pv.x, pv.y, pv.w, pv.h)
+        end
+        -- 旧槽淡出完成后清除材质
+        if pvOld.alpha <= 0.02 then
+            pvOld.mat = nil
+        end
     end
 
     -- 文件名全名提示：悬停在"名称被截断"的图片选项上时，在文件名位置淡入矩形展示全名
@@ -2138,6 +2558,15 @@ function DrawIllustrationEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed
                     -- 将屏幕像素增量转换为模板空间单位（除以缩放因子），使两处预览偏移一致
                     app.imageOffsetX = dragState.dragStartOffsetX + dx / editScaleFactor
                     app.imageOffsetY = dragState.dragStartOffsetY + dy / editScaleFactor
+                    -- 越界钳制（2026-10-04）：保证图片始终覆盖预览框，拖拽不出现留白
+                    if editScaleFactor and editScaleFactor > 0 then
+                        local drawnW = texW * 0.25 * (app.imageScale or 1) * editScaleFactor
+                        local drawnH = texH * 0.25 * (app.imageScale or 1) * editScaleFactor
+                        local maxOffX = math.max(0, (drawnW - previewW) / (2 * editScaleFactor))
+                        local maxOffY = math.max(0, (drawnH - previewH) / (2 * editScaleFactor))
+                        app.imageOffsetX = math.Clamp(app.imageOffsetX, -maxOffX, maxOffX)
+                        app.imageOffsetY = math.Clamp(app.imageOffsetY, -maxOffY, maxOffY)
+                    end
                 else
                     dragState.isDragging = false
                 end
@@ -2202,6 +2631,9 @@ function DrawIllustrationEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed
     if app.imagePath and #app.imagePath > 0 then
         draw.SimpleText("路径: " .. app.imagePath, fontBody, anchorX, previewY + previewH + 10, Color(140, 140, 140), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
     end
+
+    -- 悬停预览最后绘制（最高层，避免被底部预览框等后续内容遮挡）
+    DrawIllustrationHoverPreview()
 end
 
 -- 插图文件尺寸缓存（path -> {w, h}）
@@ -2408,6 +2840,7 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
 
     -- 主标题
     draw.SimpleText("历史插图", fontTitle, c1x, ly, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(c1x, ly, "历史插图", fontTitle, mx, my)
     ly = ly + 34
 
     -- === 方式一：从本地上传 ===
@@ -2420,87 +2853,298 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local folderClr = Color(100, 160, 255)
     draw.SimpleText("garrysmod/data/kards_images/", fontBody, c1x, ly, folderClr, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
-    -- 扫描按钮
+    -- 扫描按钮（左半）+ 排列样式按钮（右半：按下一次切换到下一样式 3→6→9→3，与插图页改造一致）
     ly = ly + bodyH + 12
-    local btnW = colW
-    local btnH2 = 32
     local btnY = ly
+    local btnGap = 8
+    local btnW = math.floor((colW - btnGap) / 2)
+    local btnH2 = 32
     local btnHov = mx >= c1x and mx <= c1x + btnW and my >= btnY and my <= btnY + btnH2
-    if btnHov then
-        draw.RoundedBox(APPLE_RADII.sm, c1x, btnY, btnW, btnH2, Color(70, 130, 220))
-    else
-        draw.RoundedBox(APPLE_RADII.sm, c1x, btnY, btnW, btnH2, Color(60, 110, 200))
-    end
-    draw.SimpleText("扫描本地图片", fontBody, c1x + btnW / 2, btnY + btnH2 / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    DrawHoverButton(c1x, btnY, btnW, btnH2, "扫描本地图片", btnHov, { radius = APPLE_RADII.sm, hoverBg = Color(70, 130, 220), normalBg = Color(60, 110, 200), font = fontBody })
     if isLeftPressed and btnHov then
         ScanLocalImages()
     end
+    -- 排列样式按钮：显示当前每行张数，按下一次循环切换到下一样式
+    local cycleBtnX = c1x + btnW + btnGap
+    local cycleBtnW = colW - btnW - btnGap
+    local cycleCols = KARDS.CardEditor.Canvas._historyImageCols or 3
+    if cycleCols ~= 3 and cycleCols ~= 6 and cycleCols ~= 9 then
+        cycleCols = 3
+    end
+    local cycleHov = mx >= cycleBtnX and mx <= cycleBtnX + cycleBtnW and my >= btnY and my <= btnY + btnH2
+    DrawHoverButton(cycleBtnX, btnY, cycleBtnW, btnH2, "排列: " .. cycleCols .. "张/行", cycleHov, { radius = APPLE_RADII.sm, hoverBg = Color(70, 130, 220), normalBg = Color(60, 110, 200), font = fontBody })
+    if isLeftPressed and cycleHov then
+        KARDS.CardEditor.Canvas._historyImageCols = (cycleCols == 3 and 6) or (cycleCols == 6 and 9) or 3
+    end
 
-    -- 本地图片文件列表
+    -- 本地图片文件列表（缩略图网格：每个选项为一张以"填充"铺满矩形的图片缩略图，与插图页一致）
     ly = ly + btnH2 + 12
     local localState = KARDS.CardEditor.Canvas._localImageState or {}
     local files = localState.files or {}
     local hoveredHistoryPath = nil
+    local hoveredHistoryThumbRect = nil
+    local hoveredHistoryNameTip = nil
+    local anyHistoryItemHovered = false
     if #files == 0 then
         draw.SimpleText("（尚未扫描到任何图片文件）", fontBody, c1x, ly, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
     else
         draw.SimpleText("可用的本地图片：", fontBody, c1x, ly, APPLE_INK_MUTED60, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
         ly = ly + bodyH + 6
+
+        -- 当前排列样式（每行图片数），由上方"排列"按钮循环切换，持久化在 Canvas 状态（独立于插图页 _localImageCols）
+        local gridCols = KARDS.CardEditor.Canvas._historyImageCols or 3
+        if gridCols ~= 3 and gridCols ~= 6 and gridCols ~= 9 then
+            gridCols = 3
+        end
+
+        -- 缩略图网格：每行 gridCols 张，图片以"填充"模式铺满整个缩略图矩形（object-fit: cover），
+        -- 超出部分居中裁剪，选中用蓝色描边、悬停用淡蓝描边标识
+        local gridGap = 6
+        local thumbW = math.floor((colW - (gridCols - 1) * gridGap) / gridCols)
+        -- 历史页左列较宽：正方形缩略图若随列宽放大，行高会挤压下方布局（预览区被挤出页面底部），钳制最大边长
+        local maxThumb = 60
+        thumbW = math.min(thumbW, maxThumb)
+        local thumbH = thumbW
+        local rowGap = 6
+        local thumbFont = "SourceHan_Heavy_12"
+        -- 网格高度限制：保持原有布局约束（不侵入下方方式二/预览区）
         local fileListMaxY = anchorY + availH * 0.5
-        local maxItems = math.floor((fileListMaxY - ly) / (bodyH + 6))
-        maxItems = math.max(1, math.min(maxItems, #files))
+        local maxRows = math.floor((fileListMaxY - ly) / (thumbH + rowGap))
+        maxRows = math.max(1, maxRows)
+        local maxItems = math.min(#files, maxRows * gridCols)
         for i = 1, maxItems do
-            local fname = files[i]
-            local itemHov = mx >= c1x and mx <= c1x + colW and my >= ly and my <= ly + bodyH + 4
-            local isSelected = app.historyImagePath == "../data/kards_images/" .. fname
+            local col = (i - 1) % gridCols
+            local row = math.floor((i - 1) / gridCols)
+            local tx = c1x + col * (thumbW + gridGap)
+            local ty = ly + row * (thumbH + rowGap)
+            local fullName = files[i]
+            local filePath = "../data/kards_images/" .. fullName
+            -- 文件名截断（字号不变 SourceHan_Heavy_12）：长名从"可显示前缀倒数第2个字符"处
+            -- 开始改为"……"，溢出文字不显示
+            local label = fullName
+            local truncated = false
+            if thumbH >= 18 then
+                local maxLabelW = math.max(8, thumbW - 6)
+                surface.SetFont(thumbFont)
+                if surface.GetTextSize(fullName) > maxLabelW then
+                    truncated = true
+                    -- 求能完整显示的字符数（字节安全）
+                    local fitChars = 0
+                    while true do
+                        local nextOff = utf8.offset(fullName, fitChars + 2)
+                        if not nextOff then break end
+                        if surface.GetTextSize(string.sub(fullName, 1, nextOff - 1)) > maxLabelW then break end
+                        fitChars = fitChars + 1
+                    end
+                    -- 溢出文字从 -2 处开始改为"……"（保留 fitChars-2 个字符）
+                    local keepChars = math.max(1, fitChars - 2)
+                    local kb = utf8.offset(fullName, keepChars + 1)
+                    label = string.sub(fullName, 1, (kb and kb - 1) or #fullName) .. "……"
+                    -- 若替换后仍超宽，逐步减字符（最少保留 1 个字符）
+                    while surface.GetTextSize(label) > maxLabelW and keepChars > 1 do
+                        keepChars = keepChars - 1
+                        local kb2 = utf8.offset(fullName, keepChars + 1)
+                        label = string.sub(fullName, 1, (kb2 and kb2 - 1) or #fullName) .. "……"
+                    end
+                end
+            else
+                -- 缩略图过小不绘制文件名，悬停时展示全名
+                truncated = true
+                label = ""
+            end
+            local itemHov = mx >= tx and mx <= tx + thumbW and my >= ty and my <= ty + thumbH
+            local isSelected = app.historyImagePath == filePath
             if itemHov then
-                hoveredHistoryPath = "../data/kards_images/" .. fname
+                anyHistoryItemHovered = true
+                hoveredHistoryPath = filePath
+                hoveredHistoryThumbRect = { x = tx, y = ty, w = thumbW, h = thumbH }
+                hoveredHistoryNameTip = truncated and fullName or nil
+            end
+            -- 缩略图背景（加载失败时可见）
+            draw.RoundedBox(4, tx, ty, thumbW, thumbH, Color(220, 220, 220))
+            -- 以"填充"模式绘制图片：按 max 缩放使图片铺满缩略图矩形，居中裁剪溢出部分
+            local mat = Material(filePath, "noclamp smooth")
+            if mat and not mat:IsError() then
+                local realW, realH = KARDS.CardEditor.Canvas.GetImageDimensions(filePath)
+                local texW = realW or mat:Width()
+                local texH = realH or mat:Height()
+                if texW > 0 and texH > 0 then
+                    local coverScale = math.max(thumbW / texW, thumbH / texH)
+                    local drawW = texW * coverScale
+                    local drawH = texH * coverScale
+                    local imgX = tx + (thumbW - drawW) / 2
+                    local imgY = ty + (thumbH - drawH) / 2
+                    render.SetScissorRect(tx, ty, tx + thumbW, ty + thumbH, true)
+                    surface.SetDrawColor(255, 255, 255, 255)
+                    surface.SetMaterial(mat)
+                    surface.DrawTexturedRect(imgX, imgY, drawW, drawH)
+                    render.SetScissorRect(0, 0, 0, 0, false)
+                end
             end
             if isSelected then
-                draw.RoundedBox(4, c1x, ly, colW, bodyH + 4, Color(60, 110, 200, 40))
+                draw.RoundedBox(4, tx, ty, thumbW, thumbH, Color(60, 110, 200, 40))
+                surface.SetDrawColor(60, 110, 200)
+                surface.DrawOutlinedRect(tx - 1, ty - 1, thumbW + 2, thumbH + 2)
+            elseif itemHov then
+                surface.SetDrawColor(60, 110, 200, 130)
+                surface.DrawOutlinedRect(tx - 1, ty - 1, thumbW + 2, thumbH + 2)
             end
-            if itemHov then
-                draw.RoundedBox(4, c1x, ly, colW, bodyH + 4, Color(60, 110, 200, 20))
+            -- 文件名叠加在缩略图底部（半透明黑条）
+            if label ~= "" then
+                surface.SetDrawColor(0, 0, 0, 140)
+                surface.DrawRect(tx, ty + thumbH - 16, thumbW, 16)
+                draw.SimpleText(label, thumbFont, tx + 3, ty + thumbH - 14, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             end
-            draw.SimpleText(fname, fontBody, c1x + 4, ly + 2, isSelected and Color(60, 110, 200) or APPLE_INK_MUTED80, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             if isLeftPressed and itemHov then
-                app.historyImagePath = "../data/kards_images/" .. fname
-                -- 预热缓存，自动缩放并重置偏移
+                app.historyImagePath = filePath
+                -- 预热缓存，使首次渲染即可使用文件头真实尺寸
                 KARDS.CardEditor.Canvas.GetImageDimensions(app.historyImagePath)
+                -- 自动缩放至填充预览槽，并重置偏移
                 app.historyImageScale = KARDS.CardEditor.Canvas.AutoFitImageScale(app.historyImagePath, app)
                 app.historyImageOffsetX = 0
                 app.historyImageOffsetY = 0
             end
-            ly = ly + bodyH + 6
         end
+        -- 记录网格底边（不含最后一行行距），供下方布局（方式二/预览区）定位
+        ly = ly + math.ceil(maxItems / gridCols) * (thumbH + rowGap) - rowGap
         if #files > maxItems then
             draw.SimpleText("（还有 " .. (#files - maxItems) .. " 个文件未显示）", fontBody, c1x, ly, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
         end
+        -- 鼠标不在任何缩略图上时清除悬停状态（悬停预览与全名提示随之淡出）
+        if not anyHistoryItemHovered then
+            hoveredHistoryPath = nil
+            hoveredHistoryThumbRect = nil
+            hoveredHistoryNameTip = nil
+        end
     end
 
-    -- 悬停预览（在鼠标坐标左上处渲染缩略图）
-    if hoveredHistoryPath then
+    -- 悬停预览（与插图页一致）：双槽交叉淡入淡出（切换图片时旧图淡出、新图淡入，鼠标移出后淡出）
+    -- 新槽 _historyThumbPrevTip 显示当前悬停图片；旧槽 _historyThumbPrevOld 承载被替换的上一张
+    local hpv = KARDS.CardEditor.Canvas._historyThumbPrevTip
+    if not hpv then
+        hpv = { alpha = 0, x = 0, y = 0, w = 0, h = 0, mat = nil, _key = nil }
+        KARDS.CardEditor.Canvas._historyThumbPrevTip = hpv
+    end
+    local hpvOld = KARDS.CardEditor.Canvas._historyThumbPrevOld
+    if not hpvOld then
+        hpvOld = { alpha = 0, x = 0, y = 0, w = 0, h = 0, mat = nil }
+        KARDS.CardEditor.Canvas._historyThumbPrevOld = hpvOld
+    end
+    -- 悬停目标改变：把当前显示降级为旧槽（从当前 alpha 开始淡出），新槽从 0 淡入
+    local hHoverKey = hoveredHistoryPath or ""
+    if hpv._key ~= hHoverKey then
+        if hpv.mat then
+            hpvOld.alpha, hpvOld.x, hpvOld.y, hpvOld.w, hpvOld.h, hpvOld.mat = hpv.alpha, hpv.x, hpv.y, hpv.w, hpv.h, hpv.mat
+        end
+        hpv.alpha = 0
+        hpv.mat = nil
+        hpv._key = hHoverKey
+    end
+    if hoveredHistoryPath and hoveredHistoryThumbRect then
         local hoverMat = Material(hoveredHistoryPath, "noclamp smooth")
         if hoverMat and not hoverMat:IsError() then
             local realW, realH = KARDS.CardEditor.Canvas.GetImageDimensions(hoveredHistoryPath)
             local texW = realW or hoverMat:Width()
             local texH = realH or hoverMat:Height()
-            local thumbMaxW = 160
-            local thumbMaxH = 120
-            local thumbScale = math.min(thumbMaxW / texW, thumbMaxH / texH, 1.0)
-            local thumbW = texW * thumbScale
-            local thumbH = texH * thumbScale
-            local thumbX = math.max(trX + 4, mx - thumbW - 8)
-            local thumbY = math.max(trY + 4, my - thumbH - 8)
-            draw.RoundedBox(APPLE_RADII.sm, thumbX - 4, thumbY - 4, thumbW + 8, thumbH + 8, Color(40, 40, 40, 220))
-            surface.SetDrawColor(255, 255, 255, 255)
-            surface.SetMaterial(hoverMat)
-            surface.DrawTexturedRect(thumbX, thumbY, thumbW, thumbH)
+            -- 预览缩略图大小（最大 160x120，保持宽高比）
+            local hpvMaxW = 160
+            local hpvMaxH = 120
+            local hpvScale = math.min(hpvMaxW / texW, hpvMaxH / texH, 1.0)
+            hpv.w = texW * hpvScale
+            hpv.h = texH * hpvScale
+            -- 定位到悬停图片选项的正下方（水平居中），并限制在编辑区内
+            hpv.x = math.max(trX + 4, math.min(trX + editW - hpv.w - 8, hoveredHistoryThumbRect.x + (hoveredHistoryThumbRect.w - hpv.w) / 2))
+            hpv.y = math.max(trY + 4, hoveredHistoryThumbRect.y + hoveredHistoryThumbRect.h + 8)
+            hpv.mat = hoverMat
+        else
+            hpv.mat = nil
         end
+    end
+    -- 悬停预览的绘制推迟到本区全部内容之后（2026-10-04：保证在最高层，不被底部预览框等后续内容遮挡）。
+    -- 此处仅定义绘制函数，实际调用在 DrawHistoryEditArea 末尾。
+    local function DrawHistoryHoverPreview()
+        -- 新槽淡入（无效材质不淡入），旧槽持续淡出（约 0.17 秒到位）
+        hpv.alpha = math.Approach(hpv.alpha, hpv.mat and 1 or 0, dt * 6)
+        hpvOld.alpha = math.Approach(hpvOld.alpha, 0, dt * 6)
+        -- 绘制：先旧后新，新图覆盖旧图实现交叉淡入淡出
+        if hpvOld.alpha > 0.02 and hpvOld.mat then
+            local a = math.floor(220 * hpvOld.alpha)
+            draw.RoundedBox(APPLE_RADII.sm, hpvOld.x - 4, hpvOld.y - 4, hpvOld.w + 8, hpvOld.h + 8, Color(40, 40, 40, a))
+            surface.SetDrawColor(255, 255, 255, math.floor(255 * hpvOld.alpha))
+            surface.SetMaterial(hpvOld.mat)
+            surface.DrawTexturedRect(hpvOld.x, hpvOld.y, hpvOld.w, hpvOld.h)
+        end
+        if hpv.alpha > 0.02 and hpv.mat then
+            local a = math.floor(220 * hpv.alpha)
+            draw.RoundedBox(APPLE_RADII.sm, hpv.x - 4, hpv.y - 4, hpv.w + 8, hpv.h + 8, Color(40, 40, 40, a))
+            surface.SetDrawColor(255, 255, 255, math.floor(255 * hpv.alpha))
+            surface.SetMaterial(hpv.mat)
+            surface.DrawTexturedRect(hpv.x, hpv.y, hpv.w, hpv.h)
+        end
+        -- 旧槽淡出完成后清除材质
+        if hpvOld.alpha <= 0.02 then
+            hpvOld.mat = nil
+        end
+    end
+
+    -- 文件名全名提示：悬停在"名称被截断"的图片选项上时，在文件名位置淡入矩形展示全名
+    local htip = KARDS.CardEditor.Canvas._historyThumbNameTip
+    if not htip then
+        htip = { alpha = 0, x = 0, y = 0, w = 0, text = "" }
+        KARDS.CardEditor.Canvas._historyThumbNameTip = htip
+    end
+    local htipTarget = 0
+    if hoveredHistoryNameTip and hoveredHistoryThumbRect then
+        htipTarget = 1
+        surface.SetFont("SourceHan_Heavy_12")
+        local htw = surface.GetTextSize(hoveredHistoryNameTip)
+        local htipX = hoveredHistoryThumbRect.x
+        local hrightBound = trX + editW - 4
+        if htipX + htw + 8 > hrightBound then
+            htipX = math.max(trX + 4, hrightBound - htw - 8)
+        end
+        htip.x = htipX
+        htip.y = math.max(trY + 4, hoveredHistoryThumbRect.y + hoveredHistoryThumbRect.h - 16)
+        htip.w = htw + 8
+        htip.text = hoveredHistoryNameTip
+    end
+    -- 淡入淡出（约 0.17 秒到位）
+    htip.alpha = math.Approach(htip.alpha, htipTarget, dt * 6)
+    if htip.alpha > 0.02 then
+        local a = math.floor(255 * htip.alpha)
+        draw.RoundedBox(3, htip.x, htip.y, htip.w, 16, Color(30, 30, 30, a))
+        draw.SimpleText(htip.text, "SourceHan_Heavy_12", htip.x + 4, htip.y + 8, Color(255, 255, 255, a), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     end
 
     -- 左列内容底部 Y
     local leftColBottomY = ly + bodyH
+
+    -- ===== 左列下方预览区位置（提前计算：贴内容底部，供方式二判定避免重叠） =====
+    -- 计算模板空心区域尺寸（同插图页逻辑）
+    local slotW_ts, slotH_ts = 140, 110
+    do
+        local tempKey = app.cardTemplate .. "_" .. app.cardType
+        local tempPath = KARDS.CardEditor.Canvas.ImagePaths.template[tempKey]
+        if not tempPath then
+            tempPath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
+        end
+        if tempPath then
+            local tempMat = Material(tempPath)
+            if tempMat and not tempMat:IsError() then
+                local hx, hy, hw, hh = KARDS.CardEditor.Canvas.GetTemplateHollowBounds(tempMat)
+                if hw > 0 and hh > 0 then
+                    slotW_ts = hw * 0.25
+                    slotH_ts = hh * 0.25
+                end
+            end
+        end
+    end
+    -- 预览区位置：贴内容底部（无论上方网格多高都不被挤出页面底部）
+    local editPreviewH = math.min(240, math.max(slotH_ts + 20, availH * 0.3))
+    local editPreviewTop = math.max(contentBottomY - editPreviewH - 15, ly + bodyH + 10)
+    local editPreviewW = colW
+    local editPreviewX = c1x
+    local editPreviewY = editPreviewTop
 
     -- === 方式二：从网络上传（在左列下方，预览区上方） ===
     local urlY = leftColBottomY + 12
@@ -2509,13 +3153,19 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local previewSlotMinH = 100
     local remainingForPreview = anchorY + availH - urlY - urlSectionH
 
-    if remainingForPreview >= previewSlotMinH then
+    -- 方式二须在预览区上方（预览区贴底部定位，二者不重叠才绘制）
+    if remainingForPreview >= previewSlotMinH and (urlY + urlSectionH) < editPreviewTop - 12 then
         draw.SimpleText("方式二：从网络上传", fontHeader, c1x, urlY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
         urlY = urlY + headerH + 8
         local urlInputY = urlY
         local urlInputW = colW
-        local urlState = KARDS.CardEditor.Canvas._historyUrlInputState or {}
+        -- 状态表在编辑器关闭时被置 nil（cl_canvas_editor.lua L2421）；此处缺失则重建。
+        -- 否则 urlState 为临时表，active 无法持久，输入框点击后永不激活、DTextEntry 永不创建（2026-10-04）
+        if not KARDS.CardEditor.Canvas._historyUrlInputState then
+            KARDS.CardEditor.Canvas._historyUrlInputState = { active = false, text = "", caretPos = nil }
+        end
+        local urlState = KARDS.CardEditor.Canvas._historyUrlInputState
         -- 保存 URL 输入框位置供 DTextEntry 生命周期使用
         urlState.inputRect = { x = c1x, y = urlInputY, w = urlInputW, h = inputH }
         local urlActive = urlState.active or false
@@ -2588,34 +3238,6 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     end
 
     -- ========== 左列下方：预览区（与插图页一致的拖拽/缩放预览） ==========
-    -- 计算模板空心区域尺寸（同插图页逻辑）
-    local slotW_ts, slotH_ts = 140, 110
-    do
-        local tempKey = app.cardTemplate .. "_" .. app.cardType
-        local tempPath = KARDS.CardEditor.Canvas.ImagePaths.template[tempKey]
-        if not tempPath then
-            tempPath = KARDS.CardEditor.Canvas.ImagePaths.template["custom"]
-        end
-        if tempPath then
-            local tempMat = Material(tempPath)
-            if tempMat and not tempMat:IsError() then
-                local hx, hy, hw, hh = KARDS.CardEditor.Canvas.GetTemplateHollowBounds(tempMat)
-                if hw > 0 and hh > 0 then
-                    slotW_ts = hw * 0.25
-                    slotH_ts = hh * 0.25
-                end
-            end
-        end
-    end
-
-    -- 预览区位置：左列内容底部以下，到内容底部
-    local editPreviewTop = math.max(ly + bodyH + 10, anchorY + availH * 0.55)
-    local editPreviewMaxH = math.max(slotH_ts + 20, anchorY + availH - editPreviewTop - 10)
-    local editPreviewH = math.min(240, editPreviewMaxH)
-    local editPreviewW = colW
-    local editPreviewX = c1x
-    local editPreviewY = editPreviewTop
-
     -- 背景
     draw.RoundedBox(APPLE_RADII.sm, editPreviewX, editPreviewY, editPreviewW, editPreviewH, APPLE_PARCHMENT)
     surface.SetDrawColor(APPLE_HAIRLINE)
@@ -2674,6 +3296,15 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
                     local dy = my - dragState.dragStartMY
                     app.historyImageOffsetX = dragState.dragStartOffsetX + dx / editScaleFactor
                     app.historyImageOffsetY = dragState.dragStartOffsetY + dy / editScaleFactor
+                    -- 越界钳制（2026-10-04）：保证图片始终覆盖编辑预览框
+                    if editScaleFactor and editScaleFactor > 0 then
+                        local drawnW = texW * 0.25 * (app.historyImageScale or 1) * editScaleFactor
+                        local drawnH = texH * 0.25 * (app.historyImageScale or 1) * editScaleFactor
+                        local maxOffX = math.max(0, (drawnW - editPreviewW) / (2 * editScaleFactor))
+                        local maxOffY = math.max(0, (drawnH - editPreviewH) / (2 * editScaleFactor))
+                        app.historyImageOffsetX = math.Clamp(app.historyImageOffsetX, -maxOffX, maxOffX)
+                        app.historyImageOffsetY = math.Clamp(app.historyImageOffsetY, -maxOffY, maxOffY)
+                    end
                 else
                     dragState.isDragging = false
                 end
@@ -2796,6 +3427,15 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
                     local dy = my - dispDragState.dragStartMY
                     app.historyImageOffsetX = dispDragState.dragStartOffsetX + dx / displayScaleFactor
                     app.historyImageOffsetY = dispDragState.dragStartOffsetY + dy / displayScaleFactor
+                    -- 越界钳制（2026-10-04）：保证图片始终覆盖展示区
+                    if displayScaleFactor and displayScaleFactor > 0 then
+                        local drawnW = texW * 0.25 * (app.historyImageScale or 1) * displayScaleFactor
+                        local drawnH = texH * 0.25 * (app.historyImageScale or 1) * displayScaleFactor
+                        local maxOffX = math.max(0, (drawnW - histDisplayW) / (2 * displayScaleFactor))
+                        local maxOffY = math.max(0, (drawnH - displayImgAreaH) / (2 * displayScaleFactor))
+                        app.historyImageOffsetX = math.Clamp(app.historyImageOffsetX, -maxOffX, maxOffX)
+                        app.historyImageOffsetY = math.Clamp(app.historyImageOffsetY, -maxOffY, maxOffY)
+                    end
                 else
                     dispDragState.isDragging = false
                 end
@@ -3090,6 +3730,9 @@ function DrawHistoryEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
         end
         KARDS.CardEditor.Canvas._historyUrlTextEntry = nil
      end
+
+    -- 悬停预览最后绘制（最高层，避免被底部预览框等后续内容遮挡）
+    DrawHistoryHoverPreview()
 end
 
 -- ===== 稀有度编辑区（Apple pill chip） =====
@@ -3097,6 +3740,7 @@ function DrawRarityEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local anchorX = trX + 15
     local anchorY = trY + 15
     draw.SimpleText("卡牌稀有度", "SourceHan_Heavy_16", anchorX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(anchorX, anchorY, "卡牌稀有度", "SourceHan_Heavy_16", mx, my)
 
     local rarities = {
         { id = "normal",  name = "普通",   desc = "普通卡牌，基础品质", color = Color(160, 160, 160) },
@@ -3120,8 +3764,10 @@ function DrawRarityEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
             KARDS.CardEditor.Canvas.SuggestionText = r.desc
         end
 
-        -- Apple pill chip 风格（所有选中项统一使用 Apple Blue）
-        DrawApplePillChip(bx, by, chipW, chipH, r.name, isSel, isHov, APPLE_RADII.pill, true)
+        -- Apple pill chip 风格（所有选中项统一使用 Apple Blue；2026-08-16：
+        -- 品质图标，materials/kards/icons/quality_*.png）
+        DrawApplePillChip(bx, by, chipW, chipH, r.name, isSel, isHov, APPLE_RADII.pill, true,
+            "materials/kards/icons/quality_" .. r.id .. ".png")
 
         if isHov and isLeftPressed then
             app.quality = r.id
@@ -3166,9 +3812,30 @@ function DrawSuggestionBoard(x, y, w, h, mx, my)
     else
         draw.SimpleText("将鼠标悬停在选项上查看详细信息", "SourceHan_Heavy_14", x + APPLE_SPACE.sm, y + APPLE_SPACE.xl, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
     end
+
+    -- 建议图（2026-08-16）：悬停的按钮上报 SuggestionImage 时，在左下角空位按
+    -- 原始大小绘制（不缩放、无底衬）
+    local imgPath = KARDS.CardEditor.Canvas.SuggestionImage
+    if imgPath then
+        local bg = GetBgMatSize(imgPath)
+        local pad = APPLE_SPACE.sm
+        local dx = x + pad
+        local dy = y + h - pad - bg.ih
+        surface.SetMaterial(bg.mat)
+        surface.SetDrawColor(255, 255, 255, 255)
+        surface.DrawTexturedRect(dx, dy, bg.iw, bg.ih)
+    end
 end
 
 -- ===================== Apple 总控台 =====================
+-- 卡牌总类型规则（readme.md 7.1）：悬停或点击总控台卡类型 chip 时写入 SuggestionText
+local CARD_TYPE_RULES = {
+    unit            = "单位：能够进入战场，与目标进行战斗或交战的个体",
+    command         = "指令：使用时一次性触发效果，然后移除",
+    counter_command = "反制：反制可在手中激活，敌方无法查看。激活后，敌方回合达成相应条件即可触发记述的效果；任何操作都可以被反制，反制后操作不生效",
+    headquarter     = "总部：游戏胜利条件是摧毁敌方总部",
+}
+
 function DrawControlPanel(cpX, cpY, cpW, cpH, app, mx, my, isLeftPressed)
     -- Apple 风格总控台背景（白色画布 + hairline 边框）
     draw.RoundedBox(APPLE_RADII.sm, cpX + 2, cpY + 2, cpW - 4, cpH - 4, APPLE_WHITE)
@@ -3223,16 +3890,21 @@ function DrawControlPanel(cpX, cpY, cpW, cpH, app, mx, my, isLeftPressed)
         draw.RoundedBox(APPLE_RADII.pill, bx, by, blockW, blockH, bgColor)
         draw.SimpleText(opt.name, "SourceHan_Heavy_14", bx + blockW / 2, by + blockH / 2, txtColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
+        -- 悬停时把该卡类型规则写入 SuggestionText（readme 7.1）
+        if isHov and not isLeftPressed then
+            KARDS.CardEditor.Canvas.SuggestionText = CARD_TYPE_RULES[opt.id] or ("当前卡牌总类型: " .. opt.name)
+        end
+
         -- 点击切换
         if isHov and isLeftPressed then
             if opt.id == "unit" and currentOverallType ~= "unit" then
                 app.cardType = "infantry"
                 app.veteranAppearance.cardType = "infantry"
-                KARDS.CardEditor.Canvas.SuggestionText = "当前卡牌总类型: 单位"
+                KARDS.CardEditor.Canvas.SuggestionText = CARD_TYPE_RULES.unit
             elseif opt.id == "command" then
                 app.cardType = "command"
                 app.veteranAppearance.cardType = "command"
-                KARDS.CardEditor.Canvas.SuggestionText = "当前卡牌总类型: 指令"
+                KARDS.CardEditor.Canvas.SuggestionText = CARD_TYPE_RULES.command
                 -- 非单位模式：清除单位专属词条
                 local allowed = { intel = true, cooperation = true, forecast = true }
                 local filtered = {}
@@ -3248,7 +3920,7 @@ function DrawControlPanel(cpX, cpY, cpW, cpH, app, mx, my, isLeftPressed)
             elseif opt.id == "counter_command" then
                 app.cardType = "counter_command"
                 app.veteranAppearance.cardType = "counter_command"
-                KARDS.CardEditor.Canvas.SuggestionText = "当前卡牌总类型: 反制"
+                KARDS.CardEditor.Canvas.SuggestionText = CARD_TYPE_RULES.counter_command
                 -- 非单位模式：清除单位专属词条
                 local allowed = { intel = true, cooperation = true, forecast = true }
                 local filtered = {}
@@ -3264,7 +3936,7 @@ function DrawControlPanel(cpX, cpY, cpW, cpH, app, mx, my, isLeftPressed)
             elseif opt.id == "headquarter" then
                 app.cardType = "headquarter"
                 app.veteranAppearance.cardType = "headquarter"
-                KARDS.CardEditor.Canvas.SuggestionText = "当前卡牌总类型: 总部"
+                KARDS.CardEditor.Canvas.SuggestionText = CARD_TYPE_RULES.headquarter
                 -- 总部：无词条（词条书签不可编辑），清空所有词条
                 app.keywords = {}
                 -- 总部默认防御力 20（仅当防御力为空/0 时填充，保留已编辑的防御力）
@@ -3272,6 +3944,9 @@ function DrawControlPanel(cpX, cpY, cpW, cpH, app, mx, my, isLeftPressed)
                     app.defense = 20
                 end
             end
+            -- 总类型变更后重新分配部署/攻击音效（单位按类型×规模；指令/反制/总部清除）
+            KARDS.CardSounds.AutoAssignDeploySound(app)
+            KARDS.CardSounds.AutoAssignAttackSound(app)
             KARDS.CardEditor.Canvas.EditorMode = opt.id
             local INE = KARDS.CardEditor.IndependentNodeEditor
             if INE and INE.Editors["card_effect_editor"] then
@@ -3725,6 +4400,7 @@ function DrawManageEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
     local usableW = trW - 30
 
     draw.SimpleText("规则词汇表管理", "SourceHan_Heavy_16", anchorX, anchorY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    KARDS.CardEditor.Canvas.DrawUnstableWarnAfterTitle(anchorX, anchorY, "规则词汇表管理", "SourceHan_Heavy_16", mx, my)
 
     -- 点击输入框外部 → 关闭输入框（后续交互元素可重新激活覆盖）
     if isLeftPressed and uiState.active and not IsMouseIn(mx, my, uiState.x, uiState.y, uiState.w, uiState.h) then
@@ -3820,13 +4496,13 @@ function DrawManageEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
         local prevHov = IsMouseIn(mx, my, prevX, pgY - 10, 40, 20)
         draw.RoundedBox(4, prevX, pgY - 10, 40, 20, prevHov and Color(100, 100, 100) or Color(80, 80, 80))
         draw.SimpleText("上一页", "SourceHan_Heavy_12", prevX + 20, pgY, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        if prevHov and isLeftPressed then rvState.page = rvState.page - 1 end
+        if prevHov and isLeftPressed then rvState.page = math.max(1, rvState.page - 1) end
 
         local nextX = anchorX + usableW / 2 + 10
         local nextHov = IsMouseIn(mx, my, nextX, pgY - 10, 40, 20)
         draw.RoundedBox(4, nextX, pgY - 10, 40, 20, nextHov and Color(100, 100, 100) or Color(80, 80, 80))
         draw.SimpleText("下一页", "SourceHan_Heavy_12", nextX + 20, pgY, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        if nextHov and isLeftPressed then rvState.page = rvState.page + 1 end
+        if nextHov and isLeftPressed then rvState.page = math.min(totalPages, rvState.page + 1) end
     end
 
     -- ===== 添加自定义规则项（底部） =====
@@ -3895,7 +4571,9 @@ function DrawManageEditArea(trX, trY, trW, trH, app, mx, my, isLeftPressed, dt)
                     KARDS.RulesVocabulary.AddCustomOption(rvState.selectedSection, iid, { ["zh-CN"] = lbl, ["en"] = lbl })
                     rvState.labelText = ""
                     rvState.idText = ""
-                    rvState.page = totalPages -- 跳到末页查看新项
+                    -- 按新选项数重算总页数并跳到末页查看新项（totalPages 为添加前旧值，可能少算一页）
+                    local newOptions = KARDS.RulesVocabulary.GetOptions(rvState.selectedSection)
+                    rvState.page = math.max(1, math.ceil(#newOptions / maxRows))
                 end
             end
         end
@@ -3964,6 +4642,13 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
     local listTop = tabY + 34
     local listBottom = trY + trH - 15 - 36 -- 底部预留 [+ 添加规则] 按钮
     local listH = listBottom - listTop
+    -- 选择器浮层几何提前计算（2026-10-04）：浮层覆盖列表时，点击不得同时触发下层行操作
+    -- （避免删除/调倍率与选择器选择重复响应）
+    local addBtnY = trY + trH - 15 - 26
+    local pickerH = math.min(200, math.max(60, listH - 40))
+    local pickerY = addBtnY - pickerH - 6
+    local pickerBlocksClick = dmgState.pickerOpen
+        and IsMouseIn(mx, my, anchorX, pickerY, usableW, pickerH)
     local rowH = 24
     local maxRows = math.max(1, math.floor(listH / rowH))
     local totalPages = math.max(1, math.ceil(#list / maxRows))
@@ -4007,27 +4692,41 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
         end
         draw.SimpleText(name, "SourceHan_Heavy_14", anchorX + 90, rowY + (rowH - 2) / 2, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
-        -- 倍率值（点击编辑）
-        local multW = 56
-        local multX = anchorX + usableW - multW - 24
-        local multPath = rule.targetPath or rule.sourcePath
-        local multActive = uiState.active and uiState.id == "dmg_mult" and uiState.path == multPath
-        draw.RoundedBox(4, multX, rowY + 2, multW, rowH - 6, multActive and Color(60, 90, 140) or Color(55, 55, 60))
-        draw.SimpleText("×" .. tostring(rule.multiplier or 1), "SourceHan_Heavy_14", multX + multW / 2, rowY + (rowH - 2) / 2, multActive and Color(255, 255, 255) or Color(230, 200, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        if isLeftPressed and IsMouseIn(mx, my, multX, rowY + 2, multW, rowH - 6) then
-            uiState.active = true
-            uiState.id = "dmg_mult"
-            uiState.path = multPath
-            uiState.text = tostring(rule.multiplier or 1)
-            uiState.x, uiState.y, uiState.w, uiState.h = multX, rowY + 2, multW, rowH - 6
-            uiState.onCommit = function(txt)
-                local num = tonumber(txt)
-                if num == nil then return end
-                local targetList = app.combatModifiers[dmgState.tab]
-                if targetList and targetList[idx] then
-                    targetList[idx].multiplier = num
-                end
-            end
+        -- 倍率值（上下箭头调节：一次 0.5，按住 Alt 一次 0.1，2026-10-04 替换原透明输入框）
+        local multW = 48
+        local arrowW = 16
+        local arrowGap = 2
+        local multX = anchorX + usableW - 24 - (multW + arrowGap + arrowW)
+        local multY = rowY + 2
+        local multH = rowH - 6
+        draw.RoundedBox(4, multX, multY, multW, multH, Color(55, 55, 60))
+        draw.SimpleText("×" .. tostring(rule.multiplier or 1), "SourceHan_Heavy_14", multX + multW / 2, rowY + (rowH - 2) / 2, Color(230, 200, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        -- 上下箭头按钮（上 = 增加，下 = 减少）
+        local arrowX = multX + multW + arrowGap
+        local halfH = math.floor(multH / 2)
+        local upRect = { x = arrowX, y = multY, w = arrowW, h = halfH }
+        local downRect = { x = arrowX, y = multY + halfH, w = arrowW, h = multH - halfH }
+        local upHov = IsMouseIn(mx, my, upRect.x, upRect.y, upRect.w, upRect.h)
+        local downHov = IsMouseIn(mx, my, downRect.x, downRect.y, downRect.w, downRect.h)
+        draw.RoundedBox(3, upRect.x, upRect.y, upRect.w, upRect.h, upHov and Color(70, 130, 220) or Color(70, 70, 76))
+        draw.RoundedBox(3, downRect.x, downRect.y, downRect.w, downRect.h, downHov and Color(70, 130, 220) or Color(70, 70, 76))
+        -- 三角形用线段绘制（不依赖字体是否含箭头符号）
+        surface.SetDrawColor(upHov and Color(255, 255, 255) or Color(210, 210, 210))
+        local ucx, ucy = upRect.x + upRect.w / 2, upRect.y + upRect.h / 2
+        surface.DrawLine(ucx, ucy - 3, ucx - 4, ucy + 2)
+        surface.DrawLine(ucx, ucy - 3, ucx + 4, ucy + 2)
+        surface.DrawLine(ucx - 4, ucy + 2, ucx + 4, ucy + 2)
+        local dcx, dcy = downRect.x + downRect.w / 2, downRect.y + downRect.h / 2
+        surface.DrawLine(dcx, dcy + 3, dcx - 4, dcy - 2)
+        surface.DrawLine(dcx, dcy + 3, dcx + 4, dcy - 2)
+        surface.DrawLine(dcx - 4, dcy - 2, dcx + 4, dcy - 2)
+        if isLeftPressed and not pickerBlocksClick and (upHov or downHov) then
+            local stepSize = (input.IsKeyDown(KEY_LALT) or input.IsKeyDown(KEY_RALT)) and 0.1 or 0.5
+            local cur = tonumber(rule.multiplier) or 1
+            local newVal = upHov and (cur + stepSize) or (cur - stepSize)
+            newVal = math.Round(newVal * 10) / 10
+            if newVal < 0.1 then newVal = 0.1 end
+            rule.multiplier = newVal
         end
 
         -- 删除按钮
@@ -4035,7 +4734,7 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
         local delHov = IsMouseIn(mx, my, delX, rowY + 3, 18, rowH - 8)
         draw.RoundedBox(4, delX, rowY + 3, 18, rowH - 8, delHov and Color(160, 60, 60) or Color(110, 50, 50))
         draw.SimpleText("✕", "SourceHan_Heavy_12", delX + 9, rowY + 3 + (rowH - 8) / 2, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        if delHov and isLeftPressed then
+        if delHov and isLeftPressed and not pickerBlocksClick then
             table.remove(list, idx)
         end
     end
@@ -4048,17 +4747,16 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
         local prevHov = IsMouseIn(mx, my, prevX, pgY - 10, 40, 20)
         draw.RoundedBox(4, prevX, pgY - 10, 40, 20, prevHov and Color(100, 100, 100) or Color(80, 80, 80))
         draw.SimpleText("上一页", "SourceHan_Heavy_12", prevX + 20, pgY, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        if prevHov and isLeftPressed then dmgState.page = dmgState.page - 1 end
+        if prevHov and isLeftPressed and not pickerBlocksClick then dmgState.page = math.max(1, dmgState.page - 1) end
 
         local nextX = anchorX + usableW / 2 + 10
         local nextHov = IsMouseIn(mx, my, nextX, pgY - 10, 40, 20)
         draw.RoundedBox(4, nextX, pgY - 10, 40, 20, nextHov and Color(100, 100, 100) or Color(80, 80, 80))
         draw.SimpleText("下一页", "SourceHan_Heavy_12", nextX + 20, pgY, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        if nextHov and isLeftPressed then dmgState.page = dmgState.page + 1 end
+        if nextHov and isLeftPressed and not pickerBlocksClick then dmgState.page = math.min(totalPages, dmgState.page + 1) end
     end
 
     -- ===== [+ 添加规则] =====
-    local addBtnY = trY + trH - 15 - 26
     local addBtnHov = IsMouseIn(mx, my, anchorX, addBtnY, 120, 24)
     draw.RoundedBox(4, anchorX, addBtnY, 120, 24, addBtnHov and Color(60, 130, 200) or Color(50, 110, 170))
     draw.SimpleText("+ 添加规则", "SourceHan_Heavy_14", anchorX + 60, addBtnY + 12, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
@@ -4068,16 +4766,37 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
 
     -- ===== 对象/对象组选择器（展开浮层） =====
     if dmgState.pickerOpen then
-        local pickerH = math.min(200, math.max(60, listH - 40))
-        local pickerY = addBtnY - pickerH - 6
         draw.RoundedBox(4, anchorX, pickerY, usableW, pickerH, Color(30, 30, 34))
         surface.SetDrawColor(APPLE_HAIRLINE)
         surface.DrawOutlinedRect(anchorX, pickerY, usableW, pickerH)
         draw.SimpleText("选择对象/对象组（Varlib）", "SourceHan_Heavy_12", anchorX + 6, pickerY + 4, APPLE_INK_MUTED80, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
+        -- 单位不能攻击指令（2026-08-16）：输出倍率（攻击目标）选择过滤指令/反制
+        -- 对象组与开发池指令路径（指令/反制打出即离场，不构成攻击目标）；
+        -- 受伤倍率（来源）保留——指令/反制效果可造成伤害
+        local function isNonAttackTarget(path)
+            if path:match("^Battle%.%w+CommandCards$") or path:match("^Battle%.%w+CounterCards$") then
+                return true
+            end
+            if path:match("^Battle%.DevelopPool%.") then
+                if path:match("%.command%.") or path:match("%.command$")
+                    or path:match("own_command") or path:match("own_elite_command") then
+                    return true
+                end
+            end
+            return false
+        end
+
         local paths = {}
         if KARDS.VarLib and KARDS.VarLib.GetObjectVarPaths then
             paths = KARDS.VarLib.GetObjectVarPaths("1")
+        end
+        if dmgState.tab == "outgoing" then
+            local filtered = {}
+            for _, p in ipairs(paths) do
+                if not isNonAttackTarget(p.path) then table.insert(filtered, p) end
+            end
+            paths = filtered
         end
 
         local rowH2 = 20
@@ -4107,7 +4826,8 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
                 end
                 table.insert(list, rule)
                 dmgState.pickerOpen = false
-                dmgState.page = totalPages
+                -- 插入后按新列表长度重算总页数（totalPages 为插入前旧值，新规则可能落在新页）
+                dmgState.page = math.max(1, math.ceil(#list / maxRows))
             end
             itemY = itemY + rowH2
         end
@@ -4119,13 +4839,13 @@ function DrawDamageModifierEditArea(trX, trY, trW, trH, app, mx, my, isLeftPress
             local ppPrevHov = IsMouseIn(mx, my, ppPrevX, pickerY + pickerH - 24, 40, 18)
             draw.RoundedBox(3, ppPrevX, pickerY + pickerH - 24, 40, 18, ppPrevHov and Color(90, 90, 90) or Color(70, 70, 70))
             draw.SimpleText("上一页", "SourceHan_Heavy_12", ppPrevX + 20, pickerY + pickerH - 15, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-            if ppPrevHov and isLeftPressed then dmgState.pickerPage = dmgState.pickerPage - 1 end
+            if ppPrevHov and isLeftPressed then dmgState.pickerPage = math.max(1, dmgState.pickerPage - 1) end
 
             local ppNextX = anchorX + usableW / 2 + 10
             local ppNextHov = IsMouseIn(mx, my, ppNextX, pickerY + pickerH - 24, 40, 18)
             draw.RoundedBox(3, ppNextX, pickerY + pickerH - 24, 40, 18, ppNextHov and Color(90, 90, 90) or Color(70, 70, 70))
             draw.SimpleText("下一页", "SourceHan_Heavy_12", ppNextX + 20, pickerY + pickerH - 15, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-            if ppNextHov and isLeftPressed then dmgState.pickerPage = dmgState.pickerPage + 1 end
+            if ppNextHov and isLeftPressed then dmgState.pickerPage = math.min(totalPickerPages, dmgState.pickerPage + 1) end
         end
     end
 end

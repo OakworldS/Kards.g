@@ -4,6 +4,54 @@
 
 KARDS.CardEditor.SaveSystem = KARDS.CardEditor.SaveSystem or {}
 
+-- ============ 默认卡牌锁定（测试版开关） ============
+-- 「默认卡牌」= 随插件发布的官方卡牌：一旦标记为默认即被锁定，不可修改、不可删除，
+-- 仅可通过「解锁默认卡牌」取消锁定后再编辑。
+-- 测试版（true）：卡牌编辑器保留「设为默认卡牌」勾选与「解锁默认卡牌」完整功能，
+--   便于设计与调试官方卡牌。
+-- 正式版发布前：将本开关置为 false，并删除 cl_ca_save_load.lua / cl_canvas_editor.lua
+--   中标注「【正式版移除】」的设为默认 / 解锁默认入口代码——此后默认卡牌对玩家永久
+--   锁定（SaveCard / DeleteCard 始终拦截），且无法创建新的默认卡牌或解锁既有默认卡牌。
+KARDS.CardEditor.DefaultCardTestMode = true
+
+-- E 修复（2026-08-12）：GetAllCardsInfo 会话级缓存——原实现每次全量列目录（3 次 Find）+
+-- 每文件读盘 + JSON decode（GetCardInfo 无缓存）。DeckFindCardInfo 在开局/抽牌/卡面
+-- 初始化时每张卡调用一次 → 开局 9 卡 × 44 文件 ≈ 396 次读盘（sim 5.4s 卡顿归因大头，
+-- 见 debug-cardtable-cardback.md Fix E）。卡牌文件仅随保存/删除变化 → 缓存到写操作
+-- 失效（SaveCard / DeleteFile 置 nil，下期调用重建）。声明须先于 SaveCard（L137）——
+-- 后者引用本变量，Lua 词法作用域下后置声明会解析为全局 nil。
+local GetAllCardsInfoCache = nil
+
+-- 单卡信息缓存（2026-08-14 性能优化）：GetCardInfo 每次从磁盘读卡牌 JSON +
+-- 解码，开局建卡组（DeckCardHandleFromFile 39 张）、客户端拿起判定
+--（GetCardEffectNodeInfo 每张新实体首次拿起）对同 fileName 反复读取。
+-- 卡牌文件仅随保存/删除变化 → 与 GetAllCardsInfoCache 同点失效（SaveCard /
+-- DeleteFile → InvalidateCaches）。注意：返回的 info 与 GetAllCardsInfoCache
+-- 共享同一对象（原全量缓存已如此），调用方均为只读，禁止改写。
+local GetCardInfoCache = {}
+
+-- 效果文件缓存（2026-08-14 性能优化）：LoadEffect 每次从磁盘读效果 JSON +
+-- 解码，开局建卡组（LoadEffectForRuntime 每张卡）+ 客户端拿起判定
+--（GetCardEffectNodeInfo 每张新实体）反复读取同一文件。缓存保存原始解码结果，
+-- 命中/未命中一律返回深拷贝——编辑器（INE ImportEffectData 原地改写 node.data）
+-- 与 LoadEffectForRuntime（node.data = runtimeData）会修改返回表，深拷贝保证
+-- 各调用方拿到独立副本，避免未保存的编辑器修改泄漏到战斗/后续加载
+--（保持「读磁盘状态」原语义）。
+local LoadEffectCache = {}
+
+-- JSON 数据深拷贝（LoadEffect 分发独立副本用；效果 JSON 为纯数据表，键均为
+-- 字符串，无需考虑 function/userdata/自引用）
+-- 统一委托 Core.Utils.DeepCopy（sh_utils.lua，本文件在其后加载直接引用；
+-- 纯数据 JSON 键均为字符串，键拷贝差异行为等价）
+local DeepCopy = KARDS.CardEditor.Core.Utils.DeepCopy
+
+-- 缓存失效（保存/删除卡牌、效果文件时调用，见 SaveCard / DeleteFile）
+local function InvalidateCaches()
+    GetAllCardsInfoCache = nil
+    GetCardInfoCache = {}
+    LoadEffectCache = {}
+end
+
 -- ============ 目录常量 ============
 -- 注意：GMod 文件系统不支持中文路径，使用英文目录名，UI 显示中文标签
 
@@ -126,6 +174,30 @@ function KARDS.CardEditor.SaveSystem.UnescapeFileName(fileName)
     end)
 end
 
+--- 解析卡牌文件的磁盘路径（cards / headquarters / 根目录三级回退），
+--- 入参兼容「已转义磁盘名」与「原始名称」两种形式（与 LoadCard 一致）。
+--- @param fileName string 文件名（不含路径）
+--- @return string|nil 磁盘路径；@return string|nil 命中的磁盘文件名
+local function ResolveCardPath(fileName)
+    if not fileName or type(fileName) ~= "string" then return nil end
+    local name = ensureExt(fileName)
+    if not name then return nil end
+    local candidates = { name }
+    local escaped = ensureExt(safeFileName(name))
+    if escaped and escaped ~= name then
+        table.insert(candidates, escaped)
+    end
+    for _, n in ipairs(candidates) do
+        local p = FileOps.GetPath(CARDS_DIR, n)
+        if FileOps.Exists(p) then return p, n end
+        p = FileOps.GetPath(HQ_DIR, n)
+        if FileOps.Exists(p) then return p, n end
+        p = "card_editor/" .. n
+        if FileOps.Exists(p) then return p, n end
+    end
+    return nil
+end
+
 -- ============ 第1类：卡牌保存/加载 ============
 
 --- 保存卡牌（外貌、属性、词条、效果路径）
@@ -136,10 +208,24 @@ end
 ---   已点过「渲染」则仅指向其文件路径；组卡/生成环节直接引用，不再反复离屏渲染）
 --- @return boolean 是否保存成功
 function KARDS.CardEditor.SaveSystem.SaveCard(fileName, textureInfo)
+    InvalidateCaches() -- E 修复：保存改卡面/名称，全量信息缓存失效；2026-08-14 扩展为单卡/效果缓存同点失效
     fileName = ensureExt(safeFileName(fileName))
     if not fileName then return false end
 
+    -- 默认卡牌锁定（不可修改）：目标文件已存在且为默认卡牌时，禁止覆盖保存，
+    -- 需先在保存窗口解锁后再保存。正式版同样生效——保护官方默认卡牌不被玩家篡改。
+    if KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName) then
+        print("[CardEditor] SaveCard blocked: '" .. fileName .. "' 是默认卡牌，已锁定不可修改")
+        return false, "locked"
+    end
+
     KARDS.CardEditor.SaveSystem.EnsureDirectories()
+
+    -- 默认卡牌标记随外观数据落盘；正式版开关关闭时强制为 false（禁止创建默认卡牌）
+    local liveApp = KARDS.CardEditor.Canvas.CardAppearance
+    if liveApp then
+        liveApp.isDefault = (KARDS.CardEditor.DefaultCardTestMode == true) and (liveApp.isDefault == true) or false
+    end
 
     local currentTime = os.date("%Y-%m-%d %H:%M")
 
@@ -154,6 +240,7 @@ function KARDS.CardEditor.SaveSystem.SaveCard(fileName, textureInfo)
                 name = app.name or "",
                 specialEffect = app.specialEffect or "", -- 描述
                 defense = app.defense or 20,
+                isDefault = app.isDefault == true, -- 默认卡牌（锁定）标记
             },
             texturePath = textureInfo and {
                 full = textureInfo.full,
@@ -249,6 +336,7 @@ local function EnsureHQAppearance(app)
     app.historyImageScale = 1
     app.historyText = app.historyText or ""
     app.canElevateToVeteran = false
+    app.isDefault = app.isDefault or false -- 默认卡牌（锁定）标记，总部卡一并保留
     if not app.veteranAppearance or type(app.veteranAppearance) ~= "table" then
         app.veteranAppearance = {
             name = app.name .. "(老兵)", cost = 0, actionCost = 0, attack = 0, defense = 0,
@@ -258,6 +346,9 @@ local function EnsureHQAppearance(app)
             imageOffsetX = 0, imageOffsetY = 0, imageScale = 1,
         }
     end
+    -- 转换目标卡（2026-09-26 缺口 J）：本卡被转换效果作用后变成哪张卡（卡文件名，
+    -- 空字符串表示不换卡）。默认补齐，旧存档无此字段时保持不换卡语义
+    app.convertTarget = app.convertTarget or ""
     return app
 end
 
@@ -319,6 +410,22 @@ function KARDS.CardEditor.SaveSystem.LoadCard(fileName)
             if not data.cardAppearance.combatModifiers then
                 data.cardAppearance.combatModifiers = { outgoing = {}, incoming = {} }
             end
+            -- 序列化兼容：旧版本保存的卡牌缺少 cardScale/sounds 字段，补默认
+            -- （cardScale 决定放牌/部署音效分配，见 KARDS.CardSounds；sounds 为事件音效路径表）
+            if not data.cardAppearance.cardScale then
+                data.cardAppearance.cardScale = "small"
+            end
+            if not data.cardAppearance.sounds then
+                data.cardAppearance.sounds = {}
+            end
+            -- 音效手动锁定兼容（2026-08-14）：旧卡无 _manual 标记，但自动分配
+            -- （规模/类型）为本轮新增——已配置的 deploy/attack 必来自手动选择器，
+            -- 视为手动锁定（五角星优先，规模/类型变更不再覆盖，见 KARDS.CardSounds.AutoAssignDeploySound / AutoAssignAttackSound）
+            if not data.cardAppearance.sounds._manual then
+                data.cardAppearance.sounds._manual = {}
+                if data.cardAppearance.sounds.deploy then data.cardAppearance.sounds._manual.deploy = true end
+                if data.cardAppearance.sounds.attack then data.cardAppearance.sounds._manual.attack = true end
+            end
         end
     end
     if data.currentPage then
@@ -327,6 +434,10 @@ function KARDS.CardEditor.SaveSystem.LoadCard(fileName)
     if data.appearanceEditorActive ~= nil then
         KARDS.CardEditor.Canvas.AppearanceEditorActive = data.appearanceEditorActive
     end
+
+    -- 记录当前编辑卡牌的磁盘文件名（默认卡牌解锁等操作需要按文件定位）；
+    -- 已转义磁盘名，与 GetCardFiles 返回的列表项一致
+    KARDS.CardEditor.Canvas.CurrentCardFile = fileName
 
     print("[CardEditor] Card loaded: " .. fileName)
 
@@ -393,6 +504,7 @@ end
 --- 获取所有卡牌文件信息
 --- @return table { fileName, name, savedAt, cardAppearance }[]
 function KARDS.CardEditor.SaveSystem.GetAllCardsInfo()
+    if GetAllCardsInfoCache then return GetAllCardsInfoCache end
     local files = KARDS.CardEditor.SaveSystem.GetCardFiles()
     local infos = {}
     for _, fileName in ipairs(files) do
@@ -401,11 +513,15 @@ function KARDS.CardEditor.SaveSystem.GetAllCardsInfo()
             table.insert(infos, info)
         end
     end
+    GetAllCardsInfoCache = infos
     return infos
 end
 
 --- 获取单张卡牌文件信息
 function KARDS.CardEditor.SaveSystem.GetCardInfo(fileName)
+    local cached = GetCardInfoCache[fileName]
+    if cached ~= nil then return cached end
+
     local filePath = FileOps.GetPath(CARDS_DIR, fileName)
     if not FileOps.Exists(filePath) then
         -- 总部卡单独存放于 headquarters/ 目录
@@ -431,11 +547,55 @@ function KARDS.CardEditor.SaveSystem.GetCardInfo(fileName)
         -- 卡面纹理落盘路径 + 渲染像素尺寸（组卡环节直接引用，避免反复离屏渲染）
         texturePath = data.texturePath or nil,
         textureSize = data.textureSize or nil,
+        -- 默认卡牌（锁定）标记：卡牌列表展示锁定状态用
+        isDefault = data.cardAppearance and data.cardAppearance.isDefault == true or false,
     }
     if data.cardAppearance and data.cardAppearance.name then
         info.name = data.cardAppearance.name
     end
+    GetCardInfoCache[fileName] = info -- 2026-08-14：单卡结果缓存（SaveCard/DeleteFile 失效）
     return info
+end
+
+-- ============ 默认卡牌锁定判定与解锁 ============
+
+--- 判断卡牌文件是否为「默认卡牌」（锁定）。直接读盘、不经缓存，用于锁定判定。
+--- @param fileName string 文件名（不含路径，兼容转义名与原始名）
+--- @return boolean
+function KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName)
+    local path = ResolveCardPath(fileName)
+    if not path then return false end
+    local content = FileOps.Read(path)
+    if not content then return false end
+    local ok, data = FileOps.Decode(content)
+    if not ok or not data then return false end
+    return data.cardAppearance and data.cardAppearance.isDefault == true or false
+end
+
+--- 解锁「默认卡牌」（取消锁定）：清除卡牌文件中的 isDefault 标记，使其恢复可修改/可删除。
+--- 仅测试版可用（KARDS.CardEditor.DefaultCardTestMode）；正式版直接拒绝。
+--- 【正式版移除】本函数即为「解锁默认」相关逻辑，正式版发布前可整段删除
+---（调用处 cl_ca_save_load.lua / cl_canvas_editor.lua 的解锁入口一并删除）。
+--- @param fileName string 文件名（不含路径，兼容转义名与原始名）
+--- @return boolean 是否解锁成功
+function KARDS.CardEditor.SaveSystem.UnlockDefaultCard(fileName)
+    if KARDS.CardEditor.DefaultCardTestMode ~= true then
+        print("[CardEditor] UnlockDefaultCard 已禁用（正式版）")
+        return false
+    end
+    local path, name = ResolveCardPath(fileName)
+    if not path then return false end
+    local content = FileOps.Read(path)
+    if not content then return false end
+    local ok, data = FileOps.Decode(content)
+    if not ok or not data or type(data) ~= "table" then return false end
+    if not (data.cardAppearance and data.cardAppearance.isDefault == true) then return false end
+    data.cardAppearance.isDefault = false
+    local json = FileOps.Encode(data)
+    if not json or not FileOps.Write(path, json) then return false end
+    InvalidateCaches()
+    print("[CardEditor] 默认卡牌已解锁: " .. tostring(name))
+    return true
 end
 
 -- ============ 第2类：效果函数保存/加载 ============
@@ -446,6 +606,7 @@ end
 --- @param exportData table { nodes, connections, dataConnections, functions, ... }
 --- @return string|boolean 保存成功返回效果文件完整相对路径（"card_editor/effects/xxx.json"，含安全转义后的磁盘名），失败返回 false
 function KARDS.CardEditor.SaveSystem.SaveEffect(fileName, exportData)
+    InvalidateCaches() -- 2026-08-14：效果文件改写，效果解析缓存失效（否则编辑器保存后战斗读到旧效果）
     fileName = ensureExt(safeFileName(fileName))
     if not fileName then return false end
 
@@ -514,6 +675,13 @@ function KARDS.CardEditor.SaveSystem.LoadEffect(fileName)
         filePath = FileOps.GetPath(EFFECTS_DIR, fileName)
     end
 
+    -- 2026-08-14：效果解析结果缓存（SaveEffect/DeleteFile 经 InvalidateCaches 失效）。
+    -- 缓存保存原始解码结果，一律返回深拷贝——编辑器与运行时路径会原地修改返回表
+    --（INE ImportEffectData 改写 node.data、LoadEffectForRuntime 替换为 runtimeData），
+    -- 深拷贝保证各调用方独立，缓存保持「磁盘状态」不被污染。
+    local cached = LoadEffectCache[filePath]
+    if cached ~= nil then return DeepCopy(cached) end
+
     if not FileOps.Exists(filePath) then
         print("[CardEditor] LoadEffect failed: File not found - " .. fileName)
         return nil
@@ -547,7 +715,29 @@ function KARDS.CardEditor.SaveSystem.LoadEffect(fileName)
         end
     end
 
+    LoadEffectCache[filePath] = data
     print("[CardEditor] Effect loaded: " .. fileName)
+    return DeepCopy(data)
+end
+
+--- 加载效果函数（运行时模式）：应用保存端 BuildRuntimeData 迁移的节点运行时数据
+--- 编辑器加载路径（LoadEffect 原样返回，保持编辑器组件键供面板显示）不受影响；
+--- 服务端打出指令时用本函数获得 base + runtimeData（runtimeData 含按运行时
+--- 类型独立计数迁移后的槽键），效果节点即按运行时键执行。
+--- 旧格式（无 base/runtimeData）告警提示重新保存（否则 ParseBaseNode 返回 nil，效果不执行）。
+--- @param fileName string 文件名
+--- @return table|nil 效果函数数据（含 runtimeData 的节点 data 已替换为 runtimeData）
+function KARDS.CardEditor.SaveSystem.LoadEffectForRuntime(fileName)
+    local data = KARDS.CardEditor.SaveSystem.LoadEffect(fileName)
+    if not data or not data.nodes then return data end
+    for _, node in ipairs(data.nodes) do
+        if node.runtimeData ~= nil then
+            node.data = node.runtimeData
+        elseif node.config and node.config ~= "" and not node.base then
+            print(("[CardEditor] 警告: 效果节点「%s」为旧格式（无 base/runtimeData），效果将不执行，请重新保存"):format(
+                tostring(node.name)))
+        end
+    end
     return data
 end
 
@@ -581,6 +771,7 @@ end
 
 --- 删除任意目录下的文件
 function KARDS.CardEditor.SaveSystem.DeleteFile(dir, fileName)
+    InvalidateCaches() -- E 修复：删除卡牌，全量信息缓存失效；2026-08-14 扩展为单卡/效果缓存同点失效
     fileName = ensureExt(fileName)
     if not fileName then return false end
 
@@ -594,6 +785,12 @@ function KARDS.CardEditor.SaveSystem.DeleteFile(dir, fileName)
 end
 
 function KARDS.CardEditor.SaveSystem.DeleteCard(fileName)
+    -- 默认卡牌锁定（不可删除）：已锁定卡牌一律拒绝删除，需先解锁。
+    -- 正式版同样生效——保护官方默认卡牌不被玩家删除。
+    if KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName) then
+        print("[CardEditor] DeleteCard blocked: '" .. tostring(fileName) .. "' 是默认卡牌，已锁定不可删除")
+        return false, "locked"
+    end
     if KARDS.CardEditor.SaveSystem.DeleteFile(CARDS_DIR, fileName) then return true end
     -- 总部卡单独存放于 headquarters/ 目录
     if KARDS.CardEditor.SaveSystem.DeleteFile(HQ_DIR, fileName) then return true end

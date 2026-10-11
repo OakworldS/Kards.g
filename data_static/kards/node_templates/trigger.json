@@ -1,0 +1,15 @@
+{
+    "type": "trigger",
+    "color": [70, 130, 180],
+    "hasInput": true,
+    "hasOutput": true,
+    "names": {
+        "zh-CN": "属性与伤害",
+        "en": "Property & Damage"
+    },
+    "configs": {
+        "zh-CN": "e'使' {$} '卡牌' {攻击、防御、受到伤害}\nif 攻击力 then\n{设为、增加、减少} []\nend\nif 防御 then\n{受到、设为、增加、减少} []\nend\nif 受到伤害 then\n'受到' [] '点伤害'\nend\n(n攻击力、n防御力)",
+        "en": "e'Make' {$} 'Card' {Attack、Defense、TakeDamage}\nif Attack then\n{Set、Increase、Decrease} []\nend\nif Defense then\n{Take、Set、Increase、Decrease} []\nend\nif TakeDamage then\n'Take' [] 'Damage'\nend\n(nAttack、nDefense)"
+    },
+    "base": "e{1}{3} if 1 then {3}[0] end if 2 then {4}[0] end if 3 then [0] end(n攻击力、n防御力)"
+}

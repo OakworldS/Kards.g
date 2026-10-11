@@ -1,0 +1,99 @@
+{
+  "format": 2,
+  "build_id": "279e448e91d2",
+  "model_id": "basic_card_unit",
+  "display_name": "Basic Card Unit",
+  "safe_display_name": "basic_card_unit",
+  "source_file": "basic_card_unit.glb",
+  "source_format": "glb",
+  "source_name_local": "basic_card_unit",
+  "source_name_en": "basic_card_unit",
+  "axis_preset": "x,-z,y",
+  "scale": 10.0,
+  "flip_v": true,
+  "triangle_count": 140,
+  "vertex_count": 216,
+  "render_vertex_count": 420,
+  "material_count": 3,
+  "pmx_bone_count": 0,
+  "pmx_morph_count": 0,
+  "static_only_warning": false,
+  "mesh_file": "pmx_static_importer/models/basic_card_unit/mesh.json",
+  "runtime_no_cull": true,
+  "winding_flipped_baked": false,
+  "bounds": {
+    "mins": [
+      -60.000005,
+      -71.068945,
+      -0.75
+    ],
+    "maxs": [
+      59.999995,
+      71.06896,
+      0.75
+    ]
+  },
+  "submeshes": [
+    {
+      "index": 0,
+      "name": "front",
+      "safe_name": "mat_000_front",
+      "image_path": "pmx_static_importer/basic_card_unit/mat_000_front_fallback_3ca38990.png",
+      "texture_source": "generated-diffuse-color",
+      "vertex_count": 102,
+      "triangle_count": 34,
+      "double_sided": true,
+      "pmx_double_sided": true,
+      "no_cull": true,
+      "translucent": false,
+      "alpha": 1.0,
+      "diffuse": [
+        0.8,
+        0.8,
+        0.8,
+        1.0
+      ]
+    },
+    {
+      "index": 1,
+      "name": "back",
+      "safe_name": "mat_001_back",
+      "image_path": "pmx_static_importer/basic_card_unit/mat_000_front_fallback_3ca38990.png",
+      "texture_source": "generated-diffuse-color",
+      "vertex_count": 102,
+      "triangle_count": 34,
+      "double_sided": true,
+      "pmx_double_sided": true,
+      "no_cull": true,
+      "translucent": false,
+      "alpha": 1.0,
+      "diffuse": [
+        0.8,
+        0.8,
+        0.8,
+        1.0
+      ]
+    },
+    {
+      "index": 2,
+      "name": "side",
+      "safe_name": "mat_002_side",
+      "image_path": "pmx_static_importer/basic_card_unit/mat_000_front_fallback_3ca38990.png",
+      "texture_source": "generated-diffuse-color",
+      "vertex_count": 216,
+      "triangle_count": 72,
+      "double_sided": true,
+      "pmx_double_sided": true,
+      "no_cull": true,
+      "translucent": false,
+      "alpha": 1.0,
+      "diffuse": [
+        0.8,
+        0.8,
+        0.8,
+        1.0
+      ]
+    }
+  ],
+  "manifest_hash": "5f3a020520f2"
+}
