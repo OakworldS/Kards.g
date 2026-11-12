@@ -26,7 +26,7 @@
                         移动（同移到前线）；目标槽位缺省自动首个空槽
           * 每次槽位变化后，涉及到的阵线自动居中重排
       - 前线的所有槽位必须是同一阵营：进入前线时以上一刻前线阵营（FrontlineOwner）为基准，
-        他方单位试图进入已控制的前线 → 拒绝进入并返回「前线已被敌方占领」（2026-09-26 缺口 F：
+        他方单位试图进入已控制的前线 → 拒绝进入并返回代码 "frontline_occupied"（2026-09-26 缺口 F：
         不再立即停局，同时存在两方单位的一致性由刻级校验 KARDS.Battle:VerifyFrontlineExclusive 追溯）
       - 前线空出后（FrontlineOwner = nil），任一方可进入，实现"争夺控制权"
       - 反作弊基础：布局校验由服务端权威执行，停止后所有操作入口拒绝执行
@@ -504,7 +504,7 @@ end
 
     @param tableID string 牌桌唯一标识符
     @param card    table 单位卡牌句柄
-    @return boolean, string 是否成功；失败原因（"前线已被敌方占领" 表示阵营冲突被拒）
+    @return boolean, string 是否成功；失败原因（"frontline_occupied" 表示阵营冲突被拒）
 ]]
 function KARDS.Battlefield:JoinFrontline(tableID, card)
     local inst = self.Instances[tableID]
@@ -521,7 +521,7 @@ function KARDS.Battlefield:JoinFrontline(tableID, card)
     local owner = card:GetOwner()
     local lastOwner = inst.FrontlineOwner
     if lastOwner and lastOwner ~= owner then
-        return false, "前线已被敌方占领"
+        return false, "frontline_occupied"
     end
 
     local slot = FirstEmpty(frontline)
@@ -545,7 +545,7 @@ end
     @param card      table 单位卡牌句柄
     @param slotIndex number 前线目标槽位（1..SLOT_COUNT；占用时插入到该卡左侧）
     @param opts      table|nil { forceOwner = string|nil } 控制反转时传新控制者
-    @return boolean, string 是否成功；失败原因（"前线已被敌方占领" 阵营冲突被拒 /
+    @return boolean, string 是否成功；失败原因（"frontline_occupied" 阵营冲突被拒 /
                            frontline_full 前线已满）
 ]]
 function KARDS.Battlefield:AddToFrontline(tableID, card, slotIndex, opts)
@@ -565,7 +565,7 @@ function KARDS.Battlefield:AddToFrontline(tableID, card, slotIndex, opts)
     -- 阵营一致性：控制反转（forceOwner）跳过校验（合法操作）；其余须与上一刻前线阵营一致，
     -- 否则拒绝进入（2026-09-26 缺口 F：不再立即停局，一致性由刻级校验兜底）
     if not forceOwner and lastOwner and lastOwner ~= enterOwner then
-        return false, "前线已被敌方占领"
+        return false, "frontline_occupied"
     end
     -- 前线已满则拒绝（先校验后落位，失败不改变任何状态）
     if CountUnits(inst.Frontline) >= self.SLOT_COUNT then
@@ -609,7 +609,7 @@ end
     @param tableID   string 牌桌唯一标识符
     @param card      table 单位卡牌句柄
     @param slotIndex number|nil 前线目标槽位（缺省自动首个空槽；占用时插入到该卡左侧）
-    @return boolean, string 是否成功；失败原因（"前线已被敌方占领" 阵营冲突被拒）
+    @return boolean, string 是否成功；失败原因（"frontline_occupied" 阵营冲突被拒）
 ]]
 function KARDS.Battlefield:MoveToFrontline(tableID, card, slotIndex)
     local inst = self.Instances[tableID]
@@ -633,7 +633,7 @@ function KARDS.Battlefield:MoveToFrontline(tableID, card, slotIndex)
     local owner = card:GetOwner()
     local lastOwner = inst.FrontlineOwner
     if lastOwner and lastOwner ~= owner then
-        return false, "前线已被敌方占领"
+        return false, "frontline_occupied"
     end
 
     -- 从本方支援阵线取槽（先校验后修改，作弊时不改变布局）

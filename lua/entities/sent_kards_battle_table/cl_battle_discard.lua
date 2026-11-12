@@ -24,9 +24,19 @@ if not CLIENT then return end
 
 KARDS = KARDS or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 手牌上移距离（牌桌局部 z，沿卡面法线抬升）与上移/回落时长（秒）
 local DiscardHandLift = 8
 local DiscardHandRiseDur = 0.25
+
+-- 常量提示文本尺寸缓存（2026-10-16 性能优化）：字体与文本固定，宽度只需测一次
+local discardTipW, discardTipH
+-- 语言切换：清空按语言测得的宽度缓存
+KARDS.Lang.OnLanguageChanged(function()
+    discardTipW, discardTipH = nil, nil
+end)
 
 -- 弃牌选择状态（跨 Think / HUDPaint 钩子共享）
 KARDS.BattleDiscard = KARDS.BattleDiscard or {
@@ -68,20 +78,9 @@ local textUndergroundMat = Material("materials/kards/ui/textUnderground.png", "n
 
 -- 射线命中一张本方手牌（同三选一 HitPickCard：阈值 10^2）
 local function HitDiscardCard()
-    local ply = LocalPlayer()
-    if not IsValid(ply) then return nil end
-    local pos = KARDS.BattleCamera and KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then return nil end
-    local bestEnt, bestD = nil, 100
-    for i = 1, BD.count do
-        local e = BD.ents[i]
-        if IsValid(e) then
-            local d = KARDS.RayPointDistSqr(pos, dir, e:GetPos())
-            if d < bestD then bestEnt, bestD = e, d end
-        end
-    end
-    return bestEnt
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then return nil end
+    return KARDS.HitTest.NearestInRay(pos, dir, BD.ents, KARDS.HitTest.Radii.Candidate)
 end
 
 -- 提交弃牌选择（点击「确认」）：选中手牌序号发送服务端
@@ -239,10 +238,13 @@ hook.Add("HUDPaint", "KardsBattleDiscardHUD", function()
     local w, h = 160, 52
     BD.confirmRect = { x = x - w / 2, y = y - h / 2, w = w, h = h }
     -- 提示横幅（textUnderground.png 横向渐变背景，包裹提示文字，置于按钮上方 8px）
-    local tipText = "选择要弃掉的卡牌"
+    local tipText = T("battle.discard.tip")
     local tipFont = "SourceHan_Heavy_36"
-    surface.SetFont(tipFont)
-    local tw, th = surface.GetTextSize(tipText)
+    if not discardTipW then
+        surface.SetFont(tipFont)
+        discardTipW, discardTipH = surface.GetTextSize(tipText)
+    end
+    local tw, th = discardTipW, discardTipH
     local tipPadX, tipPadY = 28, 12
     local tipW, tipH = tw + tipPadX * 2, th + tipPadY * 2
     local tipY = y - h / 2 - 8 - tipH
@@ -252,5 +254,5 @@ hook.Add("HUDPaint", "KardsBattleDiscardHUD", function()
     draw.SimpleText(tipText, tipFont, x, tipY + tipH / 2,
         Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     -- 确认按钮（与重新调度确认按钮同款：KARDS.DrawActionButton）
-    KARDS.DrawActionButton(x, y, w, h, "确认")
+    KARDS.DrawActionButton(x, y, w, h, T("common.confirm"))
 end)

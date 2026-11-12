@@ -18,6 +18,10 @@
 -- 剪切完成后，在 cl_canvas_editor.lua 中保留：
 -- 1. KARDS.CardEditor.Canvas.CardSelector 状态声明（行 972~985）
 -- 2. CardSelector.RefreshList 函数（行 987~992）
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 绘制可内嵌的卡牌单选组件
 function KARDS.CardEditor.Canvas.DrawEmbeddedCardSelector(x, y, width, height, node, selectorId)
     -- 初始化节点中的选择器数据
@@ -58,7 +62,7 @@ function KARDS.CardEditor.Canvas.DrawEmbeddedCardSelector(x, y, width, height, n
     
     -- 绘制显示文本（根据大小调整字体）
     local fontSize = 14
-    local displayText = selector.selectedCard and selector.selectedCard.name or "选择卡牌"
+    local displayText = selector.selectedCard and selector.selectedCard.name or T("editor.selector.select_card")
     draw.SimpleText(displayText, "SourceHan_Heavy_" .. fontSize, buttonX + 8, buttonY + buttonHeight / 2, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     
     -- 绘制箭头
@@ -98,7 +102,7 @@ function KARDS.CardEditor.Canvas.DrawEmbeddedCardSelector(x, y, width, height, n
         
         -- 如果没有卡牌，显示提示
         if #selector.cardsList == 0 then
-            draw.SimpleText("无卡牌", "SourceHan_Heavy_12", listX + listWidth / 2, listY + listHeight / 2, Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.selector.no_cards"), "SourceHan_Heavy_12", listX + listWidth / 2, listY + listHeight / 2, Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             return selector
         end
         
@@ -147,7 +151,7 @@ function KARDS.CardEditor.Canvas.DrawEmbeddedCardSelector(x, y, width, height, n
             end
             
             -- 绘制卡牌名称（缩小字体）
-            local displayName = card.name ~= "" and card.name or "无名称"
+            local displayName = card.name ~= "" and card.name or T("editor.selector.unnamed")
             draw.SimpleText(displayName, "SourceHan_Heavy_12", listX + 8, itemY + itemHeight / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         end
         
@@ -180,7 +184,7 @@ function KARDS.CardEditor.Canvas.DrawCardSelector()
     draw.RoundedBox(6, buttonX, buttonY, buttonWidth, buttonHeight, buttonColor)
     
     -- 绘制显示文本
-    local displayText = selector.selectedCard and selector.selectedCard.name or "选择卡牌..."
+    local displayText = selector.selectedCard and selector.selectedCard.name or T("editor.selector.select_card_ellipsis")
     draw.SimpleText(displayText, "SourceHan_Heavy_16", buttonX + 15, buttonY + buttonHeight / 2, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     
     -- 绘制箭头
@@ -212,7 +216,7 @@ function KARDS.CardEditor.Canvas.DrawCardSelector()
         
         -- 如果没有卡牌，显示提示
         if #selector.cardsList == 0 then
-            draw.SimpleText("没有保存的卡牌", "SourceHan_Heavy_14", listX + listWidth / 2, listY + listHeight / 2, Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.selector.no_saved_cards"), "SourceHan_Heavy_14", listX + listWidth / 2, listY + listHeight / 2, Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             return
         end
         
@@ -250,7 +254,7 @@ function KARDS.CardEditor.Canvas.DrawCardSelector()
             end
             
             -- 绘制卡牌名称
-            local displayName = card.name ~= "" and card.name or "无名称"
+            local displayName = card.name ~= "" and card.name or T("editor.selector.unnamed")
             draw.SimpleText(displayName, "SourceHan_Heavy_16", listX + 15, itemY + 18, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             
             -- 绘制文件名和保存时间

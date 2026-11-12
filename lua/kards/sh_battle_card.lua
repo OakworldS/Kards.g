@@ -341,6 +341,27 @@ function KARDS.Battle:SetDiscardCallback(tableID, fn)
     self.DiscardCallbacks[tableID] = fn
 end
 
+-- 延时效果证明回调注册表：DelayedProofCallbacks[tableID] = function(card) end
+-- 依赖倒置（同 DrawCallbacks）：保持触发（keepTrigger）与跨刻等待（turn「等待」）在回合
+-- 时间刻触发时，骨架只把来源卡句柄交给上层，由牌桌实体广播证明动画
+-- （2026-11-07 用户规格：展示延时效果来源卡，见 sh_node_hooks.lua NotifyDelayedProof）
+KARDS.Battle.DelayedProofCallbacks = KARDS.Battle.DelayedProofCallbacks or {}
+
+-- 注册延时效果证明回调（幂等，后注册覆盖先注册）
+-- @param tableID string 牌桌唯一标识符
+-- @param fn      function 回调（来源卡牌句柄）
+function KARDS.Battle:SetDelayedProofCallback(tableID, fn)
+    self.DelayedProofCallbacks[tableID] = fn
+end
+
+-- 通知延时效果证明（延时效果在回合时间刻触发前调用；无注册回调时静默）
+-- @param tableID string 牌桌唯一标识符
+-- @param card    table 延时效果来源卡牌句柄
+function KARDS.Battle:NotifyDelayedProof(tableID, card)
+    local fn = self.DelayedProofCallbacks[tableID]
+    if fn then fn(card) end
+end
+
 --[[
     抽牌（骨架，卡组入口）
 
@@ -358,13 +379,20 @@ end
     @return table 实际抽到的卡牌列表（含爆牌弃掉的卡）
 ]]
 function KARDS.Battle:SimDraw(player, count)
-    -- 统一操作钩子（M1）：抽取可被反制拦截（无主动卡，拦截时不抽牌）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "draw", { player = player }).intercepted then
+    local drawCount = count or 1
+    -- 统一操作钩子（M1）：抽取可被反制拦截（无主动卡，拦截时不抽牌）；
+    -- 属性变更可改写 args.amount（抽牌张数）
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "draw", {
+        player = player, amount = drawCount,
+    })
+    if opArgs.intercepted then
         self:InterceptOperation("draw", nil)
         return {}
     end
+    drawCount = math.max(0, math.floor(tonumber(opArgs.amount) or drawCount))
+    if drawCount < 1 then return {} end
     local handBefore = #(KARDS.Deck:GetHand(self.TableID, player) or {})
-    local drawn, moraleHits, overdraw, overdrawnCards = KARDS.Deck:Draw(self.TableID, player, count)
+    local drawn, moraleHits, overdraw, overdrawnCards = KARDS.Deck:Draw(self.TableID, player, drawCount)
     if #drawn > 0 then
         local targets = {}
         for i = 2, #drawn do
@@ -425,12 +453,15 @@ function KARDS.Battle:SimDiscard(player, card, ordinal)
         if chooser then card = chooser(player) end
     end
     if not card then return false end
-    -- 统一操作钩子（M1）：弃牌可被反制 / 单位效果拦截（主动卡 = 被弃掉的手牌卡）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "discard", {
-        player = player, card = card,
-    }).intercepted then
+    -- 统一操作钩子（M1）：弃牌可被反制 / 单位效果拦截（主动卡 = 被弃掉的手牌卡）；
+    -- 属性变更可改写 args.amount（弃牌张数，当前按单张结算）
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "discard", {
+        player = player, card = card, amount = 1,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("discard", card)
     end
+    if (tonumber(opArgs.amount) or 1) < 1 then return true end
     local owner = card:GetOwner()
     if not KARDS.Deck:RemoveFromHand(self.TableID, owner, card) then return false end
     KARDS.TickLog:Push(self.TableID, card, { "discard" }, {}, nil, { { owner, "hand", "-1" } })

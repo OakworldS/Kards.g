@@ -18,11 +18,14 @@
 --]]
 
 -- 高级文本绘制函数：支持多字体、换行、关键词高亮
-local keywordsForHighlight = KARDS.CardEditor.Data.KeywordsForHighlight
+-- （高亮词表与规则见 sh_card_data.lua：KeywordsForHighlight / SplitRichKeywords）
 
 -- 引用全局词条枚举表（BuildKeywordsList 委托前重排为固定枚举顺序）
 local booleanKeywordKeys = KARDS.CardEditor.Data.BooleanKeywordKeys
 local numericKeywordKeys = KARDS.CardEditor.Data.NumericKeywordKeys
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
 
 -- 数值文字统一颜色（近白色 C9C3A9，符合卡牌模板风格）：
 -- 卡牌花费/行动花费/攻击/防御等所有白色数值文字统一使用
@@ -58,10 +61,10 @@ end
 -- 插图缩放的乘法上报错，缺 nameFontSize 会在字体名拼接时报错。绘制入口统一以本表为底补默认值，
 -- 传入表覆盖其上，缺失字段一律取中性的默认值（不用编辑器当前卡牌的数据，避免串值）。
 local PREVIEW_APPEARANCE_DEFAULTS = {
-    name = "", cost = 0, actionCost = 0, country = "", cardType = "infantry",
+    name = "", nameEn = "", cost = 0, actionCost = 0, country = "", cardType = "infantry",
     attack = 0, defense = 0, quality = "normal",
     keywords = {}, keywordValues = {}, pincerValue = "",
-    specialEffect = "", imagePath = "",
+    specialEffect = "", specialEffectEn = "", imagePath = "",
     cardTemplate = "custom", customTemplatePath = "",
     nameIsBlack = false, nameIsEnglish = false, nameFontSize = 36, descFontSize = 20,
     imageOffsetX = 0, imageOffsetY = 0, imageScale = 1, effectPath = "",
@@ -148,11 +151,11 @@ local function FindVarByInternalName(internalName)
                         elseif typeId == "t" then
                             return vd.initialValue or ""
                         elseif typeId == "e" then
-                            return "卡牌对象"
+                            return T("editor.preview.var_card_object")
                         elseif typeId == "g" then
-                            return "数组"
+                            return T("editor.preview.var_array")
                         elseif typeId == "f" then
-                            return "函数"
+                            return T("editor.preview.var_function")
                         else
                             return tostring(vd.initialValue or "")
                         end
@@ -166,7 +169,7 @@ end
 
 -- 选择描述富文本分段字体：优先使用注册过的同字号字体，缺失时回退到思源黑体同字号（避免使用未注册字体）
 local function PickDescSegmentFont(size, seg)
-    if seg.isKeyword or seg.bold then
+    if seg.isKeyword or seg.keyword or seg.bold then
         return "SourceHan_Heavy_" .. size
     end
     if seg.italic then
@@ -179,7 +182,33 @@ local function PickDescSegmentFont(size, seg)
     return "SourceHan_Heavy_" .. size
 end
 
-local function DrawSpecialEffectRichText(text, x, y, xAlign, yAlign, fontSize)
+-- 富文本断行：按行宽换行（与 3D2D 叠加层一致，委托 sh_card_data.WrapRichSegments；
+-- 英文按空格断词、中文逐字断行，超长单词硬断）
+local function WrapDescLines(segs, maxWidth, size)
+    return KARDS.CardEditor.Data.WrapRichSegments(segs, function(text, bold, italic, keyword)
+        surface.SetFont(PickDescSegmentFont(size, { isKeyword = keyword, bold = bold, italic = italic }))
+        return surface.GetTextSize(text)
+    end, maxWidth)
+end
+
+-- 字号自适应：按起始字号断行，行数超出可用高度时逐级缩小字号（步长 2，下限 12）。
+-- @return lines, size, lineH 断行结果 / 最终字号 / 行高
+local function FitDescLines(segs, maxWidth, startSize, maxHeight)
+    local size = math.max(10, startSize or 20)
+    while true do
+        local lines = WrapDescLines(segs, maxWidth, size)
+        local lineH = math.max(10, math.floor(18 * size / 20))
+        if not maxHeight or #lines * lineH <= maxHeight or size <= 12 then
+            return lines, size, lineH
+        end
+        size = size - 2
+    end
+end
+
+-- 绘制效果描述富文本（关键词高亮 + 源文本 \n 强制换行 + 按宽度自动换行 + 字号自适应）
+-- maxWidth / maxHeight 由调用方按卡面可用文字区传入（屏幕像素）
+local function DrawSpecialEffectRichText(text, x, y, xAlign, yAlign, fontSize, maxWidth, maxHeight)
+    if not text or text == "" then return end
     fontSize = fontSize or 20
     -- 替换 (内部变量名) 为 (初始值)
     text = string.gsub(text, "%(([%w_]+)%)", function(match)
@@ -189,98 +218,28 @@ local function DrawSpecialEffectRichText(text, x, y, xAlign, yAlign, fontSize)
         end
         return "(" .. match .. ")"
     end)
-    -- 先处理转义的换行符
+    -- 先处理转义的换行符，再统一解析标签与关键词高亮（规则见 sh_card_data.lua）
     local processedText = string.gsub(text, "\\n", "\n")
-    -- 分割成行
-    local lines = string.Explode("\n", processedText)
+    local finalSegs = KARDS.CardEditor.Data.SplitRichKeywords(ParseFormatTags(processedText))
 
-    local lineHeight = math.max(10, math.floor(18 * fontSize / 20))  -- 行间距随字号缩放
+    local lines, size, lineHeight = FitDescLines(finalSegs, maxWidth, fontSize, maxHeight)
 
     for lineIdx, line in ipairs(lines) do
-        -- 先解析 HTML 格式标签
-        local formatSegs = ParseFormatTags(line)
-
-        -- 对每个格式化片段再应用关键词高亮
-        local finalSegs = {}
-        for _, fseg in ipairs(formatSegs) do
-            local segText = fseg.text
-            local segLen = #segText
-            local currentPos = 1
-
-            while currentPos <= segLen do
-                local matchFound = false
-                local matchKeyword = nil
-                local matchEnd = 0
-
-                -- 在当前片段内查找关键词
-                for _, keyword in ipairs(keywordsForHighlight) do
-                    local kwLen = #keyword
-                    if currentPos + kwLen - 1 <= segLen then
-                        if segText:sub(currentPos, currentPos + kwLen - 1) == keyword then
-                            matchKeyword = keyword
-                            matchEnd = currentPos + kwLen - 1
-                            -- 检查部署：或抉择：的情况
-                            if (keyword == "部署" or keyword == "抉择") and matchEnd + 1 <= segLen then
-                                if segText:sub(matchEnd + 1, matchEnd + 1) == "：" then
-                                    matchEnd = matchEnd + 1
-                                end
-                            end
-                            matchFound = true
-                            break
-                        end
-                    end
-                end
-
-                if matchFound then
-                    table.insert(finalSegs, {
-                        text = segText:sub(currentPos, matchEnd),
-                        isKeyword = true,
-                        bold = fseg.bold,
-                        italic = fseg.italic,
-                    })
-                    currentPos = matchEnd + 1
-                else
-                    -- 查找下一个关键词的位置
-                    local nextKeywordPos = segLen + 1
-                    for _, keyword in ipairs(keywordsForHighlight) do
-                        local p = segText:find(keyword, currentPos, true)
-                        if p and p < nextKeywordPos then
-                            nextKeywordPos = p
-                        end
-                    end
-
-                    -- 添加普通文本段
-                    local endPos = nextKeywordPos - 1
-                    if endPos >= currentPos then
-                        table.insert(finalSegs, {
-                            text = segText:sub(currentPos, endPos),
-                            isKeyword = false,
-                            bold = fseg.bold,
-                            italic = fseg.italic,
-                        })
-                    end
-                    currentPos = endPos + 1
-                end
-            end
-        end
-
         -- 计算行总宽度
         local totalWidth = 0
-        for _, seg in ipairs(finalSegs) do
-            local font = PickDescSegmentFont(fontSize, seg)
+        for _, seg in ipairs(line) do
+            local font = PickDescSegmentFont(size, seg)
             surface.SetFont(font)
-            local w = surface.GetTextSize(seg.text)
-            totalWidth = totalWidth + w
+            totalWidth = totalWidth + surface.GetTextSize(seg.text)
         end
 
-        -- 绘制这一行
+        -- 绘制这一行（整体水平居中于 x，逐 token 左对齐累加）
         local currentX = x - totalWidth / 2
         local currentY = y + (lineIdx - 1) * lineHeight
-
-        for _, seg in ipairs(finalSegs) do
-            local font = PickDescSegmentFont(fontSize, seg)
+        for _, seg in ipairs(line) do
+            local font = PickDescSegmentFont(size, seg)
             surface.SetFont(font)
-            local w, h = surface.GetTextSize(seg.text)
+            local w = surface.GetTextSize(seg.text)
             draw.SimpleText(seg.text, font, currentX, currentY, Color(0, 0, 0), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             currentX = currentX + w
         end
@@ -369,7 +328,9 @@ local function DrawCardName(appearance, previewX, previewY, previewW, previewH, 
     else
         nameY = previewY + layout.nameTop * scaleFactor
     end
-    if not (appearance.name and appearance.name ~= "") then return nameY end
+    -- 卡名按当前语言取（英文环境优先 nameEn，为空回退 name）
+    local displayName = KARDS.CardEditor.Data.GetLocalizedField(appearance, "name")
+    if not (displayName and displayName ~= "") then return nameY end
     local nameColor = (IsFlashTemplate(appearance) or appearance.nameIsBlack or isCommandCard) and Color(0, 0, 0) or Color(255, 255, 255)
 
     local nameFont = "SourceHan_Heavy_" .. appearance.nameFontSize
@@ -390,7 +351,7 @@ local function DrawCardName(appearance, previewX, previewY, previewW, previewH, 
     end
 
     if not appearance.nameIsEnglish or useEnglishFont then
-        draw.SimpleText(appearance.name, nameFont, previewX + previewW / 2, nameY, nameColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(displayName, nameFont, previewX + previewW / 2, nameY, nameColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 
     return nameY
@@ -494,7 +455,15 @@ local function DrawCardKeywords(appearance, previewX, previewY, previewW, previe
     local keywordsText, hasKeywords = BuildKeywordsList(appearance)
     if hasKeywords then
         local keywordsY = previewY + previewH - layout.keywordsBottom * scaleFactor
-        draw.SimpleText(keywordsText, "SourceHan_Heavy_20", cardCenterX, keywordsY, Color(0, 0, 0), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        -- 英文词条串更长：超出文字区宽度时逐级缩小字号（20 → 12，步长 2）
+        local maxWidth = previewW - 40 * scaleFactor
+        local kwSize = 20
+        surface.SetFont("SourceHan_Heavy_" .. kwSize)
+        while kwSize > 12 and surface.GetTextSize(keywordsText) > maxWidth do
+            kwSize = kwSize - 2
+            surface.SetFont("SourceHan_Heavy_" .. kwSize)
+        end
+        draw.SimpleText(keywordsText, "SourceHan_Heavy_" .. kwSize, cardCenterX, keywordsY, Color(0, 0, 0), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     return hasKeywords
 end
@@ -503,7 +472,9 @@ end
 -- 3D2D 文字卡（hideNumbers）：效果描述转由 3D2D 叠加层实时绘制（不烘焙进纹理）——仅离屏渲染模式
 local function DrawCardDescription(appearance, previewX, previewY, previewW, previewH, scaleFactor, isCommandCard, hasKeywords, nameY, cardCenterX, layout, hideNumbers)
     if hideNumbers then return end
-    if not (appearance.specialEffect and appearance.specialEffect ~= "") then return end
+    -- 描述按当前语言取（英文环境优先 specialEffectEn，为空回退 specialEffect）
+    local effectText = KARDS.CardEditor.Data.GetLocalizedField(appearance, "specialEffect")
+    if not (effectText and effectText ~= "") then return end
 
     local descY
     if hasKeywords then
@@ -519,7 +490,13 @@ local function DrawCardDescription(appearance, previewX, previewY, previewW, pre
             descY = previewY + previewH - layout.keywordsBottom * scaleFactor
         end
     end
-    DrawSpecialEffectRichText(appearance.specialEffect, cardCenterX, descY, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, appearance.descFontSize or 20)
+    -- 可用的文字区宽高（屏幕像素）：左右各留 20 渲染像素；指令卡向下绘制到卡底，
+    -- 其余卡以锚点为中心向上下扩展（多行垂直居中，底部空间按两倍折算）
+    local maxWidth = previewW - 40 * scaleFactor
+    local bottomRoom = previewY + previewH - descY
+    local maxHeight = isCommandCard and (bottomRoom - 30 * scaleFactor)
+        or (bottomRoom * 2 - 12 * scaleFactor)
+    DrawSpecialEffectRichText(effectText, cardCenterX, descY, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, appearance.descFontSize or 20, maxWidth, maxHeight)
 end
 
 -- 绘制品质图标（图片最底部；预览器/渲染器共用，位置数值取 layout）
@@ -649,7 +626,7 @@ local function DrawCardImage(appearance, previewX, previewY, previewW, previewH,
     else
         -- 插图为空时显示深色占位背景
         draw.RoundedBox(4, slotX, slotY, slotW, slotH, Color(40, 40, 40))
-        draw.SimpleText("无插图", "SourceHan_Heavy_14", slotX + slotW / 2, slotY + slotH / 2, Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.preview.no_illustration"), "SourceHan_Heavy_14", slotX + slotW / 2, slotY + slotH / 2, Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 end
 

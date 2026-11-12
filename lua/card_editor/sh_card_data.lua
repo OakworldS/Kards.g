@@ -216,59 +216,166 @@ KARDS.CardEditor.Data.Keywords = {
     NAVY = "navy", -- 海军（隐藏词条：算作海军，不出现在卡面）
 }
 
--- 对战词条详细描述
-KARDS.CardEditor.Data.KeywordDescriptions = {
-    blitz = "单位进入场地后可立即行动",
-    smoke = "具有烟幕的单位无法被其他敌方攻击，单位移动或攻击后，失去烟幕。在前线的单位不能具有烟幕。",
-    intel = "情报X：情报牌使用时能显示敌方X张手牌",
-    mobilize = "动员：动员单位回合开始时获得+1+1，受到伤害后会失去动员",
-    fight_hard = "奋战：奋战单位一回合中可以攻击两次",
-    guard = "守护：与守护单位相邻的非守护单位无法被轰炸机和炮兵以外的单位攻击",
-    mountain = "山地：山地单位部署或加入战场时，每有一个其他友方山地单位，获得一次+1+1",
-    death_plan = "亡计：亡计效果会在单位被消灭时触发",
-    ambush = "伏击：伏击单位每回合首次被攻击时，会首先造成反击伤害。若敌方单位因此被消灭，则其无法对伏击单位造成伤害",
-    countdown = "倒计时：倒计时结束后，此单位将触发一个事件",
-    impact = "冲击：冲击单位首次攻击时，被攻击单位不会造成任何反击伤害。冲击单位攻击单位后，移除冲击",
-    heavy_armor = "重甲：重甲单位交战时，受到的伤害减少X。每个单位最多可拥有3重甲",
-    pincer = "钳击：部署钳击单位时，可以选择另一个友方单位作为钳击同伴，两者将具有钳击加成，直到其中一个单位离场或失去钳击",
-    conceal = "隐蔽：隐蔽单位入场时背面朝上，揭示前不受指令、反制或单位效果影响且行动花费为1。隐蔽单位在发起攻击或被攻击后揭示并失去隐蔽",
-    veteran = "老兵：老兵状态的卡牌，表示该卡牌已升级为增强版本，拥有独立的外观和效果",
-    can_elevate_to_veteran = "可升为老兵：该卡牌可以升级为老兵状态，拥有一套独立的老兵外观和升级效果",
-    cooperation = "协力：触发效果时，除非上一回合存在与卡牌相同国家单位，否则总部就会受到士气伤害",
-    exile = "流亡：流亡牌可投入包含本国的卡组，也可投入包含流亡国的卡组",
-    forecast = "预报：您可以从 3 张不同的天气牌中选择一个，然后选择该天气类型的延伸卡牌",
-    navy = "海军：算作海军（隐藏词条，不显示在卡面）",
-}
+-- 对战词条详细描述 / 显示名称：文本存于语言表（keyword.<id>.name / keyword.<id>.desc），
+-- 按当前语言取用；英文表缺失时 KARDS.Lang.Get 自动回退中文表。
+-- 词条 id 枚举见上方 KARDS.CardEditor.Data.Keywords。
 
--- 词条显示名称映射（key → 中文显示名）
-KARDS.CardEditor.Data.KeywordDisplayNames = {
-    blitz = "闪击",
-    smoke = "烟幕",
-    intel = "情报",
-    mobilize = "动员",
-    fight_hard = "奋战",
-    guard = "守护",
-    mountain = "山地",
-    death_plan = "亡计",
-    ambush = "伏击",
-    countdown = "倒计时",
-    impact = "冲击",
-    heavy_armor = "重甲",
-    pincer = "钳击",
-    conceal = "隐蔽",
-    veteran = "老兵",
-    can_elevate_to_veteran = "可升为老兵",
-    cooperation = "协力",
-    exile = "流亡",
-    forecast = "预报",
-    navy = "海军",
-}
+--- 取词条显示名（当前语言；未登记返回 nil）
+-- @param id   string 词条 id
+-- @param lang string|nil 语言标识（缺省当前语言）
+function KARDS.CardEditor.Data.GetKeywordName(id, lang)
+    if not id or not KARDS.Lang then return nil end
+    return KARDS.Lang.Get(lang or KARDS.Lang.GetLanguage(), "keyword." .. id .. ".name")
+end
 
--- 富文本高亮关键词列表（用于文本绘制时自动加粗）
-KARDS.CardEditor.Data.KeywordsForHighlight = {
+--- 取词条说明（当前语言；未登记返回空字符串）
+function KARDS.CardEditor.Data.GetKeywordDescription(id, lang)
+    if not id or not KARDS.Lang then return "" end
+    return KARDS.Lang.Get(lang or KARDS.Lang.GetLanguage(), "keyword." .. id .. ".desc") or ""
+end
+
+--- 按语言选择卡牌文本：英文环境优先英文，英文为空/缺失时回退中文
+-- @param zhText string|nil 中文文本
+-- @param enText string|nil 英文文本
+-- @param lang   string|nil 语言标识（缺省当前语言）
+function KARDS.CardEditor.Data.PickLocalized(zhText, enText, lang)
+    lang = lang or (KARDS.Lang and KARDS.Lang.GetLanguage()) or "zh-CN"
+    if lang == "en" and enText ~= nil and enText ~= "" then return enText end
+    return zhText or ""
+end
+
+--- 取卡面文本字段（名称/描述）：英文环境读 <base>En，为空时回退 <base>
+-- @param tbl  table|nil 外观数据表（含 name / nameEn 或 specialEffect / specialEffectEn）
+-- @param base string 基础字段名（"name" / "specialEffect"）
+function KARDS.CardEditor.Data.GetLocalizedField(tbl, base, lang)
+    if not tbl then return "" end
+    lang = lang or (KARDS.Lang and KARDS.Lang.GetLanguage()) or "zh-CN"
+    if lang == "en" then
+        local v = tbl[base .. "En"]
+        if v ~= nil and v ~= "" then return v end
+    end
+    return tbl[base] or ""
+end
+
+--- 写卡面文本字段：英文环境写 <base>En，中文环境写 <base>（编辑器输入按当前语言落库）
+function KARDS.CardEditor.Data.SetLocalizedField(tbl, base, val, lang)
+    if not tbl then return end
+    lang = lang or (KARDS.Lang and KARDS.Lang.GetLanguage()) or "zh-CN"
+    tbl[lang == "en" and (base .. "En") or base] = val
+end
+
+-- 富文本高亮关键词列表（中文）：卡面描述由作者自由填写，故中英文两份词表合并匹配，
+-- 描述无论以哪种语言书写都能高亮。
+KARDS.CardEditor.Data.KeywordsForHighlightZh = {
     "部署", "抉择", "亡计", "或", "且", "开发", "压制", "抑制", "老兵", "转换", "控制", "免疫",
-    "情报", "动员", "奋战", "守护", "山地", "伏击", "倒计时", "冲击", "重甲", "钳击", "闪击", "隐蔽", "烟幕", "协力", "流亡", "预报"
+    "情报", "动员", "奋战", "守护", "山地", "伏击", "倒计时", "冲击", "重甲", "钳击", "闪击", "隐蔽", "烟幕", "协力", "流亡", "预报",
+    "收缴", "被收缴"
 }
+
+-- 富文本高亮关键词列表（英文，与中文表一一对应）
+KARDS.CardEditor.Data.KeywordsForHighlightEn = {
+    "Deploy", "Choose", "Last Strike", "or", "and", "Develop", "Suppress", "Neutralized",
+    "Veteran", "Convert", "Control", "Immune", "Intelligence", "Mobilize", "Fight", "Guard",
+    "Mountain", "Ambush", "Countdown", "Impact", "Heavy Armor", "Pincer", "Blitz", "Conceal",
+    "Smoke Screen", "Smoke", "Cooperate", "Exile", "Forecast", "Confiscate", "Confiscated",
+}
+
+-- 合并后的高亮词表：按字节长度降序，保证长词优先命中（如「被收缴」先于「收缴」、
+-- 「Smoke Screen」先于「Smoke」）；绘制层在模块加载时取用。
+KARDS.CardEditor.Data.KeywordsForHighlight = (function()
+    local list = {}
+    for _, kw in ipairs(KARDS.CardEditor.Data.KeywordsForHighlightZh) do list[#list + 1] = kw end
+    for _, kw in ipairs(KARDS.CardEditor.Data.KeywordsForHighlightEn) do list[#list + 1] = kw end
+    table.sort(list, function(a, b)
+        if #a ~= #b then return #a > #b end
+        return a < b
+    end)
+    return list
+end)()
+
+-- 冒号连带高亮的词（「部署：」「Deploy:」整段加粗）；冒号支持中英文两种
+KARDS.CardEditor.Data.ColonKeywords = {
+    ["部署"] = true, ["抉择"] = true,
+    Deploy = true, Choose = true,
+}
+KARDS.CardEditor.Data.ColonChars = { ["："] = true, [":"] = true }
+
+-- ASCII 词字符（字母/数字/下划线）：英文关键词需词边界，避免 or 命中 for、Guard 命中 Guarded
+local function IsAsciiWordByte(b)
+    if not b or b >= 128 then return false end
+    return string.char(b):match("[%w_]") ~= nil
+end
+
+--- 判断 text 的 pos（字节位置）处是否命中关键词 kw（英文词附加词边界校验）
+-- @return boolean
+function KARDS.CardEditor.Data.KeywordMatchesAt(text, pos, kw)
+    if not kw or kw == "" then return false end
+    if text:sub(pos, pos + #kw - 1) ~= kw then return false end
+    local first = kw:byte(1)
+    if first < 128 and IsAsciiWordByte(first) and IsAsciiWordByte(text:byte(pos - 1)) then
+        return false
+    end
+    local last = kw:byte(#kw)
+    if last < 128 and IsAsciiWordByte(last) and IsAsciiWordByte(text:byte(pos + #kw)) then
+        return false
+    end
+    return true
+end
+
+--[[
+    富文本关键词高亮拆分（共享纯逻辑：3D2D 叠加层与 2D 预览共用）
+
+    输入格式段（text/bold/italic，见 ParseFormatTags），输出按关键词切细的段：
+      - 命中关键词的段 keyword = true；
+      - 部署/抉择命中时连同后面的冒号（中文「：」3 字节 / 英文「:」1 字节）一起高亮；
+      - 英文关键词按词边界匹配（KeywordMatchesAt），避免 or / Guard 命中普通单词内部。
+
+    @param segs table 格式段数组 { { text, bold, italic }, ... }
+    @return table 段数组 { { text, bold, italic, keyword }, ... }
+]]
+KARDS.CardEditor.Data.SplitRichKeywords = function(segs)
+    local Data = KARDS.CardEditor.Data
+    local keywords = Data.KeywordsForHighlight
+    local out = {}
+    for _, seg in ipairs(segs or {}) do
+        local segText = seg.text or ""
+        local i = 1
+        local plainStart = 1
+        while i <= #segText do
+            local matchKw = nil
+            for _, kw in ipairs(keywords) do
+                if Data.KeywordMatchesAt(segText, i, kw) then
+                    matchKw = kw
+                    break
+                end
+            end
+            if matchKw then
+                if plainStart < i then
+                    table.insert(out, { text = segText:sub(plainStart, i - 1), bold = seg.bold, italic = seg.italic, keyword = false })
+                end
+                local matchEnd = i + #matchKw - 1
+                local colonLen = 0
+                if Data.ColonKeywords[matchKw] then
+                    if segText:sub(matchEnd + 1, matchEnd + 3) == "：" then
+                        colonLen = 3
+                    elseif segText:sub(matchEnd + 1, matchEnd + 1) == ":" then
+                        colonLen = 1
+                    end
+                end
+                table.insert(out, { text = segText:sub(i, matchEnd + colonLen), bold = seg.bold, italic = seg.italic, keyword = true })
+                i = matchEnd + colonLen + 1
+                plainStart = i
+            else
+                local ch = segText:match("^[%z\1-\127\194-\244][\128-\191]*", i)
+                i = i + (ch and #ch or 1)
+            end
+        end
+        if plainStart <= #segText then
+            table.insert(out, { text = segText:sub(plainStart), bold = seg.bold, italic = seg.italic, keyword = false })
+        end
+    end
+    return out
+end
 
 -- 普通词条 key 列表（无数值的布尔词条）
 KARDS.CardEditor.Data.BooleanKeywordKeys = {
@@ -295,20 +402,26 @@ KARDS.CardEditor.Data.NumericKeywordKeys = {
       - 数值词条（情报/重甲，排除倒计时）显示名后直接拼接数值，值 >0 才显示
       - 倒计时不在卡面显示
 
+    显示名与分隔符按语言取用（中文「，」/ 英文「, 」）。
+
     @param kwList      table|nil 词条项数组（id 字符串或 { id, x }）
     @param values      table|nil 数值词条值表 { 词条id = 数值 }（外观编辑器 app.keywordValues 格式）
     @param pincerValue string|number|nil 钳击值（外观编辑器 app.pincerValue 格式）
-    @return string 以「，」连接的词条显示文本（无词条时返回空字符串）
+    @param lang        string|nil 语言标识（缺省当前语言）
+    @return string 以语言分隔符连接的词条显示文本（无词条时返回空字符串）
 ]]
-KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
-    local names = KARDS.CardEditor.Data.KeywordDisplayNames
-    local numericKeys = KARDS.CardEditor.Data.NumericKeywordKeys
+KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue, lang)
+    local Data = KARDS.CardEditor.Data
+    local numericKeys = Data.NumericKeywordKeys
+    local separator = (KARDS.Lang and KARDS.Lang.Get(lang or KARDS.Lang.GetLanguage(), "keyword.separator")) or "，"
+    -- 数值词条名与数值的拼接格式（中文无空格「情报2」，英文有空格「Intelligence 2」）
+    local numericFormat = (KARDS.Lang and KARDS.Lang.Get(lang or KARDS.Lang.GetLanguage(), "keyword.numeric.format")) or "%s%s"
     local list = {}
 
     -- 老兵词条置顶
     for _, kw in ipairs(kwList or {}) do
         if (type(kw) == "table" and kw[1] or kw) == "veteran" then
-            table.insert(list, names.veteran)
+            table.insert(list, Data.GetKeywordName("veteran", lang))
             break
         end
     end
@@ -316,7 +429,7 @@ KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
     for _, kw in ipairs(kwList or {}) do
         local id = type(kw) == "table" and kw[1] or kw
         local x = type(kw) == "table" and kw[2] or nil
-        local name = names[id]
+        local name = Data.GetKeywordName(id, lang)
         if KARDS.CardInterface and KARDS.CardInterface.IsHiddenKeyword and KARDS.CardInterface.IsHiddenKeyword(id) then
             -- 次词条（隐藏词条，如海军）不在卡面显示
         elseif id == "veteran" or id == "countdown" then
@@ -324,7 +437,8 @@ KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
         elseif id == "pincer" then
             local v = x or pincerValue
             if v and v ~= "" then
-                table.insert(list, "钳击：" .. tostring(v))
+                local fmt = (KARDS.Lang and KARDS.Lang.Get(lang or KARDS.Lang.GetLanguage(), "keyword.pincer.with_value")) or "钳击：%s"
+                table.insert(list, string.format(fmt, tostring(v)))
             elseif name then
                 table.insert(list, name)
             end
@@ -332,7 +446,7 @@ KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
             local v = x or (values and values[id]) or 0
             if table.HasValue(numericKeys, id) then
                 if v > 0 then
-                    table.insert(list, name .. tostring(v))
+                    table.insert(list, string.format(numericFormat, name, tostring(v)))
                 end
             else
                 table.insert(list, name)
@@ -340,5 +454,148 @@ KARDS.CardEditor.Data.BuildKeywordsText = function(kwList, values, pincerValue)
         end
     end
 
-    return table.concat(list, "，")
+    return table.concat(list, separator)
+end
+
+--[[
+    序列化词条数组为 NW 同步串（服务端写、客户端按本机语言重建显示文本）
+
+    格式：id 或 id:数值，多个以 | 分隔，如 "blitz|intel:2|pincer:3"。
+    不直接同步显示文本，避免一条 NW 值只能容纳一种语言。
+
+    @param kwList table|nil 词条项数组（id 字符串或 { id, x }）
+    @return string
+]]
+KARDS.CardEditor.Data.SerializeKeywords = function(kwList)
+    local parts = {}
+    for _, kw in ipairs(kwList or {}) do
+        local id = type(kw) == "table" and kw[1] or kw
+        local v = type(kw) == "table" and kw[2] or nil
+        if id and id ~= "" then
+            if v ~= nil and v ~= "" then
+                parts[#parts + 1] = tostring(id) .. ":" .. tostring(v)
+            else
+                parts[#parts + 1] = tostring(id)
+            end
+        end
+    end
+    return table.concat(parts, "|")
+end
+
+--- 反序列化词条 NW 串（SerializeKeywords 的逆操作）
+-- @return table 词条项数组（id 字符串或 { id, 数值 }）
+KARDS.CardEditor.Data.DeserializeKeywords = function(str)
+    local list = {}
+    if type(str) ~= "string" or str == "" then return list end
+    for part in str:gmatch("[^|]+") do
+        local id, v = part:match("^([^:]+):(.*)$")
+        if id then
+            list[#list + 1] = { id, tonumber(v) or v }
+        else
+            list[#list + 1] = part
+        end
+    end
+    return list
+end
+
+--[[
+    富文本断行（共享纯逻辑：3D2D 叠加层与 2D 预览共用，绘制层传入测宽回调）
+
+    - 源文本 \n 强制换行；
+    - maxWidth 非空时按行宽换行：ASCII 单词整体不拆（按空格断词），
+      非 ASCII 字符逐字断行，超长单词在行内按字符硬断；
+    - 行尾空格丢弃，行首空格不保留。
+
+    @param segs     table 格式段数组 { { text, bold, italic, keyword（或 isKeyword） }, ... }
+    @param measure  function(text, bold, italic, keyword) -> number 测宽回调（maxWidth 非空时必需）
+    @param maxWidth number|nil 最大行宽（像素）；nil 时仅按 \n 断行
+    @return table 行数组，每行 = { token, ... }，token = { text, bold, italic, keyword }
+]]
+KARDS.CardEditor.Data.WrapRichSegments = function(segs, measure, maxWidth)
+    -- 逐 UTF-8 字符取下一个字符（不能用 sub(i, i)：中文等 3 字节字符会被拆碎）
+    local function NextChar(s, i)
+        local b = s:byte(i)
+        if not b then return nil, nil end
+        local len = 1
+        if b >= 240 then len = 4
+        elseif b >= 224 then len = 3
+        elseif b >= 192 then len = 2 end
+        return s:sub(i, i + len - 1), i + len
+    end
+
+    -- 切分换行单元：空格单独成词（换行时丢弃）；ASCII 连续非空格字符为一个单词；
+    -- 非 ASCII 字符（中文等）逐字成词。
+    local tokens = {}
+    for _, seg in ipairs(segs or {}) do
+        local text = seg.text or ""
+        local kw = seg.keyword
+        if kw == nil then kw = seg.isKeyword end
+        local i = 1
+        while i <= #text do
+            local b = text:byte(i)
+            if b == 10 then -- \n
+                tokens[#tokens + 1] = { newline = true }
+                i = i + 1
+            elseif b == 32 then -- 空格
+                tokens[#tokens + 1] = { text = " ", space = true, bold = seg.bold, italic = seg.italic, keyword = kw }
+                i = i + 1
+            elseif b < 128 then
+                local j = i
+                while j <= #text do
+                    local cb = text:byte(j)
+                    if cb == 32 or cb == 10 or cb >= 128 then break end
+                    j = j + 1
+                end
+                tokens[#tokens + 1] = { text = text:sub(i, j - 1), bold = seg.bold, italic = seg.italic, keyword = kw }
+                i = j
+            else
+                local ch, ni = NextChar(text, i)
+                tokens[#tokens + 1] = { text = ch, bold = seg.bold, italic = seg.italic, keyword = kw }
+                i = ni
+            end
+        end
+    end
+
+    local lines = {}
+    local cur, curW = {}, 0
+    local function Flush()
+        while #cur > 0 and cur[#cur].space do cur[#cur] = nil end
+        if #cur > 0 then lines[#lines + 1] = cur end
+        cur, curW = {}, 0
+    end
+    local function WidthOf(text, tok)
+        if not maxWidth or not measure then return 0 end
+        return measure(text, tok.bold, tok.italic, tok.keyword) or 0
+    end
+
+    for _, tok in ipairs(tokens) do
+        if tok.newline then
+            Flush()
+        elseif tok.space then
+            if #cur > 0 then
+                cur[#cur + 1] = tok
+                curW = curW + WidthOf(tok.text, tok)
+            end
+        else
+            local w = WidthOf(tok.text, tok)
+            if maxWidth and #cur > 0 and curW + w > maxWidth then Flush() end
+            if maxWidth and w > maxWidth then
+                -- 超长单词（无空格可断）：逐字符硬断
+                local i = 1
+                while i <= #tok.text do
+                    local ch, ni = NextChar(tok.text, i)
+                    local cw = WidthOf(ch, tok)
+                    if maxWidth and #cur > 0 and curW + cw > maxWidth then Flush() end
+                    cur[#cur + 1] = { text = ch, bold = tok.bold, italic = tok.italic, keyword = tok.keyword }
+                    curW = curW + cw
+                    i = ni
+                end
+            else
+                cur[#cur + 1] = tok
+                curW = curW + w
+            end
+        end
+    end
+    Flush()
+    return lines
 end

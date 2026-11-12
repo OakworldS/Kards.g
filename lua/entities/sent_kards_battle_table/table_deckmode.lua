@@ -48,12 +48,12 @@ if SERVER then
         if data.slot ~= 2 then return end -- 仅 P2（构建者）可保存
         name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if name == "" then
-            net.Start("KardsTableMsg") net.WriteString("卡组名不能为空") net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.deck_name_empty")
             return
         end
         -- 保存冷却（2026-08-18 规划 D4）：防反复 file.Write 磁盘写入风暴（5 秒窗口）
         if ply._kardsDeckSaveLast and CurTime() - ply._kardsDeckSaveLast < 5 then
-            net.Start("KardsTableMsg") net.WriteString("保存过于频繁，请稍后再试") net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.deck_save_too_fast")
             return
         end
         -- 卡组名截断（2026-08-18 规划 D4）：防超长卡组名撑大存档（32 字符）
@@ -80,7 +80,7 @@ if SERVER then
             end
         end
         if total ~= 40 then
-            net.Start("KardsTableMsg") net.WriteString(("卡组需满 40 张（总部算 1 张），当前 %d 张"):format(total)) net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.deck_need_40", total)
             return
         end
         -- 按玩家分文件保存：每位玩家拥有自己的卡组存档（文件名 = SteamID 安全化），
@@ -101,7 +101,7 @@ if SERVER then
             if KARDS.CardHandleCache and KARDS.CardHandleCache.InvalidateAll then
                 KARDS.CardHandleCache.InvalidateAll()
             end
-            net.Start("KardsTableMsg") net.WriteString(("卡组「%s」已保存（%d 张）"):format(name, total)) net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.deck_saved", name, total)
             print(("[Kards] 卡组保存: %s（%d 张，归属 %s）"):format(name, total, deckFileName))
             -- 保存成功动画（本桌所有人可见）：广播牌桌，客户端自行收集堆叠卡
             -- （Kards_PileIndex 排序）播「收拢为总部竖列 → 回落摊开」两段动画，
@@ -110,7 +110,7 @@ if SERVER then
                 net.WriteEntity(tableEnt)
             net.Broadcast()
         else
-            net.Start("KardsTableMsg") net.WriteString("卡组保存失败: " .. tostring(err)) net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.deck_save_failed", tostring(err))
         end
     end)
 
@@ -312,7 +312,8 @@ function ENT:EnterDeckMode(ply)
             width       = 180,
             height      = 40,
             maxChars    = 6,
-            placeholder = "搜索卡牌",
+            -- 占位文字按组卡构建者（槽位 2）语言解析：组卡模式仅 P2 在桌内输入
+            placeholder = KARDS.Lang.TFor(self.Slots and self.Slots[2], "deck.search.hint"),
         })
     end
     print(("[Kards] 组卡模式：铺 %d/%d 张卡（5×3 网格）+ 总部 1 张"):format(#cards, math.min(#infos, maxSlots)))
@@ -369,19 +370,24 @@ function ENT:SpawnDeckCardEntity(card, modelID, relPos)
     -- NW 同步卡头属性（客户端：材质渲染数据源 + 3D2D 文字叠加；无本地卡文件时回退
     -- Overlay:AddEntity 从 NW 读取）
     ent:SetNWString("Kards_CardName", card:GetName())
+    -- 英文卡名 / 英文描述另行同步：客户端按本机语言择一显示（Kards_CardName 仍作卡文件标识）
+    ent:SetNWString("Kards_CardNameEn", (card.GetNameEn and card:GetNameEn()) or "")
     ent:SetNWString("Kards_DeckModelID", modelID)
     ent:SetNWInt("Kards_CardCost", card:GetCost() or 0)
     ent:SetNWInt("Kards_CardActionCost", card:GetActionCost() or 0)
     ent:SetNWInt("Kards_CardAttack", card:GetStat("attack") or 0)
     ent:SetNWInt("Kards_CardDefense", card:GetStat("defense") or 0)
     ent:SetNWString("Kards_CardDescription", (card.GetDescription and card:GetDescription()) or "")
+    ent:SetNWString("Kards_CardDescriptionEn", (card.GetDescriptionEn and card:GetDescriptionEn()) or "")
     ent:SetNWBool("Kards_CardIsCommand", card:GetType() == "command" or card:GetType() == "headquarter")
     ent:SetNWBool("Kards_CardIsHeadquarter", card:GetType() == "headquarter")
     local kws = card:GetKeywords() or {}
     ent:SetNWBool("Kards_CardHasKeywords", #kws > 0)
+    -- 词条同步串为词条 id（如 "blitz|intel:2"），客户端按本机语言重建显示文本，
+    -- 避免一条 NW 值只能容纳一种语言（见 sh_card_data.lua SerializeKeywords）
     ent:SetNWString("Kards_CardKeywords",
-        (KARDS.CardEditor.Data and KARDS.CardEditor.Data.BuildKeywordsText
-            and KARDS.CardEditor.Data.BuildKeywordsText(kws)) or "")
+        (KARDS.CardEditor.Data and KARDS.CardEditor.Data.SerializeKeywords
+            and KARDS.CardEditor.Data.SerializeKeywords(kws)) or "")
     ent:SetNWString("Kards_CardRole", "deck") -- 卡牌大类枚举（re.md T-M1）：deck 组卡卡牌 / battledeck 卡组槽卡；组卡材质钩子据此分流
     ent:SetNWString("Kards_DeckRole", "grid") -- 角色：grid 网格卡 / hq 总部卡 / pile 卡组堆叠卡
     return ent
@@ -449,6 +455,15 @@ function ENT:_CreateDeckCard(info)
 
     function card:GetDescription()
         return self._app.specialEffect or ""
+    end
+
+    -- 英文卡名 / 英文效果描述（卡面文本英文化，2026-10-17；未配置为空串）
+    function card:GetNameEn()
+        return self._app.nameEn or ""
+    end
+
+    function card:GetDescriptionEn()
+        return self._app.specialEffectEn or ""
     end
 
     function card:GetStat(stat)

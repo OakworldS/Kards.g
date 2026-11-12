@@ -111,6 +111,7 @@ KARDS.TickLog.OpTypes = {
     unneutralized = true, -- 解除抑制（action 取消分支：恢复被抑制卡牌的关键词和效果）
     summon = true, -- 召唤单位（action 召唤分支：单位入场支援阵线/前线）
     return_to_hand = true, -- 返回手牌（action 返回手牌分支：离场入所有者手牌）
+    confiscate = true, -- 收缴（SimConfiscate：单位阵亡并被收缴进收缴方手牌）
     veteran = true,
     intelligence = true,
     reveal = true, -- 隐蔽揭示（readme 7.2.2 隐蔽：发起攻击或被攻击后揭示并失去隐蔽）

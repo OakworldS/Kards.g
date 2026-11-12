@@ -2520,6 +2520,106 @@ local function RunTriggerFunctionTest()
         AssertEqual(KARDS.Battlefield:GetHQ(tid, "P2"):GetStat("defense"), 20,
             "trigger_function 场景5：两次指令效果均未生效（P2 HQ 20）")
     end
+
+    -- 6 拦截一次 + 属性变更 + 至多：敌方 3 点伤害被压到 1 点，操作不取消；一次性生效后不再改写
+    do
+        local tid = NewBattle()
+        -- select_2 = 13：伤害（INTERCEPT_OPTYPES 第 13 项）；select_6 = 2 属性变更；select_7 = 4 至多
+        local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
+            ["select_1"] = 4, ["select_2"] = 13,
+            ["select_6"] = 2, ["select_7"] = 4, ["number_1"] = 1,
+        })
+        AssertTrue(PlayCommand(MakeCommandCard("cmd_tf6_i", tf)),
+            "trigger_function 场景6：P1 注册属性变更拦截（伤害·至多 1）")
+        local target = MakeUnit("u_tf6_t", "P1", { attack = 1, defense = 20 })
+        local src = MakeUnit("u_tf6_s", "P2", { attack = 3, defense = 20 })
+        KARDS.Battle:SimDeploy(target, 3)
+        KARDS.Battle:SimDeploy(src, 3)
+        KARDS.Battle:SimDealDamage(src, target, 3)
+        AssertEqual(target:GetStat("defense"), 19,
+            "trigger_function 场景6：3 点伤害被改写为至多 1（20 → 19）")
+        KARDS.Battle:SimDealDamage(src, target, 3)
+        AssertEqual(target:GetStat("defense"), 16,
+            "trigger_function 场景6：拦截一次已消费，第二次伤害不再改写（19 → 16）")
+    end
+
+    -- 7 保持拦截 + 属性变更 + 减少：连续两次伤害都被减 1（钩子不注销）
+    do
+        local tid = NewBattle()
+        local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
+            ["select_1"] = 5, ["select_3"] = 13,
+            ["select_8"] = 2, ["select_9"] = 2, ["number_2"] = 1,
+        })
+        AssertTrue(PlayCommand(MakeCommandCard("cmd_tf7_i", tf)),
+            "trigger_function 场景7：P1 注册属性变更拦截（伤害·保持·减少 1）")
+        local target = MakeUnit("u_tf7_t", "P1", { attack = 1, defense = 20 })
+        local src = MakeUnit("u_tf7_s", "P2", { attack = 3, defense = 20 })
+        KARDS.Battle:SimDeploy(target, 3)
+        KARDS.Battle:SimDeploy(src, 3)
+        KARDS.Battle:SimDealDamage(src, target, 3)
+        AssertEqual(target:GetStat("defense"), 18,
+            "trigger_function 场景7：第一次伤害减 1（20 → 18）")
+        KARDS.Battle:SimDealDamage(src, target, 3)
+        AssertEqual(target:GetStat("defense"), 16,
+            "trigger_function 场景7：第二次伤害仍减 1（18 → 16）")
+    end
+
+    -- 8 数值修饰：设为 / 增加 / 至少（直接经统一操作钩子校验改写结果）
+    do
+        local function rewrote(modIdx, value, current, cardSuffix)
+            local tid = NewBattle()
+            local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
+                ["select_1"] = 5, ["select_3"] = 13,
+                ["select_8"] = 2, ["select_9"] = modIdx, ["number_2"] = value,
+            })
+            PlayCommand(MakeCommandCard("cmd_tf8_" .. cardSuffix, tf))
+            local args = KARDS.EngineHooks.TriggerOperation(tid, "deal_damage", { amount = current })
+            return args.amount, args.modified
+        end
+        local amount, modified = rewrote(3, 4, 9, "set")
+        AssertEqual(amount, 4, "trigger_function 场景8：设为 4（原 9 → 4）")
+        AssertEqual(modified, true, "trigger_function 场景8：设为标记 args.modified")
+        amount = rewrote(1, 4, 9, "inc")
+        AssertEqual(amount, 13, "trigger_function 场景8：增加 4（原 9 → 13）")
+        amount = rewrote(5, 4, 2, "least")
+        AssertEqual(amount, 4, "trigger_function 场景8：至少 4（原 2 → 4）")
+    end
+
+    -- 9 属性变更接入 stat_change：敌方把友方单位攻击力加 3，被至多 1 改写
+    do
+        local tid = NewBattle()
+        local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
+            ["select_1"] = 4, ["select_2"] = 14, -- 拦截一次/属性变更
+            ["select_6"] = 2, ["select_7"] = 4, ["number_1"] = 1,
+        })
+        AssertTrue(PlayCommand(MakeCommandCard("cmd_tf9_i", tf)),
+            "trigger_function 场景9：P1 注册属性写入拦截（至多 1）")
+        local u = MakeUnit("u_tf9", "P1", { attack = 2, defense = 10 })
+        local enemy = KARDS.CardInterface.CreateMockCard("cmd_tf9_src", "command", "P2", { cost = 0 })
+        local ok = KARDS.NodeParser.SetFixedVarValue(u, "n", "KARDS.User.攻击", 3,
+            { tableID = tid, _srcCard = enemy })
+        AssertTrue(ok, "trigger_function 场景9：属性写入未被取消（返回 true）")
+        AssertEqual(u:GetStat("attack"), 1,
+            "trigger_function 场景9：攻击力写入被改写为至多 1（2 → 1）")
+    end
+
+    -- 10 属性变更接入 stat_change：收尾方式为反制时属性写入被取消（旧卡无收尾字段回退反制）
+    do
+        local tid = NewBattle()
+        local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, {
+            ["select_1"] = 4, ["funcslot_1"] = "写入拦截函数", ["select_2"] = 14, -- 拦截一次/属性变更/反制
+        })
+        local cmd = MakeCommandCard("cmd_tf10_i", tf)
+        cmd.effect.variables = { f = { { name = "写入拦截函数", internalName = "KARDS.User.写入拦截函数",
+            functionData = { nodes = {}, connections = {}, dataConnections = {} } } } }
+        AssertTrue(PlayCommand(cmd), "trigger_function 场景10：P1 注册属性写入反制")
+        local u = MakeUnit("u_tf10", "P1", { attack = 2, defense = 10 })
+        local enemy = KARDS.CardInterface.CreateMockCard("cmd_tf10_src", "command", "P2", { cost = 0 })
+        AssertEqual(KARDS.NodeParser.SetFixedVarValue(u, "n", "KARDS.User.攻击", 3,
+            { tableID = tid, _srcCard = enemy }), false,
+            "trigger_function 场景10：属性写入被反制取消（返回 false）")
+        AssertEqual(u:GetStat("attack"), 2, "trigger_function 场景10：攻击力保持原值（2）")
+    end
 end
 
 -- trigger 测试：属性与伤害（攻击 / 防御（受到伤害） / 伤害 / e 数据线）
@@ -2780,7 +2880,8 @@ end
 
 -- 反制系统测试：激活登记与隐藏花费 / 回合校验 / 手动失活返还 / 到点自动失活 /
 -- 激活操作本身可被拦截 / 拦截命中自动打出 / 保持拦截型反制自动打出 /
--- 反制卡拦截另一张反制的激活操作（KARDS.Counter 与 SimActivateCounter、
+-- 反制卡拦截另一张反制的激活操作 / 属性变更改写数值与敌方视角扣费
+-- （KARDS.Counter 与 SimActivateCounter、
 -- SimDeactivateCounter、FireCounter，反制系统 M2/M4/M5）
 -- 依赖：KARDS.Counter（sh_counter.lua）、KARDS.CommandPoints 隐藏池、统一操作钩子
 local function RunCounterTest()
@@ -2788,6 +2889,8 @@ local function RunCounterTest()
     --   owner  归属方（默认 "P1"）
     --   mode   附带「激活时」拦截效果链："once" 拦截一次（select_1=4, select_2）/ "keep" 保持拦截（select_1=5, select_3）
     --   opType 拦截的操作类型选项索引（INTERCEPT_OPTYPES 顺序，默认 1 = 打出指令）
+    --   finish 收尾方式：2 = 属性变更（改写数值，不要求函数槽）；缺省 1 = 反制
+    --   mod / value 属性变更的数值修饰索引与数值（仅 finish = 2 时生效）
     -- 不传 mode 则构造无效果的反制卡（仅用于激活状态与花费断言）
     local function MakeCounterCard(id, cost, opts)
         opts = opts or {}
@@ -2800,6 +2903,18 @@ local function RunCounterTest()
             else
                 vals["select_1"] = 4 -- 拦截一次
                 vals["select_2"] = opts.opType or 1
+            end
+            if opts.finish == 2 then
+                vals["funcslot_1"] = nil -- 属性变更只改数值，函数槽留空也可
+                if opts.mode == "keep" then
+                    vals["select_8"] = 2
+                    vals["select_9"] = opts.mod or 1
+                    vals["number_2"] = opts.value or 0
+                else
+                    vals["select_6"] = 2
+                    vals["select_7"] = opts.mod or 1
+                    vals["number_1"] = opts.value or 0
+                end
             end
             local tf = MakeBaseNode("trigger_function", TRIGGER_FUNCTION_BASE, vals)
             cc.effect = {
@@ -2853,7 +2968,14 @@ local function RunCounterTest()
         GiveHand(tid, "P1", cc)
         KARDS.Battle.CurTurnPlayer[tid] = "P1"
         AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景3：P1 激活反制成功")
-        AssertTrue(KARDS.Battle:SimDeactivateCounter("P1", cc), "counter 场景3：手动失活成功")
+        -- 取消激活只能在持有者本方回合进行：敌方回合取消失败且状态保持
+        KARDS.Battle.CurTurnPlayer[tid] = "P2"
+        AssertEqual(KARDS.Battle:SimDeactivateCounter("P1", cc), false,
+            "counter 场景3：敌方回合不能取消激活")
+        AssertTrue(KARDS.Counter:IsActive(tid, cc), "counter 场景3：取消失败后仍为激活")
+        -- 回合开始后（本方回合）取消激活并返还
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        AssertTrue(KARDS.Battle:SimDeactivateCounter("P1", cc), "counter 场景3：本方回合取消激活成功")
         AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景3：移出激活登记")
         AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 5, "counter 场景3：返还花费（3 + 2 = 5）")
         AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景3：隐藏池清零")
@@ -2992,6 +3114,38 @@ local function RunCounterTest()
         AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景8：A 隐藏花费公开清零")
         AssertTrue(HasTickOp(tid, a, "counter"), "counter 场景8：A 记录 counter 刻")
     end
+
+    -- 9 已激活反制以「属性变更」收尾拦截敌方伤害：改写数值但不取消操作；扣费发生在激活时
+    -- （隐藏），命中时只公开隐藏花费、不再次扣费；敌方视角在命中前看不到扣费
+    do
+        local tid = NewBattle()
+        GivePoints(tid, 5, "P1")
+        -- 拦截一次 / 伤害 / 属性变更 / 至多 1（无函数槽，属性变更不要求函数）
+        local cc = MakeCounterCard("counter_a9", 2, {
+            owner = "P1", mode = "once", opType = 13, finish = 2, mod = 4, value = 1,
+        })
+        GiveHand(tid, "P1", cc)
+        KARDS.Battle.CurTurnPlayer[tid] = "P1"
+        AssertTrue(KARDS.Battle:SimActivateCounter("P1", cc), "counter 场景9：P1 激活属性变更型反制")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 3, "counter 场景9：激活时扣费（5 - 2 = 3）")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 2, "counter 场景9：花费计入隐藏池（2）")
+        AssertEqual(KARDS.CommandPoints:GetPublicPoints(tid, "P1"), 5, "counter 场景9：激活后敌方视角不变（5）")
+        -- 对方回合：P2 对 P1 单位造成 3 点伤害，被改写为至多 1
+        KARDS.Battle.CurTurnPlayer[tid] = "P2"
+        local target = MakeUnit("u_counter9_t", "P1", { attack = 1, defense = 10 })
+        local src = MakeUnit("u_counter9_s", "P2", { attack = 3, defense = 10 })
+        KARDS.Battle:SimDeploy(target, 3)
+        KARDS.Battle:SimDeploy(src, 3)
+        KARDS.Battle:SimDealDamage(src, target, 3)
+        AssertEqual(target:GetStat("defense"), 9, "counter 场景9：伤害被改写为至多 1（10 → 9），操作未取消")
+        -- 命中后自动打出：移出登记与手牌，隐藏花费公开，不再次扣费
+        AssertEqual(KARDS.Counter:IsActive(tid, cc), false, "counter 场景9：命中后移出激活登记")
+        AssertEqual(HandContains(tid, "P1", cc), false, "counter 场景9：命中后移出手牌")
+        AssertEqual(KARDS.CommandPoints:GetHidden(tid, "P1"), 0, "counter 场景9：命中后隐藏花费公开清零")
+        AssertEqual(KARDS.CommandPoints:GetPoints(tid, "P1"), 3, "counter 场景9：命中不再次扣费（仍 3）")
+        AssertEqual(KARDS.CommandPoints:GetPublicPoints(tid, "P1"), 3, "counter 场景9：命中后敌方视角公开扣费（5 → 3）")
+        AssertTrue(HasTickOp(tid, cc, "counter"), "counter 场景9：记录 counter 刻")
+    end
 end
 
 -- ====================================================================
@@ -3022,6 +3176,8 @@ local function RunUnitInterceptTest()
     -- 1 单位部署注册保持拦截·抽取：敌方抽取被拦（返回空，手牌不增）
     do
         local tid = NewBattle()
+        -- P2 卡组需有牌，否则「被拦返回空」与「卡组为空返回空」无法区分
+        KARDS.Battle:SimSetupDeck("P2", { KARDS.CardInterface.CreateMockCard("deck_itc1", "unit", "P2", {}) })
         local u = MakeInterceptUnit("u_itc1", 9) -- 抽取
         AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景1：P1 部署拦截单位")
         local before = #KARDS.Deck:GetHand(tid, "P2")
@@ -3033,6 +3189,8 @@ local function RunUnitInterceptTest()
     -- 2 单位离场后拦截自动注销：离场前被拦，离场后不再被拦
     do
         local tid = NewBattle()
+        -- P2 卡组需有牌，离场后抽取 1 张才能验证拦截已注销
+        KARDS.Battle:SimSetupDeck("P2", { KARDS.CardInterface.CreateMockCard("deck_itc2", "unit", "P2", {}) })
         local u = MakeInterceptUnit("u_itc2", 9)
         AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景2：P1 部署拦截单位")
         AssertEqual(#KARDS.Battle:SimDraw("P2", 1), 0, "unit 拦截场景2：离场前抽取被拦")
@@ -3043,6 +3201,8 @@ local function RunUnitInterceptTest()
     -- 3 单位回手后拦截自动注销
     do
         local tid = NewBattle()
+        -- P2 卡组需有牌，回手后抽取 1 张才能验证拦截已注销
+        KARDS.Battle:SimSetupDeck("P2", { KARDS.CardInterface.CreateMockCard("deck_itc3", "unit", "P2", {}) })
         local u = MakeInterceptUnit("u_itc3", 9)
         AssertTrue(KARDS.Battle:SimDeploy(u, 3), "unit 拦截场景3：P1 部署拦截单位")
         AssertEqual(#KARDS.Battle:SimDraw("P2", 1), 0, "unit 拦截场景3：回手前抽取被拦")
@@ -3108,9 +3268,13 @@ function RunNodeParserBattleTests()
     return TestsFailed == 0
 end
 
--- GMod 控制台命令：kards_node_battle_test
-if concommand then
-    concommand.Add("kards_node_battle_test", function()
+-- GMod 控制台命令：kards_node_battle_test（仅服务端注册；玩家执行需 operator 及以上，服务器控制台放行）
+if SERVER and concommand then
+    concommand.Add("kards_node_battle_test", function(ply)
+        if not KARDS.CanUseDevCommand(ply) then
+            print("[Kards] kards_node_battle_test：需要 operator 及以上权限")
+            return
+        end
         RunNodeParserBattleTests()
     end)
 end

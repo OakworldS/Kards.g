@@ -80,6 +80,13 @@ local FLOAT_BG_MATS = {
 local COLOR_NUMBER = Color(201, 195, 169, 255)     -- 数值文字（花费/行动花费/攻击/防御）统一近白色 C9C3A9，符合卡牌模板风格；与 cl_card_preview.lua 的 VALUE_TEXT_COLOR 同色
 local COLOR_DESC = Color(0, 0, 0, 255)              -- 词条/描述文字（纯黑）
 
+-- 抑制删除线（2026-10-17）：被抑制单位的效果描述 3D2D 文字上叠加手绘删除线图像
+-- （materials/kards/effects/other/strikethrough.png，858x236 手绘横划），
+-- 绘于描述文字之后，按绘制顺序压住文字。
+local STRIKE_MAT = Material("materials/kards/effects/other/strikethrough.png", "noclamp smooth")
+local STRIKE_PAD_X = 7
+local STRIKE_PAD_Y = 4
+
 -- 数值变动特效（t5，2026-08-12；时长结构 2026-08-13 调整）：单位短卡/总部短卡攻防
 -- （及行动花费）变动时，在原位复制一份「全等」3D2D 文字，沿卡面法线 z 上移并淡出
 -- （用户规格："数值变动时…将一个全等的特效3D2D文字复制在原位…使该文字在1秒内，z向上移动，淡出"；
@@ -330,8 +337,7 @@ local function PickNumberFont(text)
     return #tostring(text) > 1 and "SourceHan_Heavy_36" or "SourceHan_Heavy_48"
 end
 
--- 富文本关键词高亮列表（与预览层 cl_card_preview.lua 同源，sh_card_data.lua 定义）
-local keywordsForHighlight = KARDS.CardEditor.Data.KeywordsForHighlight
+-- 富文本关键词高亮词表与拆分规则见 sh_card_data.lua（KeywordsForHighlight / SplitRichKeywords）
 
 -- 富文本字体选择（与预览层 DrawSpecialEffectRichText 规则一致：
 -- 关键词/加粗 → SourceHan_Heavy_<size>；斜体 → Calibri_Italic_<size>；
@@ -383,90 +389,62 @@ local function ParseRichText(text)
     return segs
 end
 
--- 对格式段做关键词高亮拆分（与预览层 DrawSpecialEffectRichText 规则一致：
--- 命中关键词的段标记 keyword=true，绘制时用 SourceHan_Heavy 加粗；
--- 部署/抉择命中时连后面的「：」一起高亮）
+-- 对格式段做关键词高亮拆分（规则统一委托 sh_card_data.lua 的 SplitRichKeywords：
+-- 中英双语词表、英文词边界匹配、部署/抉择连带冒号高亮）。
 local function SplitKeywords(segs)
-    local out = {}
-    for _, seg in ipairs(segs) do
-        local segText = seg.text
-        local segLen = #segText
-        local currentPos = 1
-        while currentPos <= segLen do
-            local matchKeyword = nil
-            local matchEnd = 0
-            for _, kw in ipairs(keywordsForHighlight) do
-                local kwLen = #kw
-                if currentPos + kwLen - 1 <= segLen and segText:sub(currentPos, currentPos + kwLen - 1) == kw then
-                    matchKeyword = kw
-                    matchEnd = currentPos + kwLen - 1
-                    if (kw == "部署" or kw == "抉择") and matchEnd + 1 <= segLen and segText:sub(matchEnd + 1, matchEnd + 1) == "：" then
-                        matchEnd = matchEnd + 1
-                    end
-                    break
-                end
-            end
-            if matchKeyword then
-                table.insert(out, { text = segText:sub(currentPos, matchEnd), bold = seg.bold, italic = seg.italic, keyword = true })
-                currentPos = matchEnd + 1
-            else
-                -- 找到下一个关键词的起始位置，其前为普通文本段
-                local nextKwPos = segLen + 1
-                for _, kw in ipairs(keywordsForHighlight) do
-                    local p = segText:find(kw, currentPos, true)
-                    if p and p < nextKwPos then nextKwPos = p end
-                end
-                local endPos = nextKwPos - 1
-                if endPos >= currentPos then
-                    table.insert(out, { text = segText:sub(currentPos, endPos), bold = seg.bold, italic = seg.italic, keyword = false })
-                end
-                currentPos = endPos + 1
-            end
-        end
-    end
-    return out
+    return KARDS.CardEditor.Data.SplitRichKeywords(segs)
 end
 
--- 富文本段按源文本换行符断行：是否换行只由源文本 \n 决定，不做宽度自动换行
--- （与 2D 预览层 DrawSpecialEffectRichText 行为一致），返回行列表，每行 = { {ch, bold, italic, keyword}, ... }
-local function WrapRichLines(segs)
-    local lines = {}
-    local curLine = {}
-    local function flush()
-        if #curLine > 0 then
-            table.insert(lines, curLine)
-            curLine = {}
-        end
-    end
-    for _, seg in ipairs(segs) do
-        -- 按 UTF-8 字符迭代（不能用 sub(i, i) 逐字节：中文等 3 字节字符会被拆碎成错误字符）
-        for ch in string.gmatch(seg.text, "[%z\1-\127\194-\244][\128-\191]*") do
-            if ch == "\n" then
-                flush()
-            else
-                table.insert(curLine, { ch = ch, bold = seg.bold, italic = seg.italic, keyword = seg.keyword })
-            end
-        end
-    end
-    flush()
-    return lines
+-- 富文本断行：按行宽换行（maxWidth 非空时英文按空格断词、中文逐字断行）；
+-- 换行逻辑统一委托 sh_card_data.lua 的 WrapRichSegments，此处只提供字体测宽。
+-- maxWidth 为 nil 时仅按源文本 \n 断行（与 2D 预览层行为一致）。
+local function WrapRichLines(segs, maxWidth, size)
+    return KARDS.CardEditor.Data.WrapRichSegments(segs, function(text, bold, italic, keyword)
+        surface.SetFont(SegFont(bold, italic, keyword, size))
+        return surface.GetTextSize(text)
+    end, maxWidth)
 end
 
--- 绘制一行富文本：按字符格式选字体，水平居中于 x（3D2D 内使用，无描边）
-local function DrawRichLine(chars, x, y, color, size)
+-- 字号自适应：按起始字号断行，行数超出可用高度时逐级缩小字号（步长 2，下限 12）。
+-- 英文文本通常比中文长约一倍，固定字号下换行过多会溢出卡面。
+-- @return lines, size, lineH 断行结果 / 最终字号 / 行高
+local function FitDescLines(segs, maxWidth, startSize, maxHeight)
+    local size = math.max(10, startSize or 20)
+    while true do
+        local lines = WrapRichLines(segs, maxWidth, size)
+        local lineH = math.max(10, math.floor(18 * size / 20))
+        if not maxHeight or #lines * lineH <= maxHeight or size <= 12 then
+            return lines, size, lineH
+        end
+        size = size - 2
+    end
+end
+
+-- 绘制一行富文本：按 token 格式选字体，水平居中于 x（3D2D 内使用，无描边）
+-- token 为单词或单字（WrapRichSegments 输出），逐 token 测宽避免拆断英文单词。
+-- @return number 该行总宽度（渲染像素），抑制删除线据此确定覆盖宽度
+local function DrawRichLine(tokens, x, y, color, size)
     local totalW = 0
-    for _, c in ipairs(chars) do
-        local font = SegFont(c.bold, c.italic, c.keyword, size)
-        surface.SetFont(font)
-        totalW = totalW + surface.GetTextSize(c.ch)
+    for _, t in ipairs(tokens) do
+        surface.SetFont(SegFont(t.bold, t.italic, t.keyword, size))
+        totalW = totalW + surface.GetTextSize(t.text)
     end
     local cx = x - totalW / 2
-    for _, c in ipairs(chars) do
-        local font = SegFont(c.bold, c.italic, c.keyword, size)
-        draw.SimpleText(c.ch, font, cx, y, color, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+    for _, t in ipairs(tokens) do
+        local font = SegFont(t.bold, t.italic, t.keyword, size)
         surface.SetFont(font)
-        cx = cx + surface.GetTextSize(c.ch)
+        draw.SimpleText(t.text, font, cx, y, color, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        cx = cx + surface.GetTextSize(t.text)
     end
+    return totalW
+end
+
+-- 卡牌是否被抑制：服务端 BuildUnitKeywordsStr 把 neutralized 写入 Kards_UnitKeywords，
+-- 悬停预览复制卡在 HoverPreviewCreate 中从源卡复制该 NW 串。
+local function IsInhibited(ent)
+    if not IsValid(ent) then return false end
+    local raw = KARDS.CardView.Read(ent).unitKeywords
+    return raw ~= "" and string.find(raw, "neutralized", 1, true) ~= nil
 end
 
 --[[
@@ -483,19 +461,24 @@ end
 local textOverrides = setmetatable({}, { __mode = "k" })
 
 local function ReadDataRaw(entry, ent)
+    local Data = KARDS.CardEditor.Data
     if entry.mode == "entity" then
-        -- 战场网络实体：属性由服务端 NW 变量同步（sh_battle_render.lua）
+        -- 战场网络实体：属性由服务端 NW 变量同步（sh_battle_render.lua）。
+        -- 卡面文本按本机语言择一，词条 NW 串为 id 列表（SerializeKeywords），
+        -- 需反序列化后按当前语言重建显示文本。
+        local view = KARDS.CardView.Read(ent)
+        local kwList = view.keywords ~= "" and Data.DeserializeKeywords(view.keywords) or {}
         return {
-            cost = ent:GetNWInt("Kards_CardCost", 0),
-            actionCost = ent:GetNWInt("Kards_CardActionCost", 0),
-            attack = ent:GetNWInt("Kards_CardAttack", 0),
-            defense = ent:GetNWInt("Kards_CardDefense", 0),
-            description = ent:GetNWString("Kards_CardDescription", ""),
+            cost = view.cost,
+            actionCost = view.actionCost,
+            attack = view.attack,
+            defense = view.defense,
+            description = view.description,
             descFontSize = 20,
-            isCommand = ent:GetNWBool("Kards_CardIsCommand", false),
-            isHeadquarter = ent:GetNWBool("Kards_CardIsHeadquarter", false),
-            hasKeywords = ent:GetNWBool("Kards_CardHasKeywords", false),
-            keywordsText = ent:GetNWString("Kards_CardKeywords", ""),
+            isCommand = view.isCommand,
+            isHeadquarter = view.isHeadquarter,
+            hasKeywords = view.hasKeywords,
+            keywordsText = #kwList > 0 and Data.BuildKeywordsText(kwList) or "",
         }
     end
 
@@ -506,11 +489,12 @@ local function ReadDataRaw(entry, ent)
         -- OnPlayCard 初写 + ApplyCombatOutcome SyncUnitNW 战斗后刷新）；只显示
         -- 攻击/防御/行动花费（行动花费替代卡牌花费位置，DrawOverlay 依 _unitMode 跳过
         -- cost/keywords/desc）
+        local view = KARDS.CardView.Read(ent)
         return {
             cost = 0,
-            actionCost = ent:GetNWInt("Kards_CardActionCost", 0),
-            attack = ent:GetNWInt("Kards_CardAttack", 0),
-            defense = ent:GetNWInt("Kards_CardDefense", 0),
+            actionCost = view.actionCost,
+            attack = view.attack,
+            defense = view.defense,
             description = "",
             descFontSize = 20,
             isCommand = false,
@@ -529,7 +513,8 @@ local function ReadDataRaw(entry, ent)
             actionCost = d:GetActionCost() or 0,
             attack = d:GetStat("attack") or 0,
             defense = d:GetStat("defense") or 0,
-            description = (d.GetDescription and d:GetDescription()) or "",
+            description = Data.PickLocalized(d.GetDescription and d:GetDescription() or "",
+                d.GetDescriptionEn and d:GetDescriptionEn() or ""),
             descFontSize = 20,
             isCommand = ctype == "command" or ctype == "headquarter",
             isHeadquarter = ctype == "headquarter",
@@ -544,7 +529,7 @@ local function ReadDataRaw(entry, ent)
         actionCost = d and d.actionCost or 0,
         attack = d and d.attack or 0,
         defense = d and d.defense or 0,
-        description = d and d.specialEffect or "",
+        description = Data.GetLocalizedField(d, "specialEffect"),
         descFontSize = d and d.descFontSize or 20,
         isCommand = d and (d.cardType == "command" or d.cardType == "counter_command" or d.cardType == "headquarter") or false,
         isHeadquarter = d and d.cardType == "headquarter" or false,
@@ -703,15 +688,34 @@ local function DrawBlockDefense(ctx)
 end
 
 -- 块 5：词条（底部上方，描述之前；纹理已不烘焙词条，转由本层实时绘制；单位模式跳过；总部短卡无词条）
+-- 卡面文字区可用宽度（与编辑器预览/离线渲染同基准，2026-11-01 修复折行不一致）：
+-- 编辑器侧为 `previewW - 40 * s`（s = ComputeCardScaleFactor，边距随缩放），
+-- 而本层此前固定用 `renderW - 40`，s < 1 时实体可用宽度更窄，同一段描述会多折一行。
+-- 由 RT 高反推 s（基准 300×400，RT 高 = 400 * s）；编辑器预览高 = RT 高 + 10，
+-- 4:3 下预览宽 = RT 宽 + 7.5，一并补回，使两侧折行结果完全一致。
+-- @return number 描述/词条可用宽度（渲染像素）
+local function DescMaxWidth(ctx)
+    local s = math.max(ctx.renderH / 400, 0.1)
+    return ctx.renderW + 7.5 - 40 * s
+end
+
 local function DrawBlockKeywords(ctx)
     local data, entry = ctx.data, ctx.entry
     if data.keywordsText == "" or ctx.pileTopOnly or ctx.unitMode or ctx.hqShort then return end
+    -- 词条单行居中；英文词条串更长，超出卡面文字区时逐级缩小字号（20 → 12，步长 2）
+    local maxWidth = DescMaxWidth(ctx)
+    local kwSize = 20
+    surface.SetFont("SourceHan_Heavy_" .. kwSize)
+    while kwSize > 12 and surface.GetTextSize(data.keywordsText) > maxWidth do
+        kwSize = kwSize - 2
+        surface.SetFont("SourceHan_Heavy_" .. kwSize)
+    end
     local kx, ky = CardPixel(ctx.renderW / 2, ctx.renderH - KEYWORDS_BOTTOM, ctx.renderW, ctx.renderH)
-    draw.SimpleText(data.keywordsText, "SourceHan_Heavy_20", kx, ky, SlotColorFor(entry, "keywords"), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.SimpleText(data.keywordsText, "SourceHan_Heavy_" .. kwSize, kx, ky, SlotColorFor(entry, "keywords"), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 end
 
--- 块 6：效果描述（底部区域，富文本多行；是否换行只由源文本 \n 决定，纹理已不烘焙描述，
--- 转由本层实时绘制；单位模式跳过；总部短卡无描述）
+-- 块 6：效果描述（底部区域，富文本多行；源文本 \n 强制换行 + 按卡面宽度自动换行，
+-- 纹理已不烘焙描述，转由本层实时绘制；单位模式跳过；总部短卡无描述）
 -- 富文本继承节点编辑器格式：<b> 加粗 / <i> 斜体 / 关键词高亮（与预览层规则一致）
 local function DrawBlockDescription(ctx)
     local data, entry = ctx.data, ctx.entry
@@ -719,9 +723,6 @@ local function DrawBlockDescription(ctx)
     local hasText = false
     for _, s in ipairs(descSegs) do if s.text ~= "" then hasText = true break end end
     if not hasText or ctx.pileTopOnly or ctx.unitMode or ctx.hqShort then return end
-    local lines = WrapRichLines(descSegs)
-    local descSize = data.descFontSize or 20 -- 效果描述字号（外观编辑器 descFontSize，与 2D 预览一致）
-    local lineH = math.max(10, math.floor(18 * descSize / 20)) -- 行高随字号缩放（与 2D 预览层一致，20 号约 18 像素）
     -- 描述锚点：指令卡在名称下方；单位有词条在词条下方；单位无词条在底部词条位
     local baseY
     if data.isCommand then
@@ -731,10 +732,29 @@ local function DrawBlockDescription(ctx)
     else
         baseY = ctx.renderH - DESC_BOTTOM
     end
+    -- 卡面文字区可用宽度（与编辑器预览/离线渲染同基准，见 DescMaxWidth）；英文长文本按宽度断词
+    local maxWidth = DescMaxWidth(ctx)
+    -- 可用高度：指令卡向下绘制到卡底（预留品质图标区）；其余卡以锚点为中心向上下扩展
+    -- （多行垂直居中绘制，底部空间按两倍折算）；预留量随卡面缩放因子同比例，与编辑器一致
+    local descScale = math.max(ctx.renderH / 400, 0.1)
+    local bottomRoom = ctx.renderH - baseY
+    local maxHeight = data.isCommand and (bottomRoom - 30 * descScale) or (bottomRoom * 2 - 12 * descScale)
+    local lines, descSize, lineH = FitDescLines(descSegs, maxWidth, data.descFontSize or 20, maxHeight)
     local startY = baseY - (#lines - 1) * lineH / 2 -- 多行垂直居中于锚点
+    local maxLineW = 0
     for i, ln in ipairs(lines) do
         local lx, ly = CardPixel(ctx.renderW / 2, startY + (i - 1) * lineH, ctx.renderW, ctx.renderH)
-        DrawRichLine(ln, lx, ly, SlotColorFor(entry, "desc"), descSize)
+        local lineW = DrawRichLine(ln, lx, ly, SlotColorFor(entry, "desc"), descSize)
+        if lineW > maxLineW then maxLineW = lineW end
+    end
+    -- 抑制删除线：在描述文字之后绘制（压住文字），覆盖整块描述区域
+    if IsInhibited(ctx.ent) then
+        local blockW = maxLineW + STRIKE_PAD_X * 2
+        local blockH = #lines * lineH + STRIKE_PAD_Y * 2
+        local cx, cy = CardPixel(ctx.renderW / 2, startY + (#lines - 1) * lineH / 2, ctx.renderW, ctx.renderH)
+        surface.SetMaterial(STRIKE_MAT)
+        surface.SetDrawColor(255, 255, 255, 255)
+        surface.DrawTexturedRect(cx - blockW / 2, cy - blockH / 2, blockW, blockH)
     end
 end
 
@@ -928,6 +948,7 @@ function Overlay:Clear()
     self.FX = {}
     self._pendingFX = {}   -- 飘字序列：一并清空待播队列（2026-08-14）
     self._nextFXTime = 0
+    self._fxBatch = {}    -- 同一刻飘字收集批：清空未入队的条目（2026-10-27）
     self.CounterActive = {} -- 反制激活标记（M3）：随叠加一并清空
 end
 
@@ -1016,10 +1037,10 @@ end
 ]]
 function Overlay:PlayStatChangeFX(ent, slot, text, font, x, y, color)
     if not IsValid(ent) then return end
-    -- 飘字序列（2026-08-14 用户规格）：多个飘字开始时间不相同——按到达顺序排队，
+    -- 飘字序列（2026-08-14 用户规格）：多个飘字开始时间不相同，按入队顺序排队，
     -- 每个飘字在前一个开始 FX_QUEUE_INTERVAL（0.5 秒）后开始；间隔超过 0.5 秒
-    -- 到达的飘字立即开始。顺序依据：服务端按节点作用顺序广播（节点顺序 → 节点内
-    -- 对象组正序逐对象），客户端到达顺序即该顺序，故按到达顺序排队天然满足。
+    -- 入队的飘字立即开始。入队顺序由调用方决定：同一刻的飘字先由 KardsStatChangeFX
+    -- 接收器按对象分组洗牌（组内攻击力先于防御力），再逐条调用本函数（2026-10-27）。
     local now = CurTime()
     local start = math.max(now, self._nextFXTime or now)
     self._nextFXTime = start + FX_QUEUE_INTERVAL
@@ -1168,7 +1189,7 @@ end
 
 --[[
     返回某卡牌的卡牌花费（数据源与绘制一致，供颜色判定等逻辑读取）：
-      - 战场实体模式：NW 变量 Kards_CardCost
+      - 战场实体模式：卡面视图 KARDS.CardView.Read(ent).cost
       - 本地外观表（手牌/编辑器 3D2D）：appearance.cost
       - 卡牌对象（CardInterface mock）：GetCost()
 ]]
@@ -1176,7 +1197,8 @@ function Overlay:GetCardCost(ent)
     local entry = self.Ents[ent]
     if not entry then return nil end
     if entry.mode == "entity" then
-        return IsValid(ent) and ent:GetNWInt("Kards_CardCost", 0) or nil
+        if not IsValid(ent) then return nil end
+        return KARDS.CardView.Read(ent).cost
     end
     local d = entry.data
     if d and d.GetCost then return d:GetCost() or 0 end
@@ -1237,7 +1259,64 @@ Overlay._PendingLocal = nil
                 显示变动绝对值；设为或减少（属性与伤害节点 trigger，kind=node）→ 白色，
                 显示设置后的新值（白色飘字的意义为「设为」，见 PlayStatFXWhite）
       行动花费：增加 → 红色；减少 → 绿色；显示变动值（减少带 "-" 负号）
+
+    随机顺序（2026-10-27 用户规格）：同一刻（同一帧内批量到达）的多条飘字先按
+    到达顺序收集，帧末按对象分组并随机对象顺序后入播放队列。随机排序只计入对象：
+    同一对象的飘字连续播出，且组内固定「攻击力飘字先于防御力飘字」（其余槽位保持
+    到达顺序），不再固定按服务端节点/对象顺序。
 ]]
+-- 同一刻飘字收集批（见上方「随机顺序」）：本帧收到的条目在此暂存，帧末按对象分组洗牌入队
+Overlay._fxBatch = Overlay._fxBatch or {}
+Overlay._fxBatchScheduled = Overlay._fxBatchScheduled or false
+
+local function FlushFxBatch()
+    Overlay._fxBatchScheduled = false
+    local batch = Overlay._fxBatch
+    Overlay._fxBatch = {}
+    -- 按对象分组：groups[ent] = 该对象本刻的飘字列表；keys 保留对象首次出现顺序
+    local groups, keys = {}, {}
+    for _, item in ipairs(batch) do
+        local g = groups[item.ent]
+        if not g then
+            g = {}
+            groups[item.ent] = g
+            keys[#keys + 1] = item.ent
+        end
+        g[#g + 1] = item
+    end
+    -- 组内固定顺序：攻击力飘字先于防御力飘字，其余槽位保持到达顺序（只重排
+    -- attack/defense 占用的位置，不影响行动花费等其他槽位的相对次序）
+    for _, ent in ipairs(keys) do
+        local g = groups[ent]
+        local slots = {}
+        for i, item in ipairs(g) do
+            if item.slot == "attack" or item.slot == "defense" then
+                slots[#slots + 1] = i
+            end
+        end
+        if #slots > 1 then
+            local attacks, defenses = {}, {}
+            for _, i in ipairs(slots) do
+                if g[i].slot == "attack" then attacks[#attacks + 1] = g[i]
+                else defenses[#defenses + 1] = g[i] end
+            end
+            local k = 0
+            for _, item in ipairs(attacks) do k = k + 1; g[slots[k]] = item end
+            for _, item in ipairs(defenses) do k = k + 1; g[slots[k]] = item end
+        end
+    end
+    -- Fisher-Yates 洗牌：只洗对象顺序
+    for i = #keys, 2, -1 do
+        local j = math.random(i)
+        keys[i], keys[j] = keys[j], keys[i]
+    end
+    for _, ent in ipairs(keys) do
+        for _, item in ipairs(groups[ent]) do
+            Overlay:PlayStatChangeFX(item.ent, item.slot, item.text, item.font, item.x, item.y, item.color)
+        end
+    end
+end
+
 net.Receive("KardsStatChangeFX", function()
     local ent = net.ReadEntity()
     local slotIdx = net.ReadUInt(4)
@@ -1274,5 +1353,15 @@ net.Receive("KardsStatChangeFX", function()
     end
     local x, y, ok = SlotPixelPos(entry, ent, slot)
     if not ok then return end -- 总部短卡无攻击/行动花费槽位 → 跳过
-    Overlay:PlayStatChangeFX(ent, slot, text, PickNumberFont(text), x, y, color)
+    -- 先入本帧收集批，帧末按对象分组、随机对象顺序后入播放队列（同一刻多条飘字
+    -- 随机顺序，见上方「随机顺序」）
+    local batch = Overlay._fxBatch
+    batch[#batch + 1] = {
+        ent = ent, slot = slot, text = text, font = PickNumberFont(text),
+        x = x, y = y, color = color,
+    }
+    if not Overlay._fxBatchScheduled then
+        Overlay._fxBatchScheduled = true
+        timer.Simple(0, FlushFxBatch)
+    end
 end)

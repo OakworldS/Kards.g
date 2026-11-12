@@ -5,7 +5,8 @@
 从 cl_canvas_editor.lua 拆分出的子系统，负责画布编辑器的所有输入事件处理。
 
 包含功能：
-  - HandleInput（主输入处理函数）
+  - RouteInput（主输入路由入口，2026-11-08 起按 ADR 0004 接入共享输入路由引擎）
+  - InputActions（三层动作表，动作复用下方已拆分的输入子函数）
   - CheckNodeSelectorClick（检查节点选择器点击）
   - CheckPortClick（检查端口点击）
   - CheckTabClick（检查标签页点击）
@@ -15,14 +16,12 @@
   - CreateNode（创建节点）
   - CreateConnection（创建连接）
   - GetNodeById（按ID获取节点）
-  - DeleteSelectedNodes（删除选中节点）
-  - DrawContextMenu（绘制右键菜单）
   - DrawTabs（绘制标签页）
   - DrawToggleButton（绘制自定义切换按钮）
   - DarkenColor（颜色变暗函数）
 
 源文件：cl_canvas_editor.lua
-  - HandleInput：行 4200~4989
+  - 原 HandleInput：行 4200~4989（2026-11-08 改名为 RouteInput 并接入共享路由）
   - CheckNodeSelectorClick：行 4991~5030
   - CheckPortClick：行 5032~5125
   - CheckTabClick：行 5127~5145
@@ -32,8 +31,6 @@
   - CreateNode：行 5327~5333
   - CreateConnection：行 5335~5358
   - GetNodeById：行 5360~5362
-  - DeleteSelectedNodes：行 5364~5415
-  - DrawContextMenu：行 5417~5433
   - DrawTabs：行 5435~5459
   - DrawToggleButton：行 5462~5469
   - DarkenColor：行 5473~5475
@@ -47,8 +44,12 @@ KARDS.CardEditor = KARDS.CardEditor or {}
 KARDS.CardEditor.Canvas = KARDS.CardEditor.Canvas or {}
 KARDS.CardEditor.Audio = KARDS.CardEditor.Audio or {}
 
--- HandleInput 与 13 个局部子函数已于 2026-10-04 从主文件拆分时归位到本文件
+-- 原 HandleInput 与 13 个局部子函数已于 2026-10-04 从主文件拆分时归位到本文件；
+-- 2026-11-08 按 ADR 0004 把 HandleInput 改为 RouteInput 加三层动作表
 -- 此文件保留其余辅助函数（CheckNodeSelectorClick, CheckPortClick 等）
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
 
 function KARDS.CardEditor.Canvas.CheckNodeSelectorClick(mouseX, mouseY)
     local win = KARDS.CardEditor.Canvas.Window
@@ -341,23 +342,23 @@ function KARDS.CardEditor.Canvas.FinishTempConnection(mouseX, mouseY)
                     -- 检查是否是开始节点
                     if not fromNode or not fromNode.isStartNode then
                         isValid = false
-                        errorMsg = "事件监测节点只能连接到开始点！"
+                        errorMsg = T("editor.canvasinput.event_monitor_only_start")
                     else
                         -- 根据当前模式检查开始点类型
                         if KARDS.CardEditor.Canvas.EditorMode == "unit" then
                             if fromNode.title ~= "在场" then
                                 isValid = false
-                                errorMsg = "单位模式下，事件监测节点只能连接到「在场」开始点！"
+                                errorMsg = T("editor.canvasinput.event_monitor_unit_start")
                             end
                         elseif KARDS.CardEditor.Canvas.EditorMode == "command" then
                             if fromNode.title ~= "打出" then
                                 isValid = false
-                                errorMsg = "指令模式下，事件监测节点只能连接到「打出」开始点！"
+                                errorMsg = T("editor.canvasinput.event_monitor_command_start")
                             end
                         elseif KARDS.CardEditor.Canvas.EditorMode == "counter_command" then
                             if fromNode.title ~= "激活时" then
                                 isValid = false
-                                errorMsg = "反制指令模式下，事件监测节点只能连接到「激活时」开始点！"
+                                errorMsg = T("editor.canvasinput.event_monitor_counter_start")
                             end
                         end
                     end
@@ -413,77 +414,6 @@ end
 
 function KARDS.CardEditor.Canvas.GetNodeById(nodeId)
     return NodeBase.GetNodeById(KARDS.CardEditor.Canvas.Nodes, nodeId)
-end
-
-function KARDS.CardEditor.Canvas.DeleteSelectedNodes()
-    if #KARDS.CardEditor.Canvas.SelectionState.selectedNodes == 0 then return end
-    
-    -- 收集选中节点的ID，但过滤掉不能删除的节点
-    local selectedNodeIds = {}
-    local hasNonDeletable = false
-    for _, node in ipairs(KARDS.CardEditor.Canvas.SelectionState.selectedNodes) do
-        if node.canDelete == false then
-            hasNonDeletable = true
-        else
-            table.insert(selectedNodeIds, node.id)
-        end
-    end
-    
-    -- 如果只有不能删除的节点被选中，直接返回
-    if #selectedNodeIds == 0 then
-        if hasNonDeletable then
-        end
-        return
-    end
-    
-    -- 首先删除连接到这些节点的连接线（从后往前删除）
-    for i = #KARDS.CardEditor.Canvas.Connections, 1, -1 do
-        local conn = KARDS.CardEditor.Canvas.Connections[i]
-        if table.HasValue(selectedNodeIds, conn.fromNode) or table.HasValue(selectedNodeIds, conn.toNode) then
-            -- 检查是否连接到特殊事件监测节点，如果是，则不删除这条连接
-            local fromNode = KARDS.CardEditor.Canvas.GetNodeById(conn.fromNode)
-            local toNode = KARDS.CardEditor.Canvas.GetNodeById(conn.toNode)
-            if (not fromNode or fromNode.canDelete ~= false) and (not toNode or toNode.canDelete ~= false) then
-                table.remove(KARDS.CardEditor.Canvas.Connections, i)
-            end
-        end
-    end
-    
-    -- 删除选中的节点（从后往前删除）
-    for i = #KARDS.CardEditor.Canvas.Nodes, 1, -1 do
-        local node = KARDS.CardEditor.Canvas.Nodes[i]
-        if table.HasValue(selectedNodeIds, node.id) then
-            table.remove(KARDS.CardEditor.Canvas.Nodes, i)
-        end
-    end
-    
-    -- 清除选择状态
-    KARDS.CardEditor.Canvas.SelectionState.selectedNodes = {}
-    KARDS.CardEditor.Canvas.SelectionState.deleteButtonVisible = false
-    KARDS.CardEditor.Canvas.SelectionState.deleteButton = nil
-    
-    -- 播放删除音效
-    KARDS.CardEditor.Audio.PlayDelete()
-    
-    -- 添加通知（已迁移到 INE）
-end
-
-function KARDS.CardEditor.Canvas.DrawContextMenu()
-    if KARDS.CardEditor.Canvas.ContextMenu and KARDS.CardEditor.Canvas.ContextMenu.visible then
-        local menu = KARDS.CardEditor.Canvas.ContextMenu
-        local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-        local isHovered = mouseX >= menu.x and mouseX <= menu.x + menu.width and
-                         mouseY >= menu.y and mouseY <= menu.y + menu.height
-        
-        local bgColor = isHovered and Color(120, 120, 120) or Color(80, 80, 80)
-        draw.RoundedBox(4, menu.x, menu.y, menu.width, menu.height, bgColor)
-        
-        local menuText = "删除节点"
-        if menu.connection then
-            menuText = "删除连接线"
-        end
-        draw.SimpleText(menuText, "SourceHan_Heavy_14", menu.x + menu.width / 2, menu.y + menu.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    end
 end
 
 function KARDS.CardEditor.Canvas.DrawTabs()
@@ -612,7 +542,7 @@ local function HandleCardSelectorInput(mouseX, mouseY, isLeftReleased, isLeftDow
                                 end
                                 KARDS.CardEditor.Canvas.SelectedCardScale = app.cardScale
                                 -- 音效手动锁定兼容（2026-08-14）：旧卡无 _manual 标记，但
-                                -- 自动分配（规模/类型）为本轮新增——已配置的 deploy/attack
+                                -- 自动分配（规模/类型）为本轮新增，已配置的 deploy/attack
                                 -- 必来自手动选择器，视为手动锁定（规模/类型变更不再覆盖）
                                 app.sounds = app.sounds or {}
                                 if not app.sounds._manual then
@@ -640,7 +570,7 @@ local function HandleCardSelectorInput(mouseX, mouseY, isLeftReleased, isLeftDow
                                 end
                             end
                             
-                            KARDS.CardEditor.Canvas.AddNotification("卡牌加载成功", Color(50, 200, 50), true)
+                            KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.card_loaded"), Color(50, 200, 50), true)
                             KARDS.CardEditor.Audio.PlayLoad()
                         end
                         
@@ -745,10 +675,10 @@ local function HandleSaveWindowInput(mouseX, mouseY, isLeftReleased, isLeftDown,
                         if curFile and KARDS.CardEditor.SaveSystem.UnlockDefaultCard(curFile) then
                             app.isDefault = false
                             saveWindow.setDefault = false
-                            KARDS.CardEditor.Canvas.AddNotification("默认卡牌已解锁，可修改后重新保存", Color(50, 200, 50), true)
+                            KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.default_card_unlocked"), Color(50, 200, 50), true)
                             KARDS.CardEditor.Audio.PlaySave()
                         else
-                            KARDS.CardEditor.Canvas.AddNotification("解锁失败：未找到卡牌文件", Color(200, 50, 50), false)
+                            KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.unlock_failed_file_missing"), Color(200, 50, 50), false)
                             KARDS.CardEditor.Audio.PlayNotification()
                         end
                         return true
@@ -760,11 +690,11 @@ local function HandleSaveWindowInput(mouseX, mouseY, isLeftReleased, isLeftDown,
             if mouseX >= confirmBtn.x and mouseX <= confirmBtn.x + confirmBtn.width and mouseY >= confirmBtn.y and mouseY <= confirmBtn.y + confirmBtn.height then
                 local fileName = saveWindow.inputText
                 if fileName == "" then
-                    KARDS.CardEditor.Canvas.AddNotification("文件名不能为空", Color(200, 50, 50), false)
+                    KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.filename_empty"), Color(200, 50, 50), false)
                     KARDS.CardEditor.Audio.PlayNotification()
                 elseif KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName) then
                     -- 默认卡牌锁定：禁止覆盖修改，需先解锁
-                    KARDS.CardEditor.Canvas.AddNotification("「" .. fileName .. "」是默认卡牌，已锁定不可修改，请先解锁", Color(200, 50, 50), false)
+                    KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.default_locked_edit", fileName), Color(200, 50, 50), false)
                     KARDS.CardEditor.Audio.PlayNotification()
                 else
                     -- 【默认卡牌】应用「设为默认卡牌」勾选（仅测试版；正式版移除本段，
@@ -794,10 +724,10 @@ local function HandleSaveWindowInput(mouseX, mouseY, isLeftReleased, isLeftDown,
                     if success then
                         -- 记录当前编辑卡牌文件（后续默认卡牌解锁定位用）
                         KARDS.CardEditor.Canvas.CurrentCardFile = fileName
-                        KARDS.CardEditor.Canvas.AddNotification("卡牌保存成功", Color(50, 200, 50), true)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.card_saved"), Color(50, 200, 50), true)
                         KARDS.CardEditor.Audio.PlaySave()
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("卡牌保存失败", Color(200, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.card_save_failed"), Color(200, 50, 50), false)
                         KARDS.CardEditor.Audio.PlayNotification()
                     end
                     
@@ -860,10 +790,10 @@ local function HandleLoadConfirmInput(mouseX, mouseY, isLeftReleased, isLeftDown
                             end
                         end
                     end
-                    KARDS.CardEditor.Canvas.AddNotification("卡牌加载成功", Color(50, 200, 50), true)
+                    KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.card_loaded"), Color(50, 200, 50), true)
                     KARDS.CardEditor.Audio.PlayLoad()
                 else
-                    KARDS.CardEditor.Canvas.AddNotification("卡牌加载失败", Color(200, 50, 50), false)
+                    KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.card_load_failed"), Color(200, 50, 50), false)
                     KARDS.CardEditor.Audio.PlayNotification()
                 end
                 
@@ -927,15 +857,15 @@ local function HandleFileSelectInput(mouseX, mouseY, isLeftReleased, isLeftDown,
                     local fileName = loadWindow.selectedFile
                     if KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName) then
                         -- 默认卡牌锁定：不可删除（需先加载该卡并在保存窗口解锁）
-                        KARDS.CardEditor.Canvas.AddNotification("该卡牌是默认卡牌，已锁定不可删除；请先加载并解锁", Color(200, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.default_locked_delete"), Color(200, 50, 50), false)
                         KARDS.CardEditor.Audio.PlayNotification()
                     else
                         local delSuccess = KARDS.CardEditor.SaveSystem.DeleteCard(fileName)
                         if delSuccess then
-                            KARDS.CardEditor.Canvas.AddNotification("文件删除成功", Color(50, 200, 50), true)
+                            KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.file_deleted"), Color(50, 200, 50), true)
                             KARDS.CardEditor.Audio.PlaySave()
                         else
-                            KARDS.CardEditor.Canvas.AddNotification("文件删除失败", Color(200, 50, 50), false)
+                            KARDS.CardEditor.Canvas.AddNotification(T("editor.canvasinput.file_delete_failed"), Color(200, 50, 50), false)
                             KARDS.CardEditor.Audio.PlayNotification()
                         end
                         loadWindow.visible = false
@@ -974,6 +904,10 @@ local function HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown,
         if KARDS.CardEditor.Canvas.CheckTabClick(mouseX, mouseY) then
             return true
         end
+
+        -- 多选下拉框状态归属 INE 会话（ADR 0003），Canvas 节点本身没有会话
+        local ineEditor = GetNodeEditor and GetNodeEditor("card_effect_editor")
+        local session = ineEditor and ineEditor.session
         
         -- 处理数据端口按钮点击
         for _, node in ipairs(KARDS.CardEditor.Canvas.Nodes) do
@@ -991,9 +925,9 @@ local function HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown,
                     end
                     
                     local isAddButtonHovered = NodeBase.IsMouseOverPort(addButtonX, addButtonY, mouseX, mouseY, portRadius, clickRadius)
-                    if isAddButtonHovered then
+                    if isAddButtonHovered and session then
                         -- 打开多选下拉框
-                        KARDS.CardEditor.Canvas.ExpandedMultiDropdown = node.id .. "_output"
+                        session.ExpandedMultiDropdown = node.id .. "_output"
                         
                         -- 计算多列布局
                         local style = KARDS.CardEditor.Canvas.DropdownStyle
@@ -1016,7 +950,7 @@ local function HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown,
                         if dropdownX < 0 then dropdownX = 0 end
                         if dropdownX + totalWidth > ScrW() then dropdownX = ScrW() - totalWidth end
                         
-                        KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = {
+                        session.ExpandedMultiDropdownInfo = {
                             x = addButtonX, y = addButtonY, width = portRadius * 2, height = portRadius * 2,
                             nodeId = node.id, dropdownId = "output", dataTypes = node.availableOutputTypes,
                             dropdownX = dropdownX, dropdownY = dropdownY, totalWidth = totalWidth,
@@ -1034,8 +968,8 @@ local function HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown,
                     local inputPortY = nodeY - portRadius * 2 - 4
                     
                     local isInputButtonHovered = NodeBase.IsMouseOverPort(inputPortX, inputPortY, mouseX, mouseY, portRadius, clickRadius)
-                    if isInputButtonHovered then
-                        KARDS.CardEditor.Canvas.ExpandedMultiDropdown = node.id .. "_input"
+                    if isInputButtonHovered and session then
+                        session.ExpandedMultiDropdown = node.id .. "_input"
                         
                         local style = KARDS.CardEditor.Canvas.DropdownStyle
                         local screenH = ScrH()
@@ -1059,7 +993,7 @@ local function HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown,
                         
                         dropdownY = inputPortY - dropdownH - 8
                         
-                        KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = {
+                        session.ExpandedMultiDropdownInfo = {
                             x = inputPortX, y = inputPortY, width = portRadius * 2, height = portRadius * 2,
                             nodeId = node.id, dropdownId = "input", dataTypes = node.availableInputTypes,
                             dropdownX = dropdownX, dropdownY = dropdownY, totalWidth = totalWidth,
@@ -1073,129 +1007,15 @@ local function HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown,
             end
         end
         
-        if KARDS.CardEditor.Canvas.HandleDropdownClickOutside(mouseX, mouseY) then
-            return true
-        end
-        
-        if KARDS.CardEditor.Canvas.HandleMultiDropdownClickOutside(mouseX, mouseY) then
+        -- 展开下拉框与多选下拉框状态都已迁入编辑器会话（ADR 0003）
+        if session and KARDS.CardEditor.Canvas.HandleMultiDropdownClickOutside(mouseX, mouseY, session) then
             return true
         end
     end
     return false
 end
 
--- 7. 处理删除按钮点击
-local function HandleDeleteButtonClick(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown)
-    if KARDS.CardEditor.Canvas.CurrentPage == "effect" and isLeftReleased and 
-       KARDS.CardEditor.Canvas.SelectionState.deleteButtonVisible and 
-       KARDS.CardEditor.Canvas.SelectionState.deleteButton then
-        local btn = KARDS.CardEditor.Canvas.SelectionState.deleteButton
-        if mouseX >= btn.x and mouseX <= btn.x + btn.width and 
-           mouseY >= btn.y and mouseY <= btn.y + btn.height then
-            KARDS.CardEditor.Canvas.DeleteSelectedNodes()
-            return true
-        end
-    end
-    return false
-end
-
--- 8. 处理多选框选逻辑
-local function HandleBoxSelection(mouseX, mouseY, isLeftDown, isLeftReleased, isRightDown, isRightReleased)
-    if KARDS.CardEditor.Canvas.CurrentPage == "effect" then
-        local win = KARDS.CardEditor.Canvas.Window
-        local contentX = win.x + 5
-        local contentY = win.y + 75
-        local selectorW = 180
-        local contentH = win.height - 80
-        local nodeEditorX = contentX + selectorW
-        local nodeEditorW = win.width - 10 - selectorW
-        
-        local isInNodeEditor = mouseX >= nodeEditorX and mouseX <= nodeEditorX + nodeEditorW and
-                              mouseY >= contentY and mouseY <= contentY + contentH
-        
-        local isOverNodeOrConnection = false
-        for _, node in ipairs(KARDS.CardEditor.Canvas.Nodes) do
-            local nX, nY
-            if node.isStartNode then
-                nX = win.x + node.x
-                nY = win.y + node.y
-            else
-                nX = nodeEditorX + node.x
-                nY = win.y + node.y
-            end
-            if mouseX >= nX and mouseX <= nX + node.width and mouseY >= nY and mouseY <= nY + node.height then
-                isOverNodeOrConnection = true
-                break
-            end
-        end
-        
-        if not isOverNodeOrConnection then
-            for _, conn in ipairs(KARDS.CardEditor.Canvas.Connections) do
-                if KARDS.CardEditor.Canvas.HoveredConnection == conn then
-                    isOverNodeOrConnection = true
-                    break
-                end
-            end
-        end
-        
-        -- 处理框选开始
-        if isLeftDown and not KARDS.CardEditor.Canvas.SelectionState.isSelecting and
-           not KARDS.CardEditor.Canvas.TempNode and not KARDS.CardEditor.Canvas.DraggingNode and
-           not KARDS.CardEditor.Canvas.TempConnection and not KARDS.CardEditor.Canvas.ContextMenu and
-           not KARDS.CardEditor.Canvas.SelectionState.deleteButtonVisible and
-           isInNodeEditor and not isOverNodeOrConnection then
-            KARDS.CardEditor.Canvas.SelectionState.isSelecting = true
-            KARDS.CardEditor.Canvas.SelectionState.startX = mouseX
-            KARDS.CardEditor.Canvas.SelectionState.startY = mouseY
-            KARDS.CardEditor.Canvas.SelectionState.selectedNodes = {}
-            return true
-        end
-        
-        if KARDS.CardEditor.Canvas.SelectionState.isSelecting then
-            local startX = KARDS.CardEditor.Canvas.SelectionState.startX
-            local startY = KARDS.CardEditor.Canvas.SelectionState.startY
-            local rectLeft = math.min(startX, mouseX)
-            local rectTop = math.min(startY, mouseY)
-            local rectRight = math.max(startX, mouseX)
-            local rectBottom = math.max(startY, mouseY)
-            KARDS.CardEditor.Canvas.SelectionState.selectedNodes = {}
-            for _, node in ipairs(KARDS.CardEditor.Canvas.Nodes) do
-                if not node.isStartNode and node.canDelete ~= false then
-                    local nX = nodeEditorX + node.x
-                    local nY = win.y + node.y
-                    local nodeRight = nX + node.width
-                    local nodeBottom = nY + node.height
-                    if not (nodeRight < rectLeft or nX > rectRight or nodeBottom < rectTop or nY > rectBottom) then
-                        table.insert(KARDS.CardEditor.Canvas.SelectionState.selectedNodes, node)
-                    end
-                end
-            end
-        end
-        
-        if isLeftReleased and KARDS.CardEditor.Canvas.SelectionState.isSelecting then
-            KARDS.CardEditor.Canvas.SelectionState.isSelecting = false
-            if #KARDS.CardEditor.Canvas.SelectionState.selectedNodes > 0 then
-                KARDS.CardEditor.Canvas.SelectionState.deleteButtonVisible = true
-                KARDS.CardEditor.Canvas.SelectionState.deleteButton = {
-                    x = mouseX + 10, y = mouseY + 10, width = 140, height = 35
-                }
-            end
-            return true
-        end
-        
-        if isLeftReleased and KARDS.CardEditor.Canvas.SelectionState.deleteButtonVisible then
-            local btn = KARDS.CardEditor.Canvas.SelectionState.deleteButton
-            if not btn or not (mouseX >= btn.x and mouseX <= btn.x + btn.width and 
-                               mouseY >= btn.y and mouseY <= btn.y + btn.height) then
-                KARDS.CardEditor.Canvas.SelectionState.selectedNodes = {}
-                KARDS.CardEditor.Canvas.SelectionState.deleteButtonVisible = false
-            end
-        end
-    end
-    return false
-end
-
--- 9. 处理节点选择器拖拽和端口点击
+-- 7. 处理节点选择器拖拽和端口点击
 local function HandleNodeDragDrop(mouseX, mouseY, isLeftDown, isRightDown)
     if isLeftDown and KARDS.CardEditor.Canvas.CurrentPage == "effect" and 
        not KARDS.CardEditor.Canvas.SelectionState.isSelecting then
@@ -1212,7 +1032,7 @@ local function HandleNodeDragDrop(mouseX, mouseY, isLeftDown, isRightDown)
     return false
 end
 
--- 10. 处理临时节点拖拽和连接完成
+-- 8. 处理临时节点拖拽和连接完成
 local function HandleTempNodeAndConnection(mouseX, mouseY, isLeftDown, isLeftReleased, isRightDown)
     if KARDS.CardEditor.Canvas.TempNode and isLeftDown then
         KARDS.CardEditor.Canvas.TempNode.x = mouseX - 100
@@ -1253,7 +1073,7 @@ local function HandleTempNodeAndConnection(mouseX, mouseY, isLeftDown, isLeftRel
     end
 end
 
--- 11. 处理节点拖拽位置更新
+-- 9. 处理节点拖拽位置更新
 local function HandleNodePositionUpdate(mouseX, mouseY, isLeftDown)
     if KARDS.CardEditor.Canvas.DraggingNode and KARDS.CardEditor.Canvas.DraggingNode.dragging then
         local win = KARDS.CardEditor.Canvas.Window
@@ -1275,7 +1095,7 @@ local function HandleNodePositionUpdate(mouseX, mouseY, isLeftDown)
     end
 end
 
--- 12. 处理悬停连接检测
+-- 10. 处理悬停连接检测
 local function HandleHoverConnection(mouseX, mouseY)
     local hoveredConn = nil
     local win = KARDS.CardEditor.Canvas.Window
@@ -1340,148 +1160,115 @@ local function HandleHoverConnection(mouseX, mouseY)
     KARDS.CardEditor.Canvas.HoveredConnection = hoveredConn
 end
 
--- 13. 处理右键菜单
-local function HandleContextMenu(mouseX, mouseY, isRightReleased, isLeftDown, isRightDown)
-    if isRightReleased then
-        local hoveredConn = KARDS.CardEditor.Canvas.HoveredConnection
-        local hoveredNode = KARDS.CardEditor.Canvas.HoveredNode
-        if hoveredConn then
-            KARDS.CardEditor.Canvas.ContextMenu = {
-                x = mouseX + 10, y = mouseY + 10, width = 100, height = 30,
-                visible = true, connection = hoveredConn
-            }
-        elseif hoveredNode and hoveredNode.canDelete ~= false then
-            KARDS.CardEditor.Canvas.ContextMenu = {
-                x = mouseX + 10, y = mouseY + 10, width = 100, height = 30,
-                visible = true, node = hoveredNode
-            }
-        end
-    end
+--[[
+    Canvas 输入路由入口（2026-11-08，ADR 0004）。
+    只负责刷新提示、组装原始输入上下文、按动作表路由，并记录本帧按键状态。
+    动作表见文件末尾的 Canvas.InputActions。
 
-    if isLeftDown and not isRightDown then
-        if KARDS.CardEditor.Canvas.ContextMenu and KARDS.CardEditor.Canvas.ContextMenu.visible then
-            local menu = KARDS.CardEditor.Canvas.ContextMenu
-            if mouseX >= menu.x and mouseX <= menu.x + menu.width and
-               mouseY >= menu.y and mouseY <= menu.y + menu.height then
-                if menu.connection then
-                    local conn = menu.connection
-                    for i, c in ipairs(KARDS.CardEditor.Canvas.Connections) do
-                        if c.id == conn.id then
-                            table.remove(KARDS.CardEditor.Canvas.Connections, i)
-                            KARDS.CardEditor.Audio.PlayDelete()
-                            break
-                        end
-                    end
-                elseif menu.node then
-                    local node = menu.node
-                    local connectionsToRemove = {}
-                    for i, conn in ipairs(KARDS.CardEditor.Canvas.Connections) do
-                        if conn.fromNode == node.id or conn.toNode == node.id then
-                            table.insert(connectionsToRemove, i)
-                        end
-                    end
-                    for i = #connectionsToRemove, 1, -1 do
-                        table.remove(KARDS.CardEditor.Canvas.Connections, connectionsToRemove[i])
-                    end
-                    for i, n in ipairs(KARDS.CardEditor.Canvas.Nodes) do
-                        if n.id == node.id then
-                            table.remove(KARDS.CardEditor.Canvas.Nodes, i)
-                            KARDS.CardEditor.Audio.PlayDelete()
-                            break
-                        end
-                    end
-                end
-            end
-            KARDS.CardEditor.Canvas.ContextMenu = nil
-        end
-    end
-end
+    @return {string|nil} 被消费的动作名
+]]
+function KARDS.CardEditor.Canvas.RouteInput()
+    local Canvas = KARDS.CardEditor.Canvas
 
-function KARDS.CardEditor.Canvas.HandleInput()
     -- 更新提示状态
-    KARDS.CardEditor.Canvas.UpdateNotifications()
-    
-    local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    local isLeftDown = input.IsMouseDown(MOUSE_LEFT)
-    local isLeftReleased = not isLeftDown and KARDS.CardEditor.Canvas.LastMouseState
-    local isRightDown = input.IsMouseDown(MOUSE_RIGHT)
-    local isRightReleased = not isRightDown and KARDS.CardEditor.Canvas.LastRightMouseState
+    Canvas.UpdateNotifications()
 
-    -- 依次处理各输入子模块（若返回 true 表示已消费该输入，不再继续处理）
-    if HandleCardSelectorInput(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleFileMenuInput(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleSaveWindowInput(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleLoadConfirmInput(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleFileSelectInput(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleTabAndPortClick(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
+    local leftDown = input.IsMouseDown(MOUSE_LEFT)
+    local rightDown = input.IsMouseDown(MOUSE_RIGHT)
+
+    local Router = KARDS.CardEditor.InputRouter
+    if not Router or not Canvas.InputActions then
+        -- 加载顺序异常时不处理输入，但仍记录状态避免下一帧误判释放
+        Canvas.LastMouseState = leftDown
+        Canvas.LastRightMouseState = rightDown
         return
     end
 
-    -- 关于页（2026-10-05）：先处理素材来源弹窗，再处理整页输入。
-    -- 两者都消费输入，画布的框选与节点拖拽不参与关于页。
-    if KARDS.CardEditor.Canvas.CurrentPage == "about" then
-        local about = KARDS.CardEditor.Canvas.About
-        if about and about.sourcesVisible then
-            KARDS.CardEditor.Canvas.HandleAboutSourcesInput(mouseX, mouseY, isLeftReleased, isLeftDown)
-        else
-            KARDS.CardEditor.Canvas.HandleAboutPageInput(mouseX, mouseY, isLeftReleased, isLeftDown)
-        end
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleDeleteButtonClick(mouseX, mouseY, isLeftReleased, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleBoxSelection(mouseX, mouseY, isLeftDown, isLeftReleased, isRightDown, isRightReleased) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    if HandleNodeDragDrop(mouseX, mouseY, isLeftDown, isRightDown) then
-        KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
-        KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-        return
-    end
-    
-    -- 以下函数不提前返回（仅更新状态/位置）
-    HandleTempNodeAndConnection(mouseX, mouseY, isLeftDown, isLeftReleased, isRightDown)
-    HandleNodePositionUpdate(mouseX, mouseY, isLeftDown)
-    HandleHoverConnection(mouseX, mouseY)
-    HandleContextMenu(mouseX, mouseY, isRightReleased, isLeftDown, isRightDown)
+    local ctx = Router.BuildContext(Canvas, {
+        x = gui.MouseX(),
+        y = gui.MouseY(),
+        leftDown = leftDown,
+        rightDown = rightDown,
+        middleDown = input.IsMouseDown(MOUSE_MIDDLE)
+    })
+    local consumed = Router.Route(Canvas, ctx, Canvas.InputActions)
+    Router.Commit(Canvas, ctx)
 
-    KARDS.CardEditor.Canvas.LastRightMouseState = isRightDown
-    KARDS.CardEditor.Canvas.LastMouseState = isLeftDown
+    -- 兼容字段：外部仍可能读取这两个历史状态
+    Canvas.LastRightMouseState = ctx.rightDown
+    Canvas.LastMouseState = ctx.leftDown
+    return consumed
 end
+
+--[[
+    Canvas 三层动作表（ADR 0004）。
+    动作都是本文件已拆分出的输入子函数，保持原有顺序与消费语义：
+      modal：卡牌选择器、文件菜单、保存窗口、读取确认、文件选择、页签与端口点击
+      chrome：关于页整页接管、节点拖放
+      canvas：临时节点与连线、节点位置更新、悬停连线
+]]
+KARDS.CardEditor.Canvas.InputActions = {
+    modal = {
+        { name = "card_selector", run = function(editor, ctx)
+            return HandleCardSelectorInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown, ctx.rightDown)
+        end },
+        { name = "file_menu", run = function(editor, ctx)
+            return HandleFileMenuInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown, ctx.rightDown)
+        end },
+        { name = "save_window", run = function(editor, ctx)
+            return HandleSaveWindowInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown, ctx.rightDown)
+        end },
+        { name = "load_confirm", run = function(editor, ctx)
+            return HandleLoadConfirmInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown, ctx.rightDown)
+        end },
+        { name = "file_select", run = function(editor, ctx)
+            return HandleFileSelectInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown, ctx.rightDown)
+        end },
+        { name = "tab_and_port_click", run = function(editor, ctx)
+            return HandleTabAndPortClick(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown, ctx.rightDown)
+        end }
+    },
+    chrome = {
+        {
+            name = "about_page",
+            enabled = function(editor, ctx)
+                return KARDS.CardEditor.Canvas.CurrentPage == "about"
+            end,
+            run = function(editor, ctx)
+                local Canvas = KARDS.CardEditor.Canvas
+                local about = Canvas.About
+                -- 素材来源弹窗是整页浮层，打开时仍然整页接管
+                if about and about.sourcesVisible then
+                    Canvas.HandleAboutSourcesInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown)
+                    return true
+                end
+                -- 关于页内容矩形之外的点击不消费，交给同层后续动作与画布层处理。
+                -- 没有矩形（绘制尚未写入）时退回整页接管，避免输入丢失
+                local rect = about and about.pageRect
+                if rect and not (ctx.x >= rect.x and ctx.x <= rect.x + rect.w
+                    and ctx.y >= rect.y and ctx.y <= rect.y + rect.h) then
+                    return false
+                end
+                Canvas.HandleAboutPageInput(ctx.x, ctx.y, ctx.leftReleased, ctx.leftDown)
+                return true
+            end
+        },
+        { name = "node_drag_drop", run = function(editor, ctx)
+            return HandleNodeDragDrop(ctx.x, ctx.y, ctx.leftDown, ctx.rightDown)
+        end }
+    },
+    canvas = {
+        { name = "temp_node_and_connection", run = function(editor, ctx)
+            HandleTempNodeAndConnection(ctx.x, ctx.y, ctx.leftDown, ctx.leftReleased, ctx.rightDown)
+            return false
+        end },
+        { name = "node_position_update", run = function(editor, ctx)
+            HandleNodePositionUpdate(ctx.x, ctx.y, ctx.leftDown)
+            return false
+        end },
+        { name = "hover_connection", run = function(editor, ctx)
+            HandleHoverConnection(ctx.x, ctx.y)
+            return false
+        end }
+    }
+}

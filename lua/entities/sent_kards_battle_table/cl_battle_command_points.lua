@@ -88,24 +88,38 @@ end
 -- 角落玩家头像边长（供 cl_battle_player_panel.lua 创建头像面板，2026-10-10）
 KARDS.CPAvatarSize = CP_AVATAR
 
+-- 矩形缓存（2026-10-16 性能优化）：头像 / 面板矩形每帧各槽各求一次，结果只随屏幕
+-- 高度与「本方槽位」变化；改为复用固定表并就地更新 y，免去每帧新建两张表
+local cpAvatarRects, cpPanelRects = {}, {}
+
 -- 角落玩家头像矩形：数据槽位 slot（1/2）→ 屏幕位置（友方 = 左下角，敌方 = 左上角）。
 -- 原为指挥点面板所在位置，2026-10-10 面板上移让位后由玩家头像占用；绘制见
 -- cl_battle_player_panel.lua。仅在 HUDPaint 内计算（ScrH() 此时有效）。
 function KARDS.CPAvatarRect(slot)
-    local y = (slot == KARDS.BattleState.inTable.slot)
+    local r = cpAvatarRects[slot]
+    if not r then
+        r = { x = CP_PAD, y = 0, w = CP_AVATAR, h = CP_AVATAR }
+        cpAvatarRects[slot] = r
+    end
+    r.y = (slot == KARDS.BattleState.inTable.slot)
         and (ScrH() - CP_PAD - CP_AVATAR)  -- 友方：左下角
         or  CP_PAD                         -- 敌方：左上角
-    return { x = CP_PAD, y = y, w = CP_AVATAR, h = CP_AVATAR }
+    return r
 end
 
 -- 面板矩形：自角落头像向屏幕 y 中线让位（友方在头像上方，敌方在头像下方，2026-10-10）。
 -- 仅在 HUDPaint 内计算（ScrH() 此时有效；Think 不依赖矩形坐标）。
 local function CPPanelRect(slot)
     local av = KARDS.CPAvatarRect(slot)
-    local y = (slot == KARDS.BattleState.inTable.slot)
+    local r = cpPanelRects[slot]
+    if not r then
+        r = { x = CP_PAD, y = 0, w = CP_W, h = CP_H }
+        cpPanelRects[slot] = r
+    end
+    r.y = (slot == KARDS.BattleState.inTable.slot)
         and (av.y - CP_AVATAR_GAP - CP_H)          -- 友方：头像上方（向中线）
         or  (av.y + CP_AVATAR + CP_AVATAR_GAP)     -- 敌方：头像下方（向中线）
-    return { x = CP_PAD, y = y, w = CP_W, h = CP_H }
+    return r
 end
 
 -- 指挥点复位（退出牌桌 / 新对局 reset 块调用，原 cl_init.lua reset 块中
@@ -291,8 +305,11 @@ hook.Add("HUDPaint", "KardsCommandPointsHUD", function()
     --（首个非 0 广播）才显示，2026-08-11
     if not KARDS.BattleState.inTable or not KARDS.BattleState.battleStarted or not cpPanelVisible then return end
     local now = CurTime()
-    -- 友方 = 本方槽位（左下角向中线），敌方 = 另一槽位（左上角向中线）
-    for _, slot in ipairs({ KARDS.BattleState.inTable.slot, 3 - KARDS.BattleState.inTable.slot }) do
+    -- 友方 = 本方槽位（左下角向中线），敌方 = 另一槽位（左上角向中线）。
+    -- 用序数循环而非 ipairs({...})，免去每帧新建槽位表（2026-10-16 性能优化）
+    local ownSlot = KARDS.BattleState.inTable.slot
+    for i = 1, 2 do
+        local slot = (i == 1) and ownSlot or (3 - ownSlot)
         local rect = CPPanelRect(slot)
         local borderCol = cpBorder[slot] and cpBorder[slot].cur or CP_BORDER_IDLE
         local points = math.floor(displayCP[slot])

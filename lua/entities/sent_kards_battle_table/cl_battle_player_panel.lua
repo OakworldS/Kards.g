@@ -20,35 +20,72 @@
 
 KARDS = KARDS or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 local NAME_SIZE = 32                                  -- 玩家名字号（Dday / SourceHan_Heavy 均已注册 32）
 local NAME_FONT_EN = "Dday_" .. NAME_SIZE             -- 英文（ASCII）段字体
 local NAME_FONT_ZH = "SourceHan_Heavy_" .. NAME_SIZE  -- 中文（非 ASCII）段字体
 local NAME_GAP = 10                                   -- 名字左缘与头像右缘的间距（px）
 local INTRO_DUR = 0.6                                 -- 入场时长（秒，头像淡入 / 名字滑动淡入）
 local OUTRO_DUR = 0.6                                 -- 退场时长（秒，头像与名字同时淡出）
+local drawHudCvar                                     -- cl_drawhud 缓存（只需查一次）
 
 -- 数据源（cl_init.lua KardsTableBattleStart 参战分支写入；退出 / 新对局经
 -- KARDS.ResetBattleState → KARDS.PlayerPanelReset 复位）：{ enemyName, enemySteamID64 }
 KARDS.PlayerPanelData = nil
 
 -- 面板状态（进行中非 nil）：
---   { ownAvatar, enemyAvatar, ownName, enemyName,
+--   { ownAvatar, enemyAvatar, ownRuns, enemyRuns,
 --     phase = "in"|"out"（入场 / 退场阶段）, phaseStart = 阶段开始 CurTime,
 --     alpha = 整体透明度 0..1, slide = 名字滑动进度 0..1（入场 0→1） }
+-- ownRuns / enemyRuns：按字体分段并已测宽的名字绘制段（BuildNameRuns，入场时算一次）
 -- 角落归属每帧按当前本方槽位（KARDS.BattleState.inTable.slot）实时计算，与指挥点面板
 -- 一致（无对手模式 kards_switch 可切换本方槽位）。
 KARDS.PlayerPanel = nil
 
 -- 创建头像面板（引擎内置 AvatarImage：SetPlayer 经 Steamworks 取 SteamID64，
 -- 从 Steam CDN 异步下载对应分辨率头像，期间显示默认占位头像；184 = 最高分辨率）
+-- 层级（2026-10-26 用户规格「头像始终在最高层」）：创建时置极高 ZPos，Think 每帧
+-- MoveToFront（同 cl_init.lua MakeAvatarPanel 的约定与理由）
+local AVATAR_TOP_ZPOS = 32767
+-- 2026-11-01 修复：AvatarImage 必须挂到 GetHUDPanel()（全屏、位置 0,0，子控件坐标即
+-- 屏幕坐标）。此前无父面板创建，SetPos 不生效（头像固定停在屏幕左上角，本方/敌方
+-- 都叠在同一位置），且无父面板时 MoveToFront 无效。
 local function MakeAvatar(playerEnt)
-    local av = vgui.Create("AvatarImage")
+    local av = vgui.Create("AvatarImage", GetHUDPanel())
     local size = KARDS.CPAvatarSize or 50
     av:SetSize(size, size)
     av:SetMouseInputEnabled(false)
     av:SetKeyboardInputEnabled(false)
+    av:SetZPos(AVATAR_TOP_ZPOS)
     if IsValid(playerEnt) then av:SetPlayer(playerEnt, 184) end
     return av
+end
+
+--[[
+    把名字按字节类型切成「ASCII 段 / 非 ASCII 段」并测宽（UTF-8 多字节字符的所有字节
+    均 ≥ 128，故按「字节 < 128」分组必落在字符边界）。名字在面板存续期不变，故在
+    入场时算一次并缓存在面板状态里（2026-10-16 性能优化）：绘制时只按缓存宽度累加，
+    不再逐帧切分字符串与 SetFont / GetTextSize。
+    @param text string 玩家名
+    @return table { { text, font, w }, ... }
+]]
+local function BuildNameRuns(text)
+    local runs = {}
+    if not text or text == "" then return runs end
+    local i, n = 1, #text
+    while i <= n do
+        local ascii = string.byte(text, i) < 128
+        local j = i + 1
+        while j <= n and (string.byte(text, j) < 128) == ascii do j = j + 1 end
+        local run = string.sub(text, i, j - 1)
+        local font = ascii and NAME_FONT_EN or NAME_FONT_ZH
+        surface.SetFont(font)
+        runs[#runs + 1] = { text = run, font = font, w = surface.GetTextSize(run) }
+        i = j
+    end
+    return runs
 end
 
 --[[
@@ -82,11 +119,13 @@ function KARDS.PlayerPanelIntro()
         enemyPly = player.GetBySteamID64(data.enemySteamID64)
     end
     local hasEnemy = IsValid(enemyPly)
+    local ownName = ply:Nick()
+    local enemyName = (data.enemyName and data.enemyName ~= "") and data.enemyName or T("battle.no_opponent")
     KARDS.PlayerPanel = {
         ownAvatar = MakeAvatar(ply),
         enemyAvatar = hasEnemy and MakeAvatar(enemyPly) or nil,
-        ownName = ply:Nick(),
-        enemyName = (data.enemyName and data.enemyName ~= "") and data.enemyName or "暂无对手",
+        ownRuns = BuildNameRuns(ownName),
+        enemyRuns = BuildNameRuns(enemyName),
         phase = "in",
         phaseStart = CurTime(),
         alpha = 0,
@@ -106,27 +145,21 @@ function KARDS.PlayerPanelOutro()
 end
 
 --[[
-    玩家名混合字体绘制：GMod surface 无富文本，按字节类型把名字切成「ASCII 段 / 非 ASCII
-    段」，ASCII 段用 Dday、非 ASCII 段（中文等）用思源黑体 Heavy，逐段测量宽度并依次向右
-    绘制。UTF-8 多字节字符的所有字节均 ≥ 128，故按「字节 < 128」分组必落在字符边界。
-    @param text string 玩家名
+    玩家名混合字体绘制：按 BuildNameRuns 缓存的分段（ASCII 段 Dday、非 ASCII 段思源
+    黑体 Heavy，含各段宽度）依次向右绘制，逐帧只做宽度累加与绘制。
+    @param runs table BuildNameRuns 结果
     @param x number 文本左缘 x（随入场滑动动画变化）
     @param y number 文本垂直中心 y
     @param alpha number 透明度 0..255
 ]]
-local function DrawMixedNameText(text, x, y, alpha)
-    if alpha <= 0 or not text or text == "" then return end
-    local cx, i, n = x, 1, #text
-    while i <= n do
-        local ascii = string.byte(text, i) < 128
-        local j = i + 1
-        while j <= n and (string.byte(text, j) < 128) == ascii do j = j + 1 end
-        local run = string.sub(text, i, j - 1)
-        local font = ascii and NAME_FONT_EN or NAME_FONT_ZH
-        surface.SetFont(font)
-        draw.SimpleText(run, font, cx, y, Color(255, 255, 255, alpha), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        cx = cx + surface.GetTextSize(run)
-        i = j
+local function DrawMixedNameText(runs, x, y, alpha)
+    if alpha <= 0 then return end
+    local cx = x
+    for i = 1, #runs do
+        local r = runs[i]
+        draw.SimpleText(r.text, r.font, cx, y,
+            Color(255, 255, 255, alpha), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        cx = cx + r.w
     end
 end
 
@@ -144,13 +177,18 @@ hook.Add("Think", "KardsPlayerPanelThink", function()
         KARDS.PlayerPanelReset()
         return
     end
-    local hudCvar = GetConVar("cl_drawhud")
-    local hudOn = hudCvar and hudCvar:GetBool() or true
+    -- cl_drawhud 只需查一次（2026-10-16 性能优化），此后复用同一 ConVar 对象
+    drawHudCvar = drawHudCvar or GetConVar("cl_drawhud")
+    local hudOn = not drawHudCvar or drawHudCvar:GetBool()
     if not hudOn then
         pp.ownAvatar:SetVisible(false)
         if IsValid(pp.enemyAvatar) then pp.enemyAvatar:SetVisible(false) end
         return
     end
+    -- 头像始终在最上层（2026-10-26 用户规格）：其它 VGUI 面板的 MakePopup 会
+    -- MoveToFront 自身，故在此每帧重新置顶
+    pp.ownAvatar:MoveToFront()
+    if IsValid(pp.enemyAvatar) then pp.enemyAvatar:MoveToFront() end
     local dur = (pp.phase == "out") and OUTRO_DUR or INTRO_DUR
     local t = math.Clamp((CurTime() - pp.phaseStart) / dur, 0, 1)
     local e = t * t * (3 - 2 * t) -- smoothstep
@@ -175,10 +213,12 @@ hook.Add("HUDPaint", "KardsPlayerPanelHUD", function()
     local ownSlot = inT.slot
     local enemySlot = 3 - ownSlot
     local a = math.Clamp(math.Round(255 * (pp.alpha or 0)), 0, 255)
-    for _, side in ipairs({ "own", "enemy" }) do
-        local slot = (side == "own") and ownSlot or enemySlot
+    -- 序数循环（本方 / 敌方）而非 ipairs({...})，免去每帧新建表（2026-10-16 性能优化）
+    for i = 1, 2 do
+        local own = (i == 1)
+        local slot = own and ownSlot or enemySlot
         local rect = KARDS.CPAvatarRect(slot)
-        local av = (side == "own") and pp.ownAvatar or pp.enemyAvatar
+        local av = own and pp.ownAvatar or pp.enemyAvatar
         if IsValid(av) then
             av:SetVisible(true)
             av:SetSize(rect.w, rect.h)
@@ -190,9 +230,9 @@ hook.Add("HUDPaint", "KardsPlayerPanelHUD", function()
             surface.DrawRect(rect.x, rect.y, rect.w, rect.h)
         end
         -- 玩家名：入场时自头像中心向右滑动到头像右缘 + 间距（slide 0→1）
-        local name = (side == "own") and pp.ownName or pp.enemyName
+        local runs = own and pp.ownRuns or pp.enemyRuns
         local x0 = rect.x + rect.w / 2           -- 起点：头像中心
         local x1 = rect.x + rect.w + NAME_GAP    -- 终点：头像右缘 + 间距
-        DrawMixedNameText(name, x0 + (x1 - x0) * (pp.slide or 1), rect.y + rect.h / 2, a)
+        DrawMixedNameText(runs, x0 + (x1 - x0) * (pp.slide or 1), rect.y + rect.h / 2, a)
     end
 end)

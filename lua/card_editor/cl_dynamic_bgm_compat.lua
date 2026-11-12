@@ -11,6 +11,9 @@ KARDS.CardEditor.Compat.DynamicBGM = KARDS.CardEditor.Compat.DynamicBGM or {}
 
 local Compat = KARDS.CardEditor.Compat.DynamicBGM
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- State variables for track volume management
 Compat.OriginalIdleMaxVolume = nil
 Compat.OriginalCombatMaxVolume = nil
@@ -25,6 +28,7 @@ Compat.EditorTrackChannel = nil
 Compat.CurrentTrackIndex = 0 -- 用于循环播放的索引
 Compat.CurrentTrackName = nil -- 当前播放曲目的音乐名（文件名 <序号>.<音乐名>.ogg 解析，纯数字文件名为 nil）
 Compat.TrackLoading = false -- sound.PlayFile 正在异步加载/等待回调中，Think 不应抢跑切歌
+Compat.NextTrackRetryAt = 0 -- 自动重试的时间点（秒）：播放失败后到点前 Think 不再重试，避免逐帧刷 sound.PlayFile
 
 -- 平滑缓动（提示出入场透明度 GetBGMMessageAlpha 与悬停简介淡入淡出共用，2026-08-15 编辑器重构 7.5-4）
 local function BGMHoverSmoothstep(t)
@@ -40,11 +44,11 @@ local PlayModeFile = "kards_bgm_playmode.txt"
 Compat.PlayMode = "random"
 Compat.PlayModeOrder = { "random", "random_all", "loop", "loop_all", "single" }
 Compat.PlayModeNames = {
-    random = "随机选择",
-    random_all = "跨列表随机选择",
-    loop = "循环列表",
-    loop_all = "跨列表循环",
-    single = "单曲循环"
+    random = T("editor.bgm.mode_random"),
+    random_all = T("editor.bgm.mode_random_all"),
+    loop = T("editor.bgm.mode_loop"),
+    loop_all = T("editor.bgm.mode_loop_all"),
+    single = T("editor.bgm.mode_single")
 }
 
 -- 载入持久记忆的播放模式（仅在模式合法时采用）；顶层调用一次（2026-08-15 编辑器重构 7.5-4）
@@ -218,7 +222,7 @@ function Compat.ShowBGMMessage(text, kind)
         targetY = nil
     }
     if kind == "play" then
-        msg.fullText = "播放：" .. tostring(text)
+        msg.fullText = T("editor.bgm.play_prefix", tostring(text))
         msg.enterDur = 0.75
         msg.holdDur = 2.5
         msg.exitDur = 0.75
@@ -232,7 +236,7 @@ function Compat.ShowBGMMessage(text, kind)
         msg.maxAlpha = 102 -- 40%
         msg.color = Color(255, 255, 255)
     elseif kind == "error" then
-        msg.fullText = "[错误]" .. tostring(text)
+        msg.fullText = T("editor.bgm.error_prefix", tostring(text))
         msg.enterDur = 0
         msg.holdDur = 5.0
         msg.exitDur = 0
@@ -240,7 +244,7 @@ function Compat.ShowBGMMessage(text, kind)
         msg.flash = true -- 2Hz 渐变闪烁
         msg.color = Color(220, 60, 60)
     elseif kind == "warning" then
-        msg.fullText = "[警告]" .. tostring(text)
+        msg.fullText = T("editor.bgm.warning_prefix", tostring(text))
         msg.enterDur = 0.5
         msg.holdDur = 5.0
         msg.exitDur = 0.5
@@ -314,11 +318,20 @@ function Compat.DrawBGMMessages()
     local rightX = win.x + win.width - marginX
     local baseY = win.y + win.height - bottomMargin
 
-    -- 歌词独立槽（与提示并存）：固定占最底部一行，提示堆叠在其上方（歌词见文末同步/解析）
-    local lyricText, lyricAlpha = Compat.GetLyricDisplay()
+    -- 歌词独立槽（与提示并存）：固定占右下角最底部，原文在上、译文在下，提示堆叠在歌词上方（歌词见文末同步/解析）
+    local lyricText, lyricSub, lyricAlpha = Compat.GetLyricDisplay()
     local lyricVisible = lyricText and lyricText ~= "" and lyricAlpha > 0
+    local lyricRows = 0
     if lyricVisible then
-        draw.SimpleText(lyricText, font, rightX, baseY, Color(255, 255, 255, lyricAlpha), TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
+        local hasSub = lyricSub and lyricSub ~= ""
+        lyricRows = hasSub and 2 or 1
+        -- 自底向上：译文画在最底部（baseY），原文抬到其上一行
+        local y = baseY
+        if hasSub then
+            draw.SimpleText(lyricSub, font, rightX, y, Color(255, 255, 255, lyricAlpha), TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
+            y = y - lineH - Compat.LyricLineGap
+        end
+        draw.SimpleText(lyricText, font, rightX, y, Color(255, 255, 255, lyricAlpha), TEXT_ALIGN_RIGHT, TEXT_ALIGN_BOTTOM)
     end
 
     -- 过滤过期（含 play 立即消失）
@@ -335,8 +348,12 @@ function Compat.DrawBGMMessages()
     -- 排序：旧的在上方，新的在底部
     table.sort(valid, function(a, b) return a.createdAt < b.createdAt end)
 
-    -- 目标位置：自底向上堆叠（右下角）；歌词占位时提示整体上移一行
-    local cursorY = baseY - (lyricVisible and (lineH + spacing) or 0)
+    -- 目标位置：自底向上堆叠（右下角）；歌词占位时提示整体上移（双语两行时占两行）
+    local lyricBlockHeight = 0
+    if lyricVisible then
+        lyricBlockHeight = (lineH + Compat.LyricLineGap) * (lyricRows - 1) + lineH + spacing
+    end
+    local cursorY = baseY - lyricBlockHeight
     for i, m in ipairs(valid) do
         m.targetY = cursorY
         cursorY = cursorY - lineH - spacing
@@ -363,21 +380,28 @@ function Compat.DrawBGMMessages()
 end
 
 -- ===== BGM 歌词（编辑器窗口右下角独立槽，2026-10-05）=====
--- 数据源：data_static/kards/bgm_lyrics/<国家>/<序号>.<音乐名>.txt（LRC 原文），与音频
+-- 数据源：data_static/kards/bgm_lyrics/<国家>/<序号>.<音乐名>.txt（LRC 文本，可单语可双语），与音频
 -- sound/editor/<国家>/<序号>.<音乐名>.ogg 路径镜像。gmad 只放行 data_static/ 下的 .json/.txt
 -- （.lrc 会被白名单拒绝并导致整包失败），故歌词以 .txt 承载 LRC 文本。
 -- 时间轴：播放位置取 Compat.EditorTrackChannel:GetTime()（秒），在 Think 中逐帧比对时间戳，
 -- 不依赖 SysTime 累加，天然跟随暂停与切歌。
-Compat.LyricLines = nil -- 解析后的行数组 { { t = 秒, text = 行文本 }, ... }（按 t 升序）
+-- 双语（2026-10-16）：同一时间戳连写两行，前一行是原文、后一行是译文；显示时原文在上、译文在下。
+-- 某时间戳只有一行时视为单语，译文槽留空、不占位（如纯器乐或未译曲目仍按原样显示）。
+Compat.LyricLines = nil -- 解析后的行数组 { { t = 秒, text = 原文, translation = 译文或 nil }, ... }（按 t 升序）
 Compat.LyricIndex = 0 -- 当前应显示的行号（0 = 未到第一行）
 Compat.LyricChangeTime = nil -- 当前行切换时刻（SysTime），用于淡入
 Compat.LyricFadeIn = 0.4 -- 行切换淡入时长（秒）
-Compat.LyricMaxAlpha = 220 -- 歌词最大透明度
+Compat.LyricMaxAlpha = 99 -- 歌词最大透明度（65%，2026-10-17 用户规格）
+Compat.LyricLineGap = 2 -- 原文与译文两行之间的额外行距（像素）
 
 -- 解析 LRC 文本：支持 [mm:ss.xx]/[mm:ss.xxx]/[mm:ss] 时间戳、一行多时间戳、
 -- 元数据标签（ti/ar/al/by/offset 等非时间标签忽略）
+-- 双语配对：同一时间戳出现的两行，前一行作原文、后一行作译文。
+-- Lua 的 table.sort 不稳定，故先按出现序编号再按（时间，出现序）排序，
+-- 保证同一时间戳的原文仍排在译文之前，配对不会因排序而颠倒。
 function Compat.ParseLRC(content)
-    local lines = {}
+    local raw = {}
+    local seq = 0
     for rawLine in string.gmatch(content, "[^\r\n]+") do
         local stamps = {}
         local rest = rawLine
@@ -392,10 +416,29 @@ function Compat.ParseLRC(content)
         end
         local text = string.Trim(rest)
         for _, t in ipairs(stamps) do
-            lines[#lines + 1] = { t = t, text = text }
+            seq = seq + 1
+            raw[#raw + 1] = { t = t, text = text, seq = seq }
         end
     end
-    table.sort(lines, function(a, b) return a.t < b.t end)
+    table.sort(raw, function(a, b)
+        if a.t ~= b.t then return a.t < b.t end
+        return a.seq < b.seq
+    end)
+
+    -- 合并同时间戳：紧邻的下一行填进上一个条目的译文槽；多出的行另起新条目（不丢文本）
+    local lines = {}
+    for _, item in ipairs(raw) do
+        local last = lines[#lines]
+        if last and last.t == item.t and not last.translation then
+            if last.text == "" then
+                last.text = item.text -- 原文位为空（如多出一个空的时间戳行）时顺延到原文
+            else
+                last.translation = item.text
+            end
+        else
+            lines[#lines + 1] = { t = item.t, text = item.text, translation = nil }
+        end
+    end
     return lines
 end
 
@@ -437,15 +480,16 @@ function Compat.UpdateLyric()
 end
 
 -- 当前歌词行的显示文本与透明度（空行=间奏不显示；行切换淡入）
+-- 返回 原文, 译文, 透明度；无歌词或原文为空返回 nil, nil, 0（译文可为 nil，调用方按单语处理）
 function Compat.GetLyricDisplay()
     local lines = Compat.LyricLines
     local idx = Compat.LyricIndex
-    if not lines or not idx or idx < 1 then return nil, 0 end
+    if not lines or not idx or idx < 1 then return nil, nil, 0 end
     local line = lines[idx]
-    if not line or line.text == "" then return nil, 0 end
+    if not line or line.text == "" then return nil, nil, 0 end
     local age = SysTime() - (Compat.LyricChangeTime or 0)
     local alpha = Compat.LyricMaxAlpha * BGMHoverSmoothstep(math.Clamp(age / Compat.LyricFadeIn, 0, 1))
-    return line.text, math.floor(alpha + 0.5)
+    return line.text, line.translation, math.floor(alpha + 0.5)
 end
 
 -- ===== 国家按钮悬停简介（常驻5国按钮行左侧空白区：风格名称："简介源文本"）=====
@@ -599,12 +643,12 @@ function Compat.RegisterCountry(countryId, data)
     -- 格式校验：注册风格格式不规范时给出红色错误提示
     if type(countryId) ~= "string" or countryId == "" then
         KARDS.CardEditor:Log("外部BGM注册警告：风格 id 格式不规范：" .. tostring(countryId))
-        Compat.ShowBGMMessage("注册风格格式不规范：id 无效（" .. tostring(countryId) .. "）", "error")
+        Compat.ShowBGMMessage(T("editor.bgm.register_country_invalid_id", tostring(countryId)), "error")
         return
     end
     if type(data) ~= "table" then
         KARDS.CardEditor:Log("外部BGM注册警告：风格 '" .. countryId .. "' 的配置 data 必须为表，实际为 " .. type(data))
-        Compat.ShowBGMMessage("注册风格格式不规范：'" .. countryId .. "' 的 data 必须为表", "error")
+        Compat.ShowBGMMessage(T("editor.bgm.register_country_invalid_data", countryId), "error")
         return
     end
     data = data or {}
@@ -637,7 +681,7 @@ function Compat.RegisterTrack(countryId, trackPath, trackName)
     -- 格式校验：trackPath 必须为非空字符串（外部模组漏传/传 nil 时给出红色错误提示）
     if type(trackPath) ~= "string" or trackPath == "" then
         KARDS.CardEditor:Log("外部BGM注册警告：曲目路径无效：" .. tostring(trackPath) .. "（所属风格：" .. tostring(countryId) .. "）")
-        Compat.ShowBGMMessage("注册曲目格式不规范：路径无效（" .. tostring(trackPath) .. "）", "error")
+        Compat.ShowBGMMessage(T("editor.bgm.register_track_invalid_path", tostring(trackPath)), "error")
         return
     end
     EnsureCountryEntry(countryId)
@@ -649,7 +693,7 @@ function Compat.RegisterTrack(countryId, trackPath, trackName)
     -- 校验音频文件存在，避免外部模组注册无效路径（静默失败无任何提示）
     if not file.Exists(trackPath, "GAME") then
         KARDS.CardEditor:Log("外部BGM注册警告：音频文件不存在：" .. tostring(trackPath) .. "（所属风格：" .. tostring(countryId) .. "）")
-        Compat.ShowBGMMessage("注册曲目不存在：" .. tostring(trackPath), "error")
+        Compat.ShowBGMMessage(T("editor.bgm.register_track_missing", tostring(trackPath)), "error")
     end
     Compat._externalTrackSeq = (Compat._externalTrackSeq or 0) + 1
     table.insert(data.tracks, { n = 10000 + Compat._externalTrackSeq, path = trackPath, name = trackName, registered = true })
@@ -663,6 +707,8 @@ function Compat.SafeStopChannel()
     
     -- 重置加载标记（可能有 pending 的 sound.PlayFile 回调）
     Compat.TrackLoading = false
+    -- 清空自动重试冷却，避免上一次会话的失败退避延续到下一次播放
+    Compat.NextTrackRetryAt = 0
     
     -- 停止当前channel
     if IsValid(Compat.EditorTrackChannel) then
@@ -766,6 +812,10 @@ local function StartTrackLoopHook()
 
         -- 检查当前channel
         if not IsValid(Compat.EditorTrackChannel) then
+            -- 上次播放失败进入冷却中：等冷却结束再重试，避免逐帧刷 sound.PlayFile
+            if SysTime() < Compat.NextTrackRetryAt then
+                return
+            end
             -- channel无效了，重新播放
             Compat.PlayNextTrack()
             return
@@ -773,6 +823,10 @@ local function StartTrackLoopHook()
 
         -- 检查是否播放完了（0 = stopped, 1 = playing, 2 = paused）
         if Compat.EditorTrackChannel:GetState() == 0 then
+            -- 冷却未到（刚失败过）时先不切歌，避免状态抖动引发连发
+            if SysTime() < Compat.NextTrackRetryAt then
+                return
+            end
             -- 播放完了，播放下一首
             Compat.PlayNextTrack()
         end
@@ -804,7 +858,7 @@ function Compat.PlayEditorTrack(country)
     if not countryData or not countryData.tracks or #countryData.tracks == 0 then
         -- 该风格没有任何可用曲目：黄色警告提示（打开编辑器或点击 0 首风格时触发）
         KARDS.CardEditor:Log("编辑器BGM：风格'" .. tostring(country) .. "'没有可用曲目，请检查外部模组注册是否成功（曲目可能因语法错误未注册）")
-        Compat.ShowBGMMessage("风格'" .. tostring(country) .. "'没有可用背景音乐，可能注册失败", "warning")
+        Compat.ShowBGMMessage(T("editor.bgm.style_no_tracks", tostring(country)), "warning")
         return
     end
 
@@ -848,7 +902,7 @@ local function PlayCurrentTrack()
     if Compat.IsInitialPlay then
         Compat.IsInitialPlay = false
     else
-        Compat.ShowBGMMessage(Compat.CurrentTrackName or "音乐", "switch")
+        Compat.ShowBGMMessage(Compat.CurrentTrackName or T("editor.bgm.music"), "switch")
     end
 
     -- 生成唯一的回调标识，防止旧回调干扰
@@ -877,6 +931,9 @@ local function PlayCurrentTrack()
         if not IsValid(channel) then
             -- 播放失败时输出诊断信息（错误码与路径）
             KARDS.CardEditor:Log("编辑器BGM播放失败：" .. tostring(errStr) .. "（" .. tostring(trackPath) .. "）")
+            -- 失败后退避 2 秒再允许自动重试：否则循环 hook 每帧都会重新调 sound.PlayFile，
+            -- 反复触发磁盘读取与解码，把帧预算耗光，表现为关于页卡死
+            Compat.NextTrackRetryAt = SysTime() + 2
             return
         end
 
@@ -999,6 +1056,8 @@ function Compat.PlayNextTrack()
     Compat.CurrentCountry = newCountry
     Compat.CurrentTrackIndex = newIndex
 
+    -- 玩家点"下一首"也走本函数，故先清冷却，手动切歌不被失败退避拖延
+    Compat.NextTrackRetryAt = 0
     PlayCurrentTrack()
 end
 
@@ -1017,6 +1076,8 @@ function Compat.PlayPrevTrack()
     Compat.CurrentCountry = newCountry
     Compat.CurrentTrackIndex = newIndex
 
+    -- 玩家点"上一首"也走本函数，故先清冷却，手动切歌不被失败退避拖延
+    Compat.NextTrackRetryAt = 0
     PlayCurrentTrack()
 end
 
@@ -1091,7 +1152,7 @@ for _, reg in ipairs(KARDS.CardEditor.BGMRegistrations or {}) do
     local data = Compat.CountryMusic[reg.id]
     if data and data.tracks and #data.tracks == 0 then
         KARDS.CardEditor:Log("外部BGM注册警告：风格'" .. tostring(reg.id) .. "'没有注册任何曲目，点击其按钮将无法播放（请检查外部模组曲目注册是否有语法错误）")
-        Compat.ShowBGMMessage("风格'" .. tostring(reg.id) .. "'没有注册任何曲目，可能注册失败", "warning")
+        Compat.ShowBGMMessage(T("editor.bgm.style_no_registered_tracks", tostring(reg.id)), "warning")
     end
 end
 

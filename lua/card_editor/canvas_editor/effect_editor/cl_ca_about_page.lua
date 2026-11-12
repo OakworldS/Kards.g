@@ -7,6 +7,7 @@
 数据来源（本文件只读，不写）：
   lua/card_editor/sh_version_history.lua  版本历史，绘制数轴时间线
   lua/card_editor/sh_source_credits.lua   素材来源，绘制来源弹窗
+  lua/card_editor/sh_contributors.lua     贡献者，绘制贡献者卡三区
 
 对外函数：
   KARDS.CardEditor.Canvas.DrawAboutPage(x, y, w, h)
@@ -16,7 +17,7 @@
       由 cl_canvas_editor.lua 的主绘制链末尾调用，绘制素材来源弹窗
   KARDS.CardEditor.Canvas.HandleAboutPageInput(mx, my, isLeftReleased, isLeftDown)
   KARDS.CardEditor.Canvas.HandleAboutSourcesInput(mx, my, isLeftReleased, isLeftDown)
-      由 cl_ca_input_handling.lua 的 HandleInput 调用，返回 true 表示已消费
+      由 cl_ca_input_handling.lua 的 RouteInput 动作表调用，返回 true 表示已消费
 
 状态：KARDS.CardEditor.Canvas.About（滚动量、时间线选中项、弹窗可见性、命中矩形缓存）
 
@@ -25,6 +26,7 @@
 =======================================================================================
 ]]
 local C = KARDS.CardEditor.Canvas
+local T = KARDS.Lang.T
 
 -- ===== 状态 =====
 C.About = C.About or {
@@ -34,6 +36,9 @@ C.About = C.About or {
     sourcesVisible = false, -- 素材来源弹窗是否打开
     sourcesScroll = 0,
     sourcesScrollMax = 0,
+    contribExtScroll = 0,   -- 贡献者卡扩展区的滚动量
+    contribExtScrollMax = 0,
+    contribExtRect = nil,   -- 扩展格可见区的命中矩形，滚轮优先给它
     linkRows = {}           -- 链接行命中矩形缓存，每帧重填
 }
 local About = C.About
@@ -59,8 +64,21 @@ local GAP         = 12
 
 local H_IDENTITY = 104
 local H_CREDIT   = 128
-local H_CONTRIB  = 92
 local H_FOOTER   = 24
+
+-- 贡献者卡的三区几何。卡高由各区行数推出，改行数时只动这里
+local CONTRIB_PAD        = 16
+local CONTRIB_EXT_HEAD_Y = 40      -- 「扩展贡献」标题相对卡顶的位移
+local CONTRIB_EXT_TOP    = 64      -- 扩展格网格起点
+local CONTRIB_EXT_CELL_H = 44      -- 扩展格高
+local CONTRIB_EXT_ROWS   = 2       -- 扩展区可见行数，多出的滚动查看
+local CONTRIB_EXT_CELL_W = 150     -- 扩展格的期望宽度，实际按可用宽度均分
+local CONTRIB_DIV_Y      = CONTRIB_EXT_TOP + CONTRIB_EXT_CELL_H * CONTRIB_EXT_ROWS + 12
+local CONTRIB_SUB_HEAD_Y = CONTRIB_DIV_Y + 14
+local CONTRIB_LIST_TOP   = CONTRIB_SUB_HEAD_Y + 26
+local CONTRIB_LIST_ROW_H = 34
+local CONTRIB_LIST_ROWS  = 5
+local H_CONTRIB = CONTRIB_LIST_TOP + CONTRIB_LIST_ROW_H * CONTRIB_LIST_ROWS + CONTRIB_PAD
 local BTN_W, BTN_H = 200, 40
 local SHOT_W, SHOT_H = 320, 180
 
@@ -109,6 +127,35 @@ local AVATAR_PATHS = {
     developer = "materials/kards/ui/avatars/oak_world.jpg",
     thanks    = "materials/kards/ui/avatars/hoshi.jpg"
 }
+
+-- 开发者卡右侧的插件图标与大学徽章，放大到超过卡片高度后压暗，作为卡面的底纹
+local CARD_WATERMARKS = {
+    "materials/Kards.g_The_World_War_II.png",
+    "materials/about/GFX_focus_generic_university_3.png"
+}
+
+-- 鸣谢卡右侧的两枚称号图标，右起向左排列，尺寸与绘制方式同开发者卡
+local THANKS_WATERMARKS = {
+    "materials/about/GFX_focus_generic_infiltration.png",
+    "materials/about/GFX_focus_generic_field_hostpital.png"
+}
+
+-- 素材来源弹窗标题右侧的装饰徽章，右起向左排列
+local SOURCES_MARKS = {
+    "materials/about/GFX_focus_generic_islamic_propaganda.png",
+    "materials/about/GFX_goal_generic_positive_trade_relations.png",
+    "materials/about/GFX_focus_generic_soviet_politics.png",
+    "materials/about/GFX_focus_generic_reinforcing_the_supply_network.png"
+}
+
+-- 贡献者卡三区的装饰徽章：扩展贡献在上，重要贡献在左下，贡献在右下
+local CONTRIB_MARKS = {
+    extensions = "materials/about/GFX_focus_SOV_.png",
+    important  = "materials/about/GFX_focus_generic_smugglers.png",
+    regular    = "materials/about/GFX_goal_generic_national_unity.png"
+}
+-- 与原先两枚水印等高（180 乘 1.55），区域放不下就裁掉越界部分
+local CONTRIB_MARK_H = 279
 
 -- ===== 头像与截图的材质缓存 =====
 local materialCache = {}
@@ -241,7 +288,7 @@ end
 
 local function TrackPointRangeText(point)
     if point.from and point.to then
-        return tostring(point.from) .. " 至 " .. tostring(point.to)
+        return T("editor.about.date_range", point.from, point.to)
     end
     return tostring(point.date or "")
 end
@@ -431,7 +478,8 @@ local function WrapText(text, font, maxW)
         else
             current = candidate
         end
-        i = i + string.len(ch)
+        -- 至少前进一个字节：取到异常字节也不会原地打转
+        i = i + math.max(1, string.len(ch))
     end
     if current ~= "" then table.insert(out, current) end
     return out
@@ -477,19 +525,19 @@ end
 -- 阶段状态文案
 local function StatusTextForStage(stage)
     if stage == "Release" then
-        return "正式版"
+        return T("editor.about.stage_release")
     elseif stage == "Beta" then
-        return "公开测试，基础功能已确认"
+        return T("editor.about.stage_beta_status")
     end
-    return "私密测试，功能未冻结"
+    return T("editor.about.stage_alpha_status")
 end
 
 -- ===== 第一块 身份卡 =====
 local function DrawIdentityCard(x, y, w, h, frameP)
     DrawCardFrame(x, y, w, h, APPLE_BLUE, frameP)
 
-    draw.SimpleText("Kards 卡牌编辑器", "SourceHan_Heavy_26", x + 16, y + 12, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    draw.SimpleText("在 Garry's Mod 里自己造卡，并让它真的能打", "SourceHan_Heavy_16", x + 16, y + 46, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(T("editor.about.title"), "SourceHan_Heavy_26", x + 16, y + 12, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(T("editor.about.subtitle"), "SourceHan_Heavy_16", x + 16, y + 46, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
     local history = KARDS.CardEditor.VersionHistory or {}
     local current = history[#history]
@@ -581,13 +629,13 @@ end
 
 local function DrawVerticalTimeline(x, y, w, h, frameP)
     DrawCardFrame(x, y, w, h, APPLE_BLUE, frameP, TIMELINE_BG)
-    DrawCardTitle("版本历史", x + 16, y + 10, APPLE_BLUE, true)
+    DrawCardTitle(T("editor.about.version_history"), x + 16, y + 10, APPLE_BLUE, true)
     DrawTrackLegend(x + 16, y + 34)
 
     local history = KARDS.CardEditor.VersionHistory or {}
     local count = #history
     if count == 0 then
-        DrawTextShadowed("暂无版本记录", "SourceHan_Heavy_16", x + 16, y + 60, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+        DrawTextShadowed(T("editor.about.no_versions"), "SourceHan_Heavy_16", x + 16, y + 60, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
         return
     end
     if About.timelineIndex < 1 or About.timelineIndex > count then
@@ -699,15 +747,66 @@ local function DrawVerticalTimeline(x, y, w, h, frameP)
         end
     end
 
-    DrawTextShadowed("悬停版本节点或彩点查看截图", "SourceHan_Heavy_14", x + 16, y + h - 26, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    DrawTextShadowed(T("editor.about.timeline_hint"), "SourceHan_Heavy_14", x + 16, y + h - 26, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 end
 
 -- ===== 第三与第四块 开发者卡与鸣谢卡 =====
+-- 插件图标水印：放大到超过卡片高度，右侧对齐，只保留卡片圆角范围内的部分，压暗后衬底。
+-- 多枚时右起向左排开并略缩；模板只写一次，所有图标共用同一份圆角遮罩。
+-- iconBaseH 可选，按这个高度算图标大小；卡片很高时传固定值，免得水印撑满整张卡
+local function DrawCardWatermarks(x, y, w, h, paths, iconBaseH)
+    if type(paths) ~= "table" then paths = { paths } end
+    local count = #paths
+
+    -- 先量好每枚的位置，缺图的跳过
+    local items = {}
+    local ih = (iconBaseH or h) * (count > 1 and 1.55 or 1.9)
+    for i = 1, count do
+        local mat = GetCachedMaterial(paths[i])
+        if mat and not mat:IsError() then
+            local aspect = GetShotAspect(paths[i])
+            if aspect <= 0 then aspect = 303 / 267 end   -- 读不到时按原图比例，避免压成方块
+            local iw = ih * aspect
+            table.insert(items, {
+                mat = mat,
+                x = x + w - iw - 18 - (i - 1) * (iw + 8),
+                y = y + (h - ih) / 2,
+                w = iw,
+                h = ih
+            })
+        end
+    end
+    if #items == 0 then return end
+
+    -- 模板矩形缩进 1 像素，避免水印压住卡片的描边；左侧再让开 8 像素留给色条。
+    -- 模板填卡片底色，就算混合没压住，画出来也与卡面同色，不会留下白块
+    render.ClearStencil()
+    render.SetStencilEnable(true)
+    render.SetStencilWriteMask(1)
+    render.SetStencilTestMask(1)
+    render.SetStencilReferenceValue(1)
+    render.SetStencilCompareFunction(STENCIL_ALWAYS)
+    render.SetStencilPassOperation(STENCIL_REPLACE)
+    render.SetStencilFailOperation(STENCIL_KEEP)
+    render.SetStencilZFailOperation(STENCIL_KEEP)
+    draw.RoundedBox(CARD_RADIUS - 1, x + 8, y + 1, w - 9, h - 2, CARD_BG)
+    render.SetStencilCompareFunction(STENCIL_EQUAL)
+    for _, item in ipairs(items) do
+        surface.SetMaterial(item.mat)
+        surface.SetDrawColor(255, 255, 255, 80)
+        surface.DrawTexturedRect(item.x, item.y, item.w, item.h)
+    end
+    render.SetStencilEnable(false)
+    render.ClearStencil()
+end
+
 -- links 为数组，每项 { label, shown, url }
 -- nameFont 可选，默认思源黑体。开发者名字用了小型大写字母，思源黑体没有那些字形，
 -- 改由项目已注册的 Calibri 渲染，那张卡因此单独传字体
-local function DrawCreditCard(x, y, w, h, accent, avatarPath, name, nameNote, role, links, frameP, nameFont)
+-- watermarkPath 可选，字符串或字符串数组，给了就在卡片右侧衬一枚或多枚压暗的图标
+local function DrawCreditCard(x, y, w, h, accent, avatarPath, name, nameNote, role, links, frameP, nameFont, watermarkPath)
     DrawCardFrame(x, y, w, h, accent, frameP)
+    if watermarkPath then DrawCardWatermarks(x, y, w, h, watermarkPath) end
     nameFont = nameFont or "SourceHan_Heavy_22"
 
     local pad = 16
@@ -724,7 +823,7 @@ local function DrawCreditCard(x, y, w, h, accent, avatarPath, name, nameNote, ro
         surface.DrawTexturedRect(ax, ay, avatarSize, avatarSize)
     else
         draw.RoundedBox(8, ax, ay, avatarSize, avatarSize, APPLE_HAIRLINE)
-        draw.SimpleText("头像缺失", "SourceHan_Heavy_14", ax + avatarSize / 2, ay + avatarSize / 2, APPLE_INK_MUTED, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.about.avatar_missing"), "SourceHan_Heavy_14", ax + avatarSize / 2, ay + avatarSize / 2, APPLE_INK_MUTED, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 
     local tx = ax + avatarSize + 16
@@ -736,10 +835,10 @@ local function DrawCreditCard(x, y, w, h, accent, avatarPath, name, nameNote, ro
 
     draw.SimpleText(role, "SourceHan_Heavy_16", tx, y + 46, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
-    -- 链接行：游戏内无法打开浏览器，点一下把完整地址打到聊天框
+    -- 链接行：点一下交给系统默认浏览器或 Steam 内置浏览器打开
     local linkY = y + 70
     for _, link in ipairs(links or {}) do
-        local text = link.label .. "：" .. link.shown
+        local text = T("editor.about.link_row", link.label, link.shown)
         local tw, th = MeasureText(text, "SourceHan_Heavy_14")
         local hovered = IsMouseIn(gui.MouseX(), gui.MouseY(), tx, linkY - 2, tw, th + 4)
         draw.SimpleText(text, "SourceHan_Heavy_14", tx, linkY, hovered and accent or APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
@@ -749,16 +848,164 @@ local function DrawCreditCard(x, y, w, h, accent, avatarPath, name, nameNote, ro
 end
 
 -- ===== 第五块 贡献者卡 =====
+-- 分三区，与 docs/CONTRIBUTING.md 的三类贡献对应：
+-- 上区扩展贡献横向排格，两行可见，多出的行滚轮查看；下区由一条横线与一条竖线
+-- 拼成 T 形分隔，左栏重要贡献，右栏贡献，各五行。头像可点，点击打开链接
+local function DrawContributorAvatar(path, ax, ay, size, hovered)
+    draw.RoundedBox(6, ax - 2, ay - 2, size + 4, size + 4,
+        hovered and APPLE_BLUE or THEME.contributors)
+    local mat = GetCachedMaterial(path)
+    if mat and not mat:IsError() then
+        surface.SetMaterial(mat)
+        surface.SetDrawColor(255, 255, 255, 255)
+        surface.DrawTexturedRect(ax, ay, size, size)
+    else
+        draw.RoundedBox(5, ax, ay, size, size, APPLE_HAIRLINE)
+    end
+end
+
+-- 装饰徽章贴所在区的右下角，保持原尺寸，越出区域的部分裁掉。
+-- 裁剪用 scissor，画完恢复整页的裁剪矩形（DrawAboutPage 已把它写进 About.pageRect）
+local function DrawContributorWatermark(rect, path)
+    local mat = GetCachedMaterial(path)
+    if not mat or mat:IsError() then return end
+    local aspect = GetShotAspect(path)
+    if aspect <= 0 then aspect = 303 / 267 end
+    local ih = CONTRIB_MARK_H
+    local iw = ih * aspect
+
+    local page = About.pageRect or rect
+    local l = math.max(rect.x, page.x)
+    local t = math.max(rect.y, page.y)
+    local r = math.min(rect.x + rect.w, page.x + page.w)
+    local b = math.min(rect.y + rect.h, page.y + page.h)
+    if r <= l or b <= t then return end
+
+    render.SetScissorRect(l, t, r, b, true)
+    surface.SetMaterial(mat)
+    surface.SetDrawColor(255, 255, 255, 80)
+    surface.DrawTexturedRect(rect.x + rect.w - iw, rect.y + rect.h - ih, iw, ih)
+    render.SetScissorRect(page.x, page.y, page.x + page.w, page.y + page.h, true)
+end
+
 local function DrawContributorCard(x, y, w, h, frameP)
     DrawCardFrame(x, y, w, h, THEME.contributors, frameP)
-    DrawCardTitle("贡献者", x + 16, y + 12, THEME.contributors)
-    draw.SimpleText("贡献者名单暂空，欢迎在 Steam 或 B 站留言", "SourceHan_Heavy_16", x + 16, y + 44, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+    local divY     = y + CONTRIB_DIV_Y
+    local subHeadY = y + CONTRIB_SUB_HEAD_Y
+    local listTop  = y + CONTRIB_LIST_TOP
+    local midX     = x + w / 2
+
+    -- 三区各一枚徽章，矩形互不重叠，越界部分由各自的 scissor 裁掉
+    local markBottom = y + h - CONTRIB_PAD
+    DrawContributorWatermark(
+        { x = x + 8, y = y + 1, w = w - 8 - CONTRIB_PAD, h = divY - y - 1 }, CONTRIB_MARKS.extensions)
+    DrawContributorWatermark(
+        { x = x + 8, y = divY + 1, w = midX - 4 - (x + 8), h = markBottom - divY - 1 }, CONTRIB_MARKS.important)
+    DrawContributorWatermark(
+        { x = midX + 4, y = divY + 1, w = x + w - CONTRIB_PAD - (midX + 4), h = markBottom - divY - 1 }, CONTRIB_MARKS.regular)
+
+    DrawCardTitle(T("editor.about.contributors"), x + CONTRIB_PAD, y + 12, THEME.contributors)
+
+    local data = KARDS.CardEditor.Contributors or {}
+    local extensions = data.extensions or {}
+    local important = data.important or {}
+    local regular = data.regular or {}
+    local mox, moy = gui.MouseX(), gui.MouseY()
+
+    -- T 形分隔：横线通到两侧内边距，竖线自横线中点向下接到卡底
+    surface.SetDrawColor(APPLE_HAIRLINE)
+    surface.DrawRect(x + CONTRIB_PAD, divY, w - CONTRIB_PAD * 2, 1)
+    surface.DrawRect(midX, divY, 1, y + h - CONTRIB_PAD - divY)
+    surface.SetDrawColor(255, 255, 255, 255)
+
+    -- 上区：扩展贡献
+    draw.SimpleText(T("editor.about.contrib_extensions"), "SourceHan_Heavy_16",
+        x + CONTRIB_PAD, y + CONTRIB_EXT_HEAD_Y, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+    local gridX = x + CONTRIB_PAD
+    local gridW = w - CONTRIB_PAD * 2 - 10          -- 右侧让出滚动条
+    local cols = math.max(1, math.floor(gridW / CONTRIB_EXT_CELL_W))
+    local cellW = gridW / cols
+    local rows = math.ceil(#extensions / cols)
+    local maxScroll = math.max(0, rows - CONTRIB_EXT_ROWS) * CONTRIB_EXT_CELL_H
+    local scroll = math.Clamp(About.contribExtScroll or 0, 0, maxScroll)
+
+    About.contribExtScroll = scroll
+    About.contribExtScrollMax = maxScroll
+    About.contribExtRect = {
+        x = gridX, y = y + CONTRIB_EXT_TOP,
+        w = gridW, h = CONTRIB_EXT_CELL_H * CONTRIB_EXT_ROWS
+    }
+
+    if #extensions == 0 then
+        draw.SimpleText(T("editor.about.contributors_empty"), "SourceHan_Heavy_14",
+            gridX, y + CONTRIB_EXT_TOP + 4, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    else
+        local viewTop = y + CONTRIB_EXT_TOP
+        local viewH = CONTRIB_EXT_CELL_H * CONTRIB_EXT_ROWS
+        for i, item in ipairs(extensions) do
+            local cx = gridX + ((i - 1) % cols) * cellW
+            local cy = viewTop + math.floor((i - 1) / cols) * CONTRIB_EXT_CELL_H - scroll
+            -- 网格按整行滚动，越出可见两行的格子直接跳过，不需要裁剪矩形
+            if cy + CONTRIB_EXT_CELL_H > viewTop and cy < viewTop + viewH then
+                local hovered = IsMouseIn(mox, moy, cx, cy, cellW, CONTRIB_EXT_CELL_H)
+                if hovered then
+                    draw.RoundedBox(6, cx + 1, cy + 1, cellW - 2, CONTRIB_EXT_CELL_H - 2, APPLE_HAIRLINE)
+                end
+                DrawContributorAvatar(item.avatar, cx + 4, cy + (CONTRIB_EXT_CELL_H - 30) / 2, 30, hovered)
+                draw.SimpleText(item.name or "", "SourceHan_Heavy_14", cx + 44, cy + 6,
+                    hovered and APPLE_BLUE or APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                if item.note and item.note ~= "" then
+                    draw.SimpleText(item.note, "SourceHan_Heavy_10", cx + 44, cy + 24,
+                        APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                end
+                table.insert(About.linkRows, { x = cx, y = cy, w = cellW, h = CONTRIB_EXT_CELL_H, url = item.url })
+            end
+        end
+
+        -- 滚动条：扩展格多于两行时出现
+        if maxScroll > 0 then
+            local barH = math.max(16, viewH * viewH / (viewH + maxScroll))
+            local barY = viewTop + scroll / maxScroll * (viewH - barH)
+            draw.RoundedBox(2, gridX + gridW + 4, barY, 4, barH, APPLE_INK_MUTED)
+        end
+    end
+
+    -- 下区：左重要贡献，右贡献
+    draw.SimpleText(T("editor.about.contrib_important"), "SourceHan_Heavy_16",
+        x + CONTRIB_PAD, subHeadY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(T("editor.about.contrib_regular"), "SourceHan_Heavy_16",
+        midX + CONTRIB_PAD, subHeadY, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+
+    local function DrawContributorColumn(list, lx, lw)
+        if #list == 0 then
+            draw.SimpleText(T("editor.about.contributors_empty"), "SourceHan_Heavy_14",
+                lx, listTop + 4, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            return
+        end
+        for i = 1, math.min(#list, CONTRIB_LIST_ROWS) do
+            local item = list[i]
+            local ry = listTop + (i - 1) * CONTRIB_LIST_ROW_H
+            local hovered = IsMouseIn(mox, moy, lx, ry, lw, CONTRIB_LIST_ROW_H)
+            if hovered then
+                draw.RoundedBox(6, lx, ry + 1, lw, CONTRIB_LIST_ROW_H - 2, APPLE_HAIRLINE)
+            end
+            DrawContributorAvatar(item.avatar, lx + 6, ry + (CONTRIB_LIST_ROW_H - 22) / 2, 22, hovered)
+            draw.SimpleText(item.name or "", "SourceHan_Heavy_14", lx + 36, ry + 10,
+                hovered and APPLE_BLUE or APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            table.insert(About.linkRows, { x = lx, y = ry, w = lw, h = CONTRIB_LIST_ROW_H, url = item.url })
+        end
+    end
+
+    DrawContributorColumn(important, x + CONTRIB_PAD, w / 2 - CONTRIB_PAD * 2)
+    DrawContributorColumn(regular, midX + CONTRIB_PAD, w / 2 - CONTRIB_PAD * 2)
 end
 
 -- ===== 第六块 素材来源按钮 =====
 local function DrawSourcesButton(x, y, w, h)
     local hovered = IsMouseIn(gui.MouseX(), gui.MouseY(), x, y, w, h)
-    KARDS.CardEditor.Canvas.DrawHoverButton(x, y, w, h, "素材来源", hovered, {
+    KARDS.CardEditor.Canvas.DrawHoverButton(x, y, w, h, T("editor.about.material_sources"), hovered, {
         font = "SourceHan_Heavy_18",
         normalBg = APPLE_HAIRLINE,
         hoverBg = APPLE_BLUE
@@ -769,7 +1016,7 @@ end
 -- ===== 第七块 页脚 =====
 local function DrawFooter(x, y, w)
     local version = KARDS.CardEditor.Version or "unknown"
-    local text = "构建 " .. os.date("%Y-%m-%d") .. "　版本 " .. version
+    local text = T("editor.about.footer", os.date("%Y-%m-%d"), version)
     draw.SimpleText(text, "SourceHan_Heavy_14", x, y, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 end
 
@@ -998,16 +1245,16 @@ function KARDS.CardEditor.Canvas.DrawAboutPage(x, y, w, h)
     cy = cy + H_IDENTITY + GAP
 
     DrawCreditCard(cx, cy, cw, H_CREDIT, THEME.developer, AVATAR_PATHS.developer,
-        "Oak_ᴡᴏʀʟᴅ", nil, "开发与设计，单人开发", {
+        "Oak_ᴡᴏʀʟᴅ", nil, T("editor.about.developer_role"), {
             { label = "Steam", url = "https://steamcommunity.com/id/oak_world/", shown = "steamcommunity.com/id/oak_world/" },
-            { label = "B 站", url = "https://b23.tv/q7IhCs6", shown = "b23.tv/q7IhCs6" }
-        }, CardProgress("developer"), "Calibri_24")
+            { label = T("editor.about.link_bilibili"), url = "https://b23.tv/q7IhCs6", shown = "b23.tv/q7IhCs6" }
+        }, CardProgress("developer"), "Calibri_24", CARD_WATERMARKS)
     cy = cy + H_CREDIT + GAP
 
     DrawCreditCard(cx, cy, cw, H_CREDIT, THEME.thanks, AVATAR_PATHS.thanks,
-        "星野爱你qwq", "Steam 个人界面现用名为喵牢星", "Alpha 阶段唯一测试者，也是开发路上唯一的支持者", {
+        T("editor.about.thanks_name"), T("editor.about.thanks_note"), T("editor.about.thanks_role"), {
             { label = "Steam", url = "https://steamcommunity.com/profiles/76561199048273860/", shown = "steamcommunity.com/profiles/76561199048273860/" }
-        }, CardProgress("thanks"))
+        }, CardProgress("thanks"), nil, THANKS_WATERMARKS)
     cy = cy + H_CREDIT + GAP
 
     DrawContributorCard(cx, cy, cw, H_CONTRIB, CardProgress("contributors"))
@@ -1039,8 +1286,7 @@ function KARDS.CardEditor.Canvas.DrawAboutSourcesOverlay()
     draw.RoundedBox(12, px - 1, py - 1, pw + 2, ph + 2, APPLE_HAIRLINE)
     draw.RoundedBox(12, px, py, pw, ph, APPLE_WHITE)
 
-    draw.SimpleText("素材来源", "SourceHan_Heavy_22", px + 24, py + 16, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    draw.SimpleText("此处仅列出来源与上传者，不代表已获得再分发授权", "SourceHan_Heavy_14", px + 24, py + 44, APPLE_INK_MUTED, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+    draw.SimpleText(T("editor.about.material_sources"), "SourceHan_Heavy_22", px + 24, py + 16, APPLE_INK, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
     -- 关闭按钮
     local closeW, closeH = 64, 26
@@ -1048,11 +1294,28 @@ function KARDS.CardEditor.Canvas.DrawAboutSourcesOverlay()
     local closeY = py + 16
     About.closeRect = { x = closeX, y = closeY, w = closeW, h = closeH }
     local closeHovered = IsMouseIn(gui.MouseX(), gui.MouseY(), closeX, closeY, closeW, closeH)
-    KARDS.CardEditor.Canvas.DrawHoverButton(closeX, closeY, closeW, closeH, "关闭", closeHovered, {
+    KARDS.CardEditor.Canvas.DrawHoverButton(closeX, closeY, closeW, closeH, T("editor.about.close"), closeHovered, {
         font = "SourceHan_Heavy_16",
         normalBg = APPLE_HAIRLINE,
         hoverBg = APPLE_BLUE
     })
+
+    -- 标题与关闭按钮之间的装饰徽章，右起向左排开
+    local markH = 56
+    local markX = closeX - 12
+    for _, path in ipairs(SOURCES_MARKS) do
+        local markMat = GetCachedMaterial(path)
+        if markMat and not markMat:IsError() then
+            local markAspect = GetShotAspect(path)
+            if markAspect <= 0 then markAspect = 100 / 88 end
+            local markW = markH * markAspect
+            markX = markX - markW
+            surface.SetMaterial(markMat)
+            surface.SetDrawColor(255, 255, 255, 255)
+            surface.DrawTexturedRect(markX, py + 30 - markH / 2, markW, markH)
+            markX = markX - 8
+        end
+    end
 
     -- 组装行数据：先音乐，再音效，最后声明
     local credits = KARDS.CardEditor.SourceCredits or {}
@@ -1061,33 +1324,33 @@ function KARDS.CardEditor.Canvas.DrawAboutSourcesOverlay()
     local notes = credits.notes or {}
 
     local rows = {}
-    table.insert(rows, { header = true, text = "音乐（B 站收藏夹「背景音乐」，共 " .. #music .. " 条）" })
+    table.insert(rows, { header = true, text = T("editor.about.music_header", #music) })
     for _, item in ipairs(music) do
         local tracks = item.tracks or ""
-        if item.used == false then tracks = tracks .. "（未采用）" end
+        if item.used == false then tracks = tracks .. T("editor.about.not_used_suffix") end
         table.insert(rows, {
             text = (item.author or "") .. " · " .. tracks,
             right = item.homepage or "",
             muted = (item.used == false)
         })
     end
-    table.insert(rows, { header = true, text = "音效（B 站收藏夹以外）" })
+    table.insert(rows, { header = true, text = T("editor.about.sound_header") })
     for _, item in ipairs(sounds) do
         table.insert(rows, {
             text = (item.source or "") .. " · " .. (item.content or "") .. " · " .. (item.date or ""),
             right = item.homepage or ""
         })
     end
-    table.insert(rows, { header = true, text = "声明" })
+    table.insert(rows, { header = true, text = T("editor.about.notes_header") })
     for _, note in ipairs(notes) do
         table.insert(rows, { text = note, muted = true })
     end
 
     -- 列表区域
     local listX = px + 24
-    local listY = py + 74
+    local listY = py + 52
     local listW = pw - 48
-    local listH = ph - 74 - 20
+    local listH = ph - 52 - 20
     About.listRect = { x = listX, y = listY, w = listW, h = listH }
 
     local rowH = 22
@@ -1158,7 +1421,22 @@ end
 
 -- ===== 输入：关于页本体 =====
 function KARDS.CardEditor.Canvas.HandleAboutPageInput(mx, my, isLeftReleased, isLeftDown)
-    -- 滚轮：页内滚动。关于页不缩放画布，这里把 CreateMove 设下的滚轮标记消费掉
+    -- 滚轮：鼠标在扩展贡献格里且还能继续滚时，先滚该格内的行，
+    -- 到头后再交回整页滚动。两处都消费 CreateMove 设下的滚轮标记
+    local ext = About.contribExtRect
+    if ext and (About.contribExtScrollMax or 0) > 0
+        and IsMouseIn(mx, my, ext.x, ext.y, ext.w, ext.h) then
+        local s = About.contribExtScroll or 0
+        if C._wheelZoomIn and s > 0 then
+            C._wheelZoomIn = false
+            About.contribExtScroll = math.Clamp(s - CONTRIB_EXT_CELL_H, 0, About.contribExtScrollMax)
+        elseif C._wheelZoomOut and s < About.contribExtScrollMax then
+            C._wheelZoomOut = false
+            About.contribExtScroll = math.Clamp(s + CONTRIB_EXT_CELL_H, 0, About.contribExtScrollMax)
+        end
+    end
+
+    -- 滚轮：页内滚动。关于页不缩放画布
     if C._wheelZoomIn then
         C._wheelZoomIn = false
         About.scrollOffset = math.Clamp(About.scrollOffset - 48, 0, About.scrollMax)
@@ -1178,11 +1456,11 @@ function KARDS.CardEditor.Canvas.HandleAboutPageInput(mx, my, isLeftReleased, is
         return true
     end
 
-    -- 链接行：游戏内打不开浏览器，点一下把完整地址打到聊天框，方便复制
+    -- 链接行：用系统默认浏览器或 Steam 内置浏览器打开
     if isLeftReleased then
         for _, row in ipairs(About.linkRows or {}) do
             if IsMouseIn(mx, my, row.x, row.y, row.w, row.h) then
-                chat.AddText(Color(0, 102, 204), "[Kards] ", Color(245, 245, 247), row.url)
+                if row.url and row.url ~= "" then gui.OpenURL(row.url) end
                 if KARDS.CardEditor.Audio and KARDS.CardEditor.Audio.PlayClick then
                     KARDS.CardEditor.Audio.PlayClick()
                 end

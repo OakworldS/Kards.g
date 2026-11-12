@@ -92,6 +92,7 @@ KARDS.NodeParser.ResolveEWires = ResolveEWires
 -- @return boolean 是否至少成功执行一个节点
 local function ExecuteEffectFlow(ctx, card, targets, effect, startNodeId, entryTitle)
     ctx._currentEffect = effect -- 当前效果数据（turn「等待」挂起时保存，供达标后恢复）
+    ctx._srcCard = card -- 效果发起卡（「词条」写入触发收缴时判定收缴方）
     local nodesById, outEdges, hasIncoming = {}, {}, {}
     for _, node in ipairs(effect.nodes) do
         if node.id ~= nil then nodesById[node.id] = node end

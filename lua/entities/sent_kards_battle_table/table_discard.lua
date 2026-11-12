@@ -62,6 +62,10 @@ function ENT:BroadcastDiscardOffer(session)
     net.Broadcast()
 end
 
+-- 活跃弃牌会话的牌桌集合（2026-10-16 性能优化）：BeginDiscardPick 登记、ResolveDiscard
+-- 清除；超时检查只遍历此集合，不再每帧全量扫描所有牌桌实体
+local activeDiscardTables = {}
+
 --[[
     开启一轮弃牌选择：收集手牌实体 → 广播 offer → 挂起等待选择。
 
@@ -83,6 +87,7 @@ function ENT:BeginDiscardPick(playerID)
         co = co,
     }
     self._kardsDiscard = session
+    activeDiscardTables[self] = true -- 登记进超时检查集合（结算时移除）
     timer.Simple(DiscardMsgDelay, function()
         if not IsValid(self) or self._kardsDiscard ~= session then return end
         self:BroadcastDiscardOffer(session)
@@ -115,6 +120,7 @@ end
 function ENT:ResolveDiscard(session, card, index)
     if not session or self._kardsDiscard ~= session then return false, nil end
     self._kardsDiscard = nil
+    activeDiscardTables[self] = nil
     self:BroadcastDiscardResult(session.slot, index or 0)
     local ok, err = coroutine.resume(session.co, card)
     if not ok then
@@ -141,12 +147,18 @@ net.Receive("KardsDiscardChoose", function(_, ply)
     ent:ResolveDiscard(session, item.card, index)
 end)
 
--- 超时（每帧）：超时放弃本次弃牌（该帧只处理一次）
+-- 超时（每帧）：只遍历活跃会话集合，超时放弃本次弃牌
 hook.Add("Think", "KardsDiscardTimeoutCheck", function()
-    for _, ent in ipairs(ents.FindByClass("sent_kards_battle_table")) do
-        local session = ent._kardsDiscard
-        if session and (CurTime() - session.at) > DiscardTimeout then
-            ent:ResolveDiscard(session, nil, 0)
+    for ent in pairs(activeDiscardTables) do
+        if not IsValid(ent) then
+            activeDiscardTables[ent] = nil
+        else
+            local session = ent._kardsDiscard
+            if not session then
+                activeDiscardTables[ent] = nil -- 会话已被别处清空（自愈，防集合残留）
+            elseif (CurTime() - session.at) > DiscardTimeout then
+                ent:ResolveDiscard(session, nil, 0)
+            end
         end
     end
 end)

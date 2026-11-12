@@ -38,6 +38,7 @@
 ---@class IndependentNodeEditor 独立节点编辑器核心模块
 KARDS.CardEditor.IndependentNodeEditor = KARDS.CardEditor.IndependentNodeEditor or {}
 local INE = KARDS.CardEditor.IndependentNodeEditor
+local T = KARDS.Lang.T
 
 -- 已注册的节点类型模板表，键为节点名称，值为节点模板数据
 INE.RegisteredNodes = INE.RegisteredNodes or {}
@@ -45,16 +46,134 @@ INE.RegisteredNodes = INE.RegisteredNodes or {}
 -- 所有活跃的编辑器实例表，键为panelID，值为编辑器对象
 INE.Editors = INE.Editors or {}
 
+-- 弹窗类型清单：编辑器会话里的浮层状态字段名，顺序即绘制顺序（见 ADR 0003）
+-- ExpandedDropdown 与 NumericVarPopup 在批二迁入，排在批一四类之前保持原有绘制次序；
+-- ExpandedMultiDropdownInfo 在批三迁入，原本最后绘制，故排在末尾
+INE.PopupKinds = INE.PopupKinds or {
+    "ExpandedDropdownInfo",
+    "NumericVarPopup",
+    "FuncVarPopup",
+    "CardObjectSelector",
+    "GlobalVarSelector",
+    "KeywordMultiSelect",
+    "ExpandedMultiDropdownInfo",
+}
+
+-- 弹窗渲染注册表：键为 PopupKinds 中的字段名，值为使用方提供的绘制函数。
+-- INE 只持有会话状态并触发，卡牌专用绘制由使用方注册，签名 (popup, editor)。
+INE.PopupRenderers = INE.PopupRenderers or {}
+
+-- 注册弹窗渲染器
+function INE:RegisterPopupRenderer(kind, drawFn)
+    INE.PopupRenderers[kind] = drawFn
+end
+
+-- 创建一份编辑器会话：弹窗状态、搜索框句柄等瞬态界面数据，不参与序列化
+function INE:CreateEditorSession()
+    return {
+        ExpandedDropdown = nil,       -- 展开下拉框的键（节点ID_组件ID）
+        ExpandedDropdownInfo = nil,   -- 展开下拉框的布局与选项数据
+        NumericVarPopup = nil,        -- 数字槽变量选择弹窗
+        FuncVarPopup = nil,           -- 函数变量选择弹窗
+        CardObjectSelector = nil,     -- 卡牌对象选择器
+        GlobalVarSelector = nil,      -- 全局变量选择器浮层
+        KeywordMultiSelect = nil,     -- 词条多选浮层
+        ExpandedMultiDropdown = nil,      -- 展开多选下拉框的键（节点ID_端口）
+        ExpandedMultiDropdownInfo = nil,  -- 展开多选下拉框的布局与选项数据
+        _searchTextEntry = nil,       -- 变量弹窗搜索框（透明 DTextEntry）
+        _cardObjectSearchEntry = nil, -- 卡牌选择器搜索框
+        _gvsSearchEntry = nil,        -- 全局变量选择器搜索框
+        fields = {},                  -- 九类输入状态（按字段种类，见 INE.FieldStateFactories）
+        entries = {},                 -- 九类透明 DTextEntry 句柄（与 fields 同键）
+        arrayVar = {},                -- 数组变量临时上下文 { pendingType, itemValue, nestedCtx }
+    }
+end
+
+-- 绘制一个编辑器会话里的全部浮层。绘制函数由使用方注册，
+-- 注册缺失时只警告一次，避免弹窗静默不显示。
+function INE:DrawSessionPopups(editor)
+    local session = editor and editor.session
+    if not session then return end
+    for _, kind in ipairs(INE.PopupKinds) do
+        local popup = session[kind]
+        if popup then
+            local drawFn = INE.PopupRenderers[kind]
+            if drawFn then
+                drawFn(popup, editor)
+            else
+                INE._missingRendererWarned = INE._missingRendererWarned or {}
+                if not INE._missingRendererWarned[kind] then
+                    INE._missingRendererWarned[kind] = true
+                    print("[CardEditor] INE 缺少弹窗渲染器: " .. kind)
+                end
+            end
+        end
+    end
+end
+
+-- 返回当前会话中仍在打开的浮层，键为 PopupKinds 中的字段名。
+-- 守卫与滚轮筛选循环用它替代对多个旧 Canvas 全局字段的逐个判断（见 ADR 0005）。
+function INE:GetOpenPopups(editor)
+    local result = {}
+    local session = editor and editor.session
+    if not session then return result end
+    for _, kind in ipairs(INE.PopupKinds) do
+        local popup = session[kind]
+        if popup then
+            result[kind] = popup
+        end
+    end
+    return result
+end
+
+-- 标记本帧已由卡牌编辑器显式绘制全部 INE 面板。
+-- 绘制单位是全体编辑器一次完成，因此帧号挂在模块级（见 ADR 0005）。
+function INE:MarkDrawn()
+    INE._drawnFrame = FrameNumber()
+end
+
+-- 判断本帧是否已完成显式绘制。
+function INE:IsDrawnThisFrame()
+    return INE._drawnFrame == FrameNumber()
+end
+
+-- 验收命令：打印每个活跃编辑器会话的浮层字段与帧标记（ADR 0003 与 ADR 0005）
+concommand.Add("kards_dump_editor_session", function()
+    local count = 0
+    for id, editor in pairs(INE.Editors) do
+        count = count + 1
+        print(string.format("[EditorSession] id=%s hidden=%s", tostring(id), tostring(editor.hidden)))
+        local session = editor.session
+        if not session then
+            print("  session=nil")
+        else
+            for _, kind in ipairs(INE.PopupKinds) do
+                local popup = session[kind]
+                local shape = type(popup)
+                if type(popup) == "table" then
+                    local keys = {}
+                    for key in pairs(popup) do keys[#keys + 1] = tostring(key) end
+                    table.sort(keys)
+                    shape = "table{" .. table.concat(keys, ",") .. "}"
+                end
+                print(string.format("  %s=%s", kind, shape))
+            end
+            print(string.format("  _dropdownConsumedFrame=%s", tostring(session._dropdownConsumedFrame)))
+        end
+    end
+    print(string.format("[EditorSession] 活跃会话 %d 个", count))
+end)
+
 -- 当前激活（最后创建/操作）的编辑器ID
 INE.ActiveEditorID = nil
 
 -- 是否已添加HUDPaint和Think钩子的标记
 INE.HookAdded = false
 
--- HandleInput 函数桩（由 cl_ine_input_handling.lua 覆盖为完整实现）
+-- RouteInput 函数桩（由 cl_ine_input_handling.lua 覆盖为完整路由入口）
 -- 用于处理各编辑器实例的文件菜单、变量对话框、右键菜单等交互输入
 -- 如果该文件未加载，此桩函数可防止 Think 崩溃，并提供基本的文件菜单交互
-function INE:HandleInput(editor)
+function INE:RouteInput(editor)
     -- 桩实现：仅处理文件菜单按钮切换，确保按钮可点击
     if not (editor and editor._fileBtnRect) then return end
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
@@ -70,103 +189,118 @@ function INE:HandleInput(editor)
     end
 end
 
--- 变量搜索输入框状态（DTextEntry IME 兼容方案）
-INE.VarSearchState = {
-    active = false,
-    text = "",
-    editorID = nil,
-    typeId = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.VarSearchTextEntry = nil
+-- 输入会话状态工厂（2026-11-08）：九类输入状态原先各有一份模块级全局，多个编辑器同时
+-- 打开同类对话框时会互相覆盖焦点与文本；现改为按编辑器实例存放在 editor.session.fields，
+-- 由 INE:Field(editor, kind) 惰性建表，生命周期统一走 KARDS.CardEditor.InlineField。
+-- 见 docs/adr/0010-内联输入会话统一.md。
+INE.FieldStateFactories = {
+    -- 变量搜索输入框状态（DTextEntry IME 兼容方案）
+    VarSearch = function()
+        return {
+            active = false,
+            text = "",
+            editorID = nil,
+            typeId = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 数字变量对话框输入框状态（DTextEntry IME 兼容方案）
-INE.NumVarFieldState = {
-    active = false,     -- 是否正在编辑某个字段
-    field = nil,        -- "name" / "iname" / "val"
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.NumVarTextEntry = nil
+    -- 数字变量对话框输入框状态（DTextEntry IME 兼容方案）
+    NumVar = function()
+        return {
+            active = false,     -- 是否正在编辑某个字段
+            field = nil,        -- "name" / "iname" / "val"
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 函数变量对话框输入框状态（DTextEntry IME 兼容方案）
-INE.FuncVarFieldState = {
-    active = false,     -- 是否正在编辑函数名称
-    text = "",
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.FuncVarTextEntry = nil
+    -- 函数变量对话框输入框状态（DTextEntry IME 兼容方案）
+    FuncVar = function()
+        return {
+            active = false,     -- 是否正在编辑函数名称
+            text = "",
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 函数变量对话框参数添加输入框状态（DTextEntry IME 兼容方案）
-INE.FuncParamFieldState = {
-    active = false,     -- 是否正在输入参数名
-    text = "",
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.FuncParamTextEntry = nil
+    -- 函数变量对话框参数添加输入框状态（DTextEntry IME 兼容方案）
+    FuncParam = function()
+        return {
+            active = false,     -- 是否正在输入参数名
+            text = "",
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 数组变量对话框输入框状态（DTextEntry IME 兼容方案）
-INE.ArrayVarFieldState = {
-    active = false,     -- 是否正在编辑某个字段
-    field = nil,        -- "name" / "iname" / "val_n" / "val_t"
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.ArrayVarTextEntry = nil
+    -- 数组变量对话框输入框状态（DTextEntry IME 兼容方案）
+    ArrayVar = function()
+        return {
+            active = false,     -- 是否正在编辑某个字段
+            field = nil,        -- "name" / "iname" / "val_n" / "val_t"
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 卡牌对象变量对话框输入框状态（DTextEntry IME 兼容方案）
-INE.CardVarFieldState = {
-    active = false,     -- 是否正在编辑某个字段
-    field = nil,        -- "name" / "iname"
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.CardVarTextEntry = nil
+    -- 卡牌对象变量对话框输入框状态（DTextEntry IME 兼容方案）
+    CardVar = function()
+        return {
+            active = false,     -- 是否正在编辑某个字段
+            field = nil,        -- "name" / "iname"
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 字符串变量对话框输入框状态（DTextEntry IME 兼容方案）
-INE.StringVarFieldState = {
-    active = false,     -- 是否正在编辑某个字段
-    field = nil,        -- "name" / "iname" / "text"
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.StringVarTextEntry = nil
+    -- 字符串变量对话框输入框状态（DTextEntry IME 兼容方案）
+    StringVar = function()
+        return {
+            active = false,     -- 是否正在编辑某个字段
+            field = nil,        -- "name" / "iname" / "text"
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 布尔值变量对话框输入框状态（DTextEntry IME 兼容方案）
-INE.BoolVarFieldState = {
-    active = false,     -- 是否正在编辑某个字段
-    field = nil,        -- "name" / "iname"
-    editorID = nil,
-    varIdx = nil,
-    x = 0, y = 0, w = 0, h = 0,
-}
-INE.BoolVarTextEntry = nil
+    -- 布尔值变量对话框输入框状态（DTextEntry IME 兼容方案）
+    BoolVar = function()
+        return {
+            active = false,     -- 是否正在编辑某个字段
+            field = nil,        -- "name" / "iname"
+            editorID = nil,
+            varIdx = nil,
+            x = 0, y = 0, w = 0, h = 0,
+        }
+    end,
 
--- 文本槽内联输入状态（2026-10-04 新增，DTextEntry IME 兼容方案）
--- 「抉择」等模板的 <> 文本槽：直接输入模式下点击值区进入内联编辑，
--- 编辑结果写回 node.data.slots[compId].literalValue 与扁平 data[compId]。
-INE.TextSlotEditState = {
-    active = false,     -- 是否正在编辑某个文本槽
-    node = nil,         -- 所属节点
-    compId = nil,       -- 文本槽组件 ID（textslot_N）
-    text = "",          -- 当前输入文本（OnTextChanged 同步）
-    x = 0, y = 0, w = 0, h = 0,  -- 值区屏幕坐标（绘制时更新，供 DTextEntry 定位）
+    -- 文本槽内联输入状态（2026-10-04 新增，DTextEntry IME 兼容方案）
+    -- 「抉择」等模板的 <> 文本槽：直接输入模式下点击值区进入内联编辑，
+    -- 编辑结果写回 node.data.slots[compId].literalValue 与扁平 data[compId]。
+    TextSlot = function()
+        return {
+            active = false,     -- 是否正在编辑某个文本槽
+            node = nil,         -- 所属节点
+            compId = nil,       -- 文本槽组件 ID（textslot_N）
+            text = "",          -- 当前输入文本（OnTextChanged 同步）
+            x = 0, y = 0, w = 0, h = 0,  -- 值区屏幕坐标（绘制时更新，供 DTextEntry 定位）
+        }
+    end,
 }
-INE.TextSlotTextEntry = nil
 
--- 数组变量对话框待添加项状态
-INE.ArrayVarPendingType = nil  -- 当前选择的类型，nil表示未在选择状态
-INE.ArrayVarItemValue = nil    -- 临时值文本
--- 数组变量嵌套创建上下文（f/g类型呼出嵌套对话框时使用）
-INE.ArrayVarNestedCtx = nil   -- { parentEditor, parentVarIdx, tempType, tempVarIdx, savedDialogIdx, savedIsNew }
+-- 数组变量对话框待添加项状态与嵌套创建上下文（运行时状态，按编辑器实例存放）
+-- pendingType = 当前选择的类型，nil 表示未在选择状态
+-- itemValue   = 临时值文本
+-- nestedCtx   = { parentEditor, parentVarIdx, tempType, tempVarIdx, savedDialogIdx, savedIsNew }
+-- 读写一律经 INE:ArrayVarCtx(editor)，见 docs/adr/0010-内联输入会话统一.md
 
 -- 各编辑器模式下自动创建的开始点定义
 -- 键为模式名称，值为按 y 轴顺序排列的开始点标题数组
@@ -237,14 +371,14 @@ function INE:LoadNodeTemplatesFromFiles()
     -- 从 data 文件系统读取所有 JSON 模板（addon data_static/ + 本地 data/ 合并，本地优先）
     local dataFiles = file.Find("kards/node_templates/*.json", "DATA")
     if not dataFiles or #dataFiles == 0 then
-        print("[INE] 警告: 未在 data 目录（addon data_static 或本地 data）找到任何节点模板 JSON 文件")
+        print(T("editor.nodeeditor.template_dir_empty"))
         return {}
     end
     
     local registered = {}
     local errors = {}
     
-    print("[INE] 节点模板来源: data 目录（" .. #dataFiles .. " 个文件）")
+    print(T("editor.nodeeditor.template_source", #dataFiles))
     -- 获取当前游戏语言
     local lang = GetConVarString("gmod_language") or "zh-CN"
     
@@ -252,23 +386,23 @@ function INE:LoadNodeTemplatesFromFiles()
         local ok, result = pcall(function()
             local content = file.Read("kards/node_templates/" .. fileName, "DATA")
             if not content then
-                error("无法读取文件")
+                error(T("editor.nodeeditor.read_file_failed"))
             end
             
             local tpl = util.JSONToTable(content)
             if not tpl then
-                error("JSON 解析失败")
+                error(T("editor.nodeeditor.json_parse_failed"))
             end
             
             -- 验证必填字段
-            if not tpl.type then error("缺少 type 字段") end
+            if not tpl.type then error(T("editor.nodeeditor.missing_type_field")) end
             if not tpl.color or #tpl.color < 3 then
-                error("缺少或无效的 color 字段（需要 [r, g, b] 数组）")
+                error(T("editor.nodeeditor.invalid_color_field"))
             end
-            if tpl.hasInput == nil then error("缺少 hasInput 字段") end
-            if tpl.hasOutput == nil then error("缺少 hasOutput 字段") end
-            if not tpl.names then error("缺少 names 字段（多语言名称对象）") end
-            if not tpl.configs then error("缺少 configs 字段（多语言配置对象）") end
+            if tpl.hasInput == nil then error(T("editor.nodeeditor.missing_hasinput_field")) end
+            if tpl.hasOutput == nil then error(T("editor.nodeeditor.missing_hasoutput_field")) end
+            if not tpl.names then error(T("editor.nodeeditor.missing_names_field")) end
+            if not tpl.configs then error(T("editor.nodeeditor.missing_configs_field")) end
             
             -- 根据当前语言选择 name
             local nodeDisplayName = tpl.names[lang] or tpl.names["zh-CN"]
@@ -292,7 +426,7 @@ function INE:LoadNodeTemplatesFromFiles()
     if configStr and configStr ~= "" then
         local parseResult = INE.ParseConfig(configStr)
         if not parseResult or not parseResult.components then
-            error("config DSL 解析失败: 无法生成有效的组件列表")
+            error(T("editor.nodeeditor.config_dsl_parse_failed"))
         end
         
         -- 自动生成 base（AUTO:lang 模式）
@@ -313,7 +447,7 @@ function INE:LoadNodeTemplatesFromFiles()
         if baseToValidate and baseToValidate ~= "" then
             local ok, err = INE:ValidateConfigAgainstBase(configStr, baseToValidate)
             if not ok then
-                error("config 不遵循 base 结构: " .. tostring(err))
+                error(T("editor.nodeeditor.config_base_mismatch", tostring(err)))
             end
         end
     end
@@ -351,16 +485,16 @@ function INE:LoadNodeTemplatesFromFiles()
         
         if ok then
             table.insert(registered, result)
-            print("[INE] 成功注册节点模板: " .. fileName .. " → " .. result)
+            print(T("editor.nodeeditor.template_registered", fileName, result))
         else
             table.insert(errors, fileName .. ": " .. tostring(result))
-            print("[INE] 错误: " .. fileName .. " - " .. tostring(result))
+            print(T("editor.nodeeditor.template_load_error", fileName, tostring(result)))
         end
     end
     
     -- 如果有错误，在控制台输出汇总
     if #errors > 0 then
-        print("[INE] ======== 节点模板加载错误汇总 ========")
+        print(T("editor.nodeeditor.template_error_summary"))
         for _, err in ipairs(errors) do
             print("[INE]   ✗ " .. err)
         end
@@ -371,13 +505,13 @@ function INE:LoadNodeTemplatesFromFiles()
             if KARDS and KARDS.CardEditor and KARDS.CardEditor.Canvas
                and KARDS.CardEditor.Canvas.AddNotification then
                 KARDS.CardEditor.Canvas.AddNotification(
-                    #errors .. " 个节点模板加载失败（详情见控制台）",
+                    T("editor.nodeeditor.templates_failed_notification", #errors),
                     Color(200, 50, 50), false
                 )
             end
         end)
         if not notifOk then
-            print("[INE] 显示游戏内通知失败: " .. tostring(notifErr))
+            print(T("editor.nodeeditor.notification_failed", tostring(notifErr)))
         end
     end
     
@@ -399,10 +533,10 @@ function INE:ValidateConfigAgainstBase(configStr, baseStr)
     local baseResult = INE.ParseConfig(baseStr)
     
     if not configResult or not configResult.components then
-        return false, "config 解析失败"
+        return false, T("editor.nodeeditor.config_parse_failed")
     end
     if not baseResult or not baseResult.components then
-        return false, "base 解析失败"
+        return false, T("editor.nodeeditor.base_parse_failed")
     end
     
     local ok, err = INE:_CompareComponentLists(configResult.components, baseResult.components)
@@ -428,7 +562,7 @@ function INE:_CompareComponentLists(configComps, baseComps)
     end
     
     if #filtered ~= #baseComps then
-        return false, string.format("组件数量不匹配: config 有 %d 个非文本组件, base 有 %d 个", #filtered, #baseComps)
+        return false, T("editor.nodeeditor.component_count_mismatch", #filtered, #baseComps)
     end
     
     for i = 1, #filtered do
@@ -436,7 +570,7 @@ function INE:_CompareComponentLists(configComps, baseComps)
         local bComp = baseComps[i]
         
         if cComp.type ~= bComp.type then
-            return false, string.format("位置 %d 组件类型不匹配: config 是 '%s', base 是 '%s'", i, cComp.type, bComp.type)
+            return false, T("editor.nodeeditor.component_type_mismatch", i, cComp.type, bComp.type)
         end
         
         if cComp.type == "select" then
@@ -448,7 +582,7 @@ function INE:_CompareComponentLists(configComps, baseComps)
                 local bCount = tonumber(bOpts[1]) or 0
                 local cCount = #(cComp.options or {})
                 if bCount ~= cCount then
-                    return false, string.format("位置 %d 选择组件选项数不匹配: config 有 %d 个选项, base 登记 %d 个", i, cCount, bCount)
+                    return false, T("editor.nodeeditor.select_option_count_mismatch", i, cCount, bCount)
                 end
             end
             
@@ -458,12 +592,12 @@ function INE:_CompareComponentLists(configComps, baseComps)
             if #bOpts == 0 and not bComp.useLib then
                 -- base 无内容 = 空槽 [0]
                 if cComp.useLib or (cComp.options and #cComp.options > 0) then
-                    return false, string.format("位置 %d 数字组件: base 为空槽, 但 config 不为空", i)
+                    return false, T("editor.nodeeditor.number_empty_slot_base", i)
                 end
             elseif bComp.useLib then
                 -- base [lib] 或 [lib+N]
                 if not cComp.useLib then
-                    return false, string.format("位置 %d 数字组件: base 为 [lib], 但 config 不是", i)
+                    return false, T("editor.nodeeditor.number_base_lib_config_not", i)
                 end
                 local bExtraOptions = bComp.extraOptions or {}
                 local cExtraCount = #(cComp.extraOptions or {})
@@ -479,7 +613,7 @@ function INE:_CompareComponentLists(configComps, baseComps)
                     bExpectedCount = #bExtraOptions
                 end
                 if bExpectedCount ~= cExtraCount then
-                    return false, string.format("位置 %d 数字组件: base 附加选项数 %d, config 为 %d", i, bExpectedCount, cExtraCount)
+                    return false, T("editor.nodeeditor.number_extra_option_mismatch", i, bExpectedCount, cExtraCount)
                 end
             else
                 -- base [N] = 带 N 个预设选项的数字槽
@@ -487,13 +621,13 @@ function INE:_CompareComponentLists(configComps, baseComps)
                 if bCount == 0 then
                     -- base [0] 应为空槽
                     if cComp.useLib or (cComp.options and #cComp.options > 0) then
-                        return false, string.format("位置 %d 数字组件: base 是空槽 [0], 但 config 不为空", i)
+                        return false, T("editor.nodeeditor.number_base_empty_slot0", i)
                     end
                 else
                     -- base [N] 选项数对比
                     local cCount = #(cComp.options or {})
                     if bCount ~= cCount then
-                        return false, string.format("位置 %d 数字组件: base 登记 %d 个选项, config 有 %d 个", i, bCount, cCount)
+                        return false, T("editor.nodeeditor.number_option_count_mismatch", i, bCount, cCount)
                     end
                 end
             end
@@ -502,12 +636,12 @@ function INE:_CompareComponentLists(configComps, baseComps)
             local cBranches = cComp.branches or {}
             local bBranches = bComp.branches or {}
             if #cBranches ~= #bBranches then
-                return false, string.format("位置 %d 条件分支数量不匹配: config 有 %d 个分支, base 有 %d 个", i, #cBranches, #bBranches)
+                return false, T("editor.nodeeditor.branch_count_mismatch", i, #cBranches, #bBranches)
             end
             for j = 1, #cBranches do
                 local ok, err = INE:_CompareComponentLists(cBranches[j].components or {}, bBranches[j].components or {})
                 if not ok then
-                    return false, string.format("位置 %d 分支 %d: %s", i, j, err)
+                    return false, T("editor.nodeeditor.branch_error", i, j, err)
                 end
             end
         end
@@ -874,6 +1008,11 @@ function CalculateGridAlpha(worldSize, scale)
     return 0
 end
 
+-- 缩放字体名缓存：[字体前缀][基准字号][缩放比例] = 字体标识符。
+-- 绘制路径下每组件每帧都会调用 GetScaledFont，缓存避免重复的线性扫描与字符串拼接，
+-- 同时避免每次调用新建字符串造成的垃圾（键为数字，不产生临时字符串）。
+INE._scaledFontCache = INE._scaledFontCache or {}
+
 --[[
     根据缩放比例获取最接近的可用字体标识符。
     用于在缩放时动态选择合适字号，使文字视觉大小随缩放同步变化。
@@ -884,6 +1023,19 @@ end
     @return {string}  字体标识符，如 "SourceHan_Heavy_28"
 ]]
 function INE:GetScaledFont(fontPrefix, baseSize, scale)
+    local byPrefix = INE._scaledFontCache[fontPrefix]
+    if not byPrefix then
+        byPrefix = {}
+        INE._scaledFontCache[fontPrefix] = byPrefix
+    end
+    local bySize = byPrefix[baseSize]
+    if not bySize then
+        bySize = {}
+        byPrefix[baseSize] = bySize
+    end
+    local cached = bySize[scale]
+    if cached then return cached end
+
     local targetSize = math.floor(baseSize * scale + 0.5)
     targetSize = math.max(targetSize, INE.AVAILABLE_FONT_SIZES[1])
 
@@ -896,7 +1048,10 @@ function INE:GetScaledFont(fontPrefix, baseSize, scale)
             bestSize = size
         end
     end
-    return fontPrefix .. "_" .. bestSize
+
+    local fontName = fontPrefix .. "_" .. bestSize
+    bySize[scale] = fontName
+    return fontName
 end
 
 -- 背景图片相关配置（每个编辑器面板独立使用）
@@ -959,37 +1114,37 @@ end
 INE.DataTypes = {
     NUMBER = {
         id = "n",
-        name = "数字",
+        name = T("editor.nodeeditor.type_number"),
         color = Color(255, 165, 0),
         shape = "circle"
     },
     BOOLEAN = {
         id = "p",
-        name = "布尔值",
+        name = T("editor.nodeeditor.type_boolean"),
         color = Color(135, 206, 250),
         shape = "triangle"
     },
     STRING = {
         id = "t",
-        name = "字符串",
+        name = T("editor.nodeeditor.type_string"),
         color = Color(144, 238, 144),
         shape = "hollow_circle"
     },
     ARRAY = {
         id = "g",
-        name = "数组",
+        name = T("editor.nodeeditor.type_array"),
         color = Color(255, 255, 0),
         shape = "hollow_square"
     },
     CARD_OBJECT = {
         id = "e",
-        name = "卡牌对象",
+        name = T("editor.nodeeditor.type_card_object"),
         color = Color(220, 100, 80),
         shape = "hexagon"
     },
     FUNCTION = {
         id = "f",
-        name = "节点函数",
+        name = T("editor.nodeeditor.type_node_function"),
         color = Color(200, 150, 255),
         shape = "diamond"
     }
@@ -1081,579 +1236,39 @@ function INE:DrawMultiSelectDropdown(editor, x, y, options, selectedIndices, cal
     return {x = x, y = y, w = totalW, h = totalH}
 end
 
--- 配置缓存（用于 ParseConfig 结果缓存）
-INE.ConfigCache = INE.ConfigCache or {}
 
---[[
-特殊文本格式语法说明:
-1. 输入数据类型定义（可选，放在开头）:
-   - n: 数字
-   - p: 布尔值
-   - t: 字符串
-   - g: 数组
-   - e: 卡牌对象
-   - f: 节点函数
-   - 示例: nptg{...} 表示支持数字、布尔值、字符串、数组输入
-   
-2. 组件定义:
-   - '文本': 固定文本组件
-   - {选项1、选项2、选项3}: 单选组件
-   - []: 数字输入组件
-   
-3. 条件分支:
-   - if 条件 then ... elseif 条件 then ... else ... end
-   
-4. 输出数据类型定义（可选）:
-   - (选项1、选项2): 多选数据类型，使用、分隔
-   - 每个选项以数据类型标识符开头（n/p/t/g/e/f）
-   - 示例: (n数字、p布尔值、t字符串)
-]]
-
--- 解析输入数据类型标识符（开头的 n/p/t/g/e/f 字符）
-function INE.ParseInputTypes(str, startPos, len)
-    local inputTypes = {}
-    local i = startPos
-    
-    while i <= len do
-        local char = str:sub(i, i)
-        if char == "n" or char == "p" or char == "t" or char == "g" or char == "e" or char == "f" then
-            local dataType = INE.GetDataTypeById(char)
-            if dataType then
-                table.insert(inputTypes, dataType)
-            end
-            i = i + 1
-        else
-            break
-        end
-    end
-    
-    return inputTypes, i
-end
-
--- 解析文本组件（单引号包裹）
-function INE.ParseTextComponent(str, startPos, len, componentId)
-    local j = startPos + 1
-    while j <= len and str:sub(j, j) ~= "'" do
-        j = j + 1
-    end
-    local text = str:sub(startPos + 1, j - 1)
-    
-    if text ~= "" then
-        componentId = componentId + 1
-        return {
-            type = "text",
-            id = "text_" .. componentId,
-            text = text
-        }, j + 1, componentId
-    end
-    
-    return nil, j + 1, componentId
-end
-
--- 解析下拉选项组件（花括号包裹）
-function INE.ParseSelectComponent(str, startPos, len, componentId)
-    local j = startPos + 1
-    while j <= len and str:sub(j, j) ~= "}" do
-        j = j + 1
-    end
-    local optionsStr = str:sub(startPos + 1, j - 1)
-    local options = {}
-    -- 将 、（UTF-8 三字节分隔符）替换为单字节分隔符后再拆分，
-    -- 避免 [^、] 模式逐个排除字节（0xE3/0x80/0x81）时误拆中文UTF-8编码内的0x80/0x81字节。
-    local safeStr = optionsStr:gsub("、", "\1")
-    for opt in string.gmatch(safeStr, "([^\1]+)") do
-        table.insert(options, opt)
-    end
-    
-    if #options > 0 then
-        componentId = componentId + 1
-        local comp = {
-            type = "select",
-            id = "select_" .. componentId,
-            cardObjectMode = false,
-        }
-        
-        -- 扫描所有选项，检测 @section_id 语法（引用规则词汇表章节）
-        -- 支持混用：{主动效果、被动效果、无、@combat_keywords} 会将词汇表选项与原选项合并
-        local hasSectionRef = false
-        local mergedOptions = {}
-        local allSectionOptionIds = {}
-        for _, opt in ipairs(options) do
-            local trimmed = opt:match("^%s*(.-)%s*$") or ""
-            if trimmed:sub(1, 1) == "@" then
-                -- 提取 section_id（去掉 @ 和多余空白）
-                local sectionId = trimmed:sub(2):match("^%s*(.-)%s*$") or trimmed:sub(2)
-                -- 检查是否有 ~ filter 语法（暂不实现，仅保留以备扩展）
-                local filterPos = sectionId:find("%s*~%s*")
-                if filterPos then
-                    sectionId = sectionId:sub(1, filterPos - 1):match("^%s*(.-)%s*$")
-                end
-                
-                -- 从规则词汇表解析选项并合并
-                if KARDS and KARDS.RulesVocabulary and KARDS.RulesVocabulary.GetOptions then
-                    local lang = GetConVarString("gmod_language") or "zh-CN"
-                    local sectionOptions = KARDS.RulesVocabulary.GetOptions(sectionId)
-                    for _, sopt in ipairs(sectionOptions) do
-                        local label = (sopt.label and sopt.label[lang]) or sopt.id or "?"
-                        table.insert(mergedOptions, label)
-                        table.insert(allSectionOptionIds, sopt.id)
-                    end
-                    hasSectionRef = true
-                else
-                    -- 词汇表不可用：@ 引用将退化为字面选项，打印警告便于定位
-                    print("[INE] 警告: @section 引用 '" .. sectionId .. "' 无法展开（RulesVocabulary 未加载）")
-                end
-            else
-                -- 普通选项，直接加入
-                table.insert(mergedOptions, trimmed)
-            end
-        end
-        
-        if hasSectionRef then
-            -- 有词汇表引用：使用合并后的选项列表
-            comp.options = mergedOptions
-            comp._sectionRef = true
-            if #allSectionOptionIds > 0 then
-                comp._sectionOptionIds = allSectionOptionIds
-            end
-        else
-            -- 纯普通选项列表
-            comp.options = options
-            
-            -- 检测首选项是否以 $ 开头且结尾，标记为卡牌对象模式
-            local firstOpt = options[1]
-            if firstOpt and firstOpt:sub(1, 1) == "$" then
-                comp.cardObjectMode = true
-                if firstOpt == "$" then
-                    comp.pureObjectMode = true
-                    comp.objectLabel = "选择对象"
-                elseif firstOpt:sub(-1, -1) == "$" then
-                    comp.objectLabel = firstOpt:sub(2, -2)
-                else
-                    comp.objectLabel = firstOpt:sub(2)
-                end
-            end
-        end
-        
-        return comp, j + 1, componentId
-    end
-    
-    return nil, j + 1, componentId
-end
-
--- 解析数字输入组件（方括号包裹）
--- [] 为基本数字组件，[x、y、z、...] 为带选项的数字槽组件
-function INE.ParseNumberComponent(str, startPos, len, componentId)
-    local j = startPos + 1
-    while j <= len and str:sub(j, j) ~= "]" do
-        j = j + 1
-    end
-    
-    -- 没有找到 ] 则不视为数字组件（单独的 [ 被忽略）
-    if j > len then
-        return nil, j + 1, componentId
-    end
-    
-    local content = str:sub(startPos + 1, j - 1)
-    
-    componentId = componentId + 1
-    local comp = {
-        type = "number",
-        id = "number_" .. componentId
-    }
-    
-    -- 如果 [] 内有内容，解析为选项列表
-    if content and content ~= "" then
-        -- 检查是否为 [lib] 或 [lib+额外变量...] 语法
-        if content == "lib" then
-            -- [lib]：接入 VarLib 所有数字变量
-            comp.useLib = true
-            comp.extraOptions = nil
-        elseif content:sub(1, 4) == "lib+" then
-            -- [lib+x、y、z]：VarLib 数字变量 + 额外选项
-            comp.useLib = true
-            local extraStr = content:sub(5)
-            local safeStr = extraStr:gsub("、", "\1")
-            local extraOptions = {}
-            for opt in string.gmatch(safeStr, "([^\1]+)") do
-                table.insert(extraOptions, opt)
-            end
-            if #extraOptions > 0 then
-                comp.extraOptions = extraOptions
-            end
-        else
-            -- 普通选项列表 [x、y、z]
-            local safeStr = content:gsub("、", "\1")
-            local options = {}
-            for opt in string.gmatch(safeStr, "([^\1]+)") do
-                table.insert(options, opt)
-            end
-            if #options > 0 then
-                comp.options = options
-            end
-        end
-    end
-    
-    return comp, j + 1, componentId
-end
-
--- 解析文本槽组件（尖括号 <>，2026-10-04 新增）
--- 与数字槽 [] 对称：每个 <> 为一个可填文本 / 可引用文本变量的槽位。
--- 提示：`<`/`>` 若出现在 `'...'` 文本组件或 `{...}` 下拉选项内，会被
--- ParseTextComponent / ParseSelectComponent 先行消费，不会进入本分支（现有模板
--- condition.json 的下拉 `{=、>、<、>=、<=}` 即属此类，故新增分派是安全的）。
-function INE.ParseTextSlotComponent(str, startPos, len, componentId)
-    local j = startPos + 1
-    while j <= len and str:sub(j, j) ~= ">" do
-        j = j + 1
-    end
-
-    -- 没有找到 > 则不视为文本槽组件（单独的 < 被忽略）
-    if j > len then
-        return nil, j + 1, componentId
-    end
-
-    componentId = componentId + 1
-    return {
-        type = "textslot",
-        id = "textslot_" .. componentId
-    }, j + 1, componentId
-end
-
--- 解析函数槽组件（井号 #）
--- 标记一个函数变量选择位置，用户可从编辑器已定义函数变量中选择
--- 组件本身不包含额外文本，选中后存储函数变量引用
--- @param  componentId {number} 当前组件 ID 计数器
--- @return {table} 函数槽组件对象
-function INE.ParseFuncSlot(pos, componentId)
-    componentId = componentId + 1
-    return {
-        type = "funcslot",
-        id = "funcslot_" .. componentId
-    }, pos, componentId
-end
-
--- 解析输出类型定义（圆括号包裹）
-function INE.ParseOutputTypes(str, startPos, len)
-    local j = startPos + 1
-    while j <= len and str:sub(j, j) ~= ")" do
-        j = j + 1
-    end
-    local optionsStr = str:sub(startPos + 1, j - 1)
-    local newOutputTypes = {}
-    
-    -- 同 ParseSelectComponent，用单字节分隔符避免 [^、] 误拆中文UTF-8编码内的 0x80/0x81 字节
-    local safeStr = optionsStr:gsub("、", "\1")
-    for opt in string.gmatch(safeStr, "([^\1]+)") do
-        local firstChar = opt:sub(1, 1)
-        local dataType = INE.GetDataTypeById(firstChar)
-        if dataType then
-            local displayName = opt:sub(2)
-            if displayName == "" then
-                displayName = dataType.name
-            end
-            table.insert(newOutputTypes, {
-                id = dataType.id,
-                name = displayName,
-                color = dataType.color,
-                shape = dataType.shape
-            })
-        end
-    end
-    
-    return newOutputTypes, j + 1
-end
-
--- 解析条件分支组件（if/elseif/else/end）
-function INE.ParseConditionalComponent(str, startPos, len, componentId)
-    local depth = 1
-    local j = startPos + 2
-    local branches = {}
-    
-    -- 解析第一个 if 条件
-    local condStart = j
-    while j <= len and not (str:sub(j, j + 3) == "then") do
-        j = j + 1
-    end
-    local condition = str:sub(condStart, j - 1)
-    condition = condition:gsub("^%s+", ""):gsub("%s+$", "")
-    j = j + 4
-    
-    local currentBranch = {
-        condition = condition,
-        content = ""
-    }
-    
-    -- 解析所有分支
-    while j <= len and depth > 0 do
-        local sub6 = str:sub(j, j + 5)
-        if sub6 == "elseif" and depth == 1 then
-            -- 开始一个新的 elseif 分支（与初始 if 同级，仅在外层深度处理，嵌套 if 内部的 elseif 由递归解析）
-            table.insert(branches, currentBranch)
-            local eiStart = j + 6
-            j = j + 6
-            while j <= len and not (str:sub(j, j + 3) == "then") do
-                j = j + 1
-            end
-            condition = str:sub(eiStart, j - 1)
-            condition = condition:gsub("^%s+", ""):gsub("%s+$", "")
-            currentBranch = {
-                condition = condition,
-                content = ""
-            }
-            j = j + 4
-        elseif sub6:sub(1, 4) == "else" and depth == 1 then
-            -- "else" 分支（但不是 "elseif"，后者已在上面处理；仅在外层深度处理，嵌套 if 内部的 else 由递归解析）
-            table.insert(branches, currentBranch)
-            currentBranch = {
-                condition = "else",
-                content = ""
-            }
-            j = j + 4
-        elseif str:sub(j, j + 2) == "if " or str:sub(j, j + 2) == "if\t" then
-            -- 嵌套 if 开始，深度 +1，以便内部 end 不会错误结束外层
-            depth = depth + 1
-            currentBranch.content = currentBranch.content .. "if"
-            j = j + 2
-        elseif str:sub(j, j + 2) == "end" then
-            depth = depth - 1
-            if depth == 0 then
-                table.insert(branches, currentBranch)
-                break
-            end
-            currentBranch.content = currentBranch.content .. "end"
-            j = j + 3
-        else
-            currentBranch.content = currentBranch.content .. str:sub(j, j)
-            j = j + 1
-        end
-    end
-    
-    -- 递归解析每个分支的内容
-    componentId = componentId + 1
-    local ifComp = {
-        type = "if",
-        id = "if_" .. componentId,
-        branches = {}
-    }
-    
-    local outputTypes = {}
-    for _, branch in ipairs(branches) do
-        -- 传递当前 componentId，确保分支内部组件获得唯一的递增ID
-        local branchResult = INE.ParseConfig(branch.content, componentId)
-        table.insert(ifComp.branches, {
-            condition = branch.condition,
-            components = branchResult.components
-        })
-        if #branchResult.outputTypes > 0 then
-            outputTypes = branchResult.outputTypes
-        end
-    end
-    
-    return ifComp, j + 1, componentId, outputTypes
-end
-
--- 拆分 if/elseif 条件文本（支持 "条件A or 条件B" 格式）
--- @param condition string 条件文本，如 "卡组中 or 卡组顶"
--- @return table 条件子项数组，如 {"卡组中", "卡组顶"}
-function INE.SplitCondition(condition)
-    local parts = {}
-    local startPos = 1
-    while true do
-        local orPos = string.find(condition, " or ", startPos, true)
-        if not orPos then
-            local part = condition:sub(startPos):match("^%s*(.-)%s*$")
-            if part and part ~= "" then
-                table.insert(parts, part)
-            end
-            break
-        end
-        local part = condition:sub(startPos, orPos - 1):match("^%s*(.-)%s*$")
-        if part and part ~= "" then
-            table.insert(parts, part)
-        end
-        startPos = orPos + 4
-    end
-    return parts
-end
-
--- 判断条件文本是否与选中的选项值匹配（支持 "条件A or 条件B" 与 if input/output 扩展）
--- @param condition string 条件文本（"else" 表示无条件分支）
--- @param selectedValue string|nil 前方 select 组件当前选中的选项文本
--- @param context table|nil 节点连接上下文 { inputNames = {...}, outputNames = {...} }，
---                          供 `if input={...}` / `if output={...}` 条件判断
--- @return boolean 是否匹配
-function INE.ConditionMatches(condition, selectedValue, context)
-    if condition == "else" then
-        return true
-    end
-    local condParts = INE.SplitCondition(condition)
-    for _, cond in ipairs(condParts) do
-        -- if input={名称1、名称2} / if output={名称1、名称2} 条件扩展：
-        -- 所连接节点/开始点的内部名称与右侧数组无序相等（右侧每项均被实际连接覆盖）即通过
-        local ioMatch = cond:match("^input%s*=%s*%{(.+)%}$") or cond:match("^output%s*=%s*%{(.+)%}$")
-        if ioMatch then
-            local isInput = cond:sub(1, 5) == "input"
-            local names = {}
-            for part in ioMatch:gmatch("[^、,]+") do
-                part = part:match("^%s*(.-)%s*$")
-                if part ~= "" then
-                    table.insert(names, part)
-                end
-            end
-            local actualNames = isInput and context and context.inputNames or (context and context.outputNames)
-            if actualNames and #names > 0 then
-                local allFound = true
-                for _, name in ipairs(names) do
-                    local found = false
-                    for _, an in ipairs(actualNames) do
-                        if an == name then
-                            found = true
-                            break
-                        end
-                    end
-                    if not found then
-                        allFound = false
-                        break
-                    end
-                end
-                if allFound then
-                    return true
-                end
-            end
-        elseif selectedValue ~= nil and cond == selectedValue then
-            return true
-        end
-    end
-    return false
-end
-
---[[
-    构建节点的输入/输出连接名称上下文（供 `if input={...}` / `if output={...}` 判断）
-
-    输入连接：连入当前节点的来源（开始点/节点）内部名称
-    输出连接：当前节点连出的目标节点内部名称
-    内部名称优先取 data.title（开始点如"在场"、"激活时"），无 title 时回退节点 name。
-
-    @param editor table 编辑器实例
-    @param nodeId string 节点 ID
-    @return table { inputNames = {...}, outputNames = {...} }
-]]
-function INE:GetNodeIOContext(editor, nodeId)
-    local ctx = { inputNames = {}, outputNames = {} }
-    if not editor or not editor.connections or not nodeId then
-        return ctx
-    end
-    for _, conn in ipairs(editor.connections) do
-        local isInput = conn.toNode == nodeId
-        local isOutput = conn.fromNode == nodeId
-        if isInput or isOutput then
-            local otherId = isInput and conn.fromNode or conn.toNode
-            local otherNode = self:GetNodeByID(editor, otherId)
-            if otherNode then
-                local name = otherNode.data and otherNode.data.title
-                if not name or name == "" then
-                    name = otherNode.name
-                end
-                if name then
-                    table.insert(isInput and ctx.inputNames or ctx.outputNames, name)
-                end
-            end
-        end
-    end
-    return ctx
-end
-
--- 解析配置字符串为主函数
-function INE.ParseConfig(configString, startComponentId)
-    if not configString or configString == "" then
-        return {
-            components = {},
-            inputTypes = {},
-            outputTypes = {}
-        }
-    end
-    
-    -- 检查缓存（仅对顶层调用缓存，分支递归调用不缓存，因ID依赖外层componentId）
-    if not startComponentId and INE.ConfigCache[configString] then
-        if type(INE.ConfigCache[configString]) == "table" and not INE.ConfigCache[configString].components then
-            return {
-                components = INE.ConfigCache[configString],
-                inputTypes = {},
-                outputTypes = {}
-            }
-        end
-        return INE.ConfigCache[configString]
-    end
-    
-    local components = {}
-    local inputTypes = {}
-    local outputTypes = {}
-    local str = configString:gsub("\n", " "):gsub("\r", " ")
-    local i = 1
-    local len = #str
-    local componentId = startComponentId or 0
-    
-    -- 跳过开头的空白字符
-    while i <= len and str:sub(i, i):match("%s") do
-        i = i + 1
-    end
-    
-    -- 1. 解析开头的输入数据类型
-    inputTypes, i = INE.ParseInputTypes(str, i, len)
-    
-    -- 2. 解析剩余的组件
-    while i <= len do
-        local char = str:sub(i, i)
-        local component = nil
-        
-        if char == "'" then
-            component, i, componentId = INE.ParseTextComponent(str, i, len, componentId)
-        elseif char == "{" then
-            component, i, componentId = INE.ParseSelectComponent(str, i, len, componentId)
-        elseif char == "[" then
-            component, i, componentId = INE.ParseNumberComponent(str, i, len, componentId)
-        elseif char == "<" then
-            component, i, componentId = INE.ParseTextSlotComponent(str, i, len, componentId)
-        elseif char == "(" then
-            outputTypes, i = INE.ParseOutputTypes(str, i, len)
-        elseif char == "#" then
-            component, i, componentId = INE.ParseFuncSlot(i, componentId)
-            i = i + 1
-        elseif char == "i" and str:sub(i, i + 1) == "if" then
-            local branchOutputTypes
-            component, i, componentId, branchOutputTypes = INE.ParseConditionalComponent(str, i, len, componentId)
-            if #branchOutputTypes > 0 then
-                outputTypes = branchOutputTypes
-            end
-        elseif char:match("%s") then
-            i = i + 1
-        else
-            i = i + 1
-        end
-        
-        if component then
-            table.insert(components, component)
-        end
-    end
-    
-    local result = {
-        components = components,
-        inputTypes = inputTypes,
-        outputTypes = outputTypes
-    }
-    
-    if not startComponentId then
-        INE.ConfigCache[configString] = result
-    end
-    return result
-end
+-- 文本宽度缓存：[字体][文本] = 宽度。字体注册后尺寸稳定，可跨帧复用。
+-- 绘制与尺寸计算路径下同一 (字体, 文本) 组合会被反复测量，缓存消除每帧的
+-- surface.GetTextSize 调用（surface.SetFont 仍保留，以维持调用方的字体副作用）。
+-- 条目总数超过上限时整体清空，避免长时间运行内存膨胀。
+local TEXT_WIDTH_CACHE_LIMIT = 4096
+local textWidthCache = {}
+local textWidthCacheCount = 0
 
 -- 获取文本宽度
 function INE.GetTextWidth(text, font)
     font = font or "SourceHan_Heavy_14"
+    -- 保持原有的字体切换副作用（调用方可能依赖随后的绘制沿用该字体）
     surface.SetFont(font)
+
+    local byFont = textWidthCache[font]
+    if not byFont then
+        byFont = {}
+        textWidthCache[font] = byFont
+    end
+    local cached = byFont[text]
+    if cached then return cached end
+
     local w, _ = surface.GetTextSize(text)
+
+    if textWidthCacheCount >= TEXT_WIDTH_CACHE_LIMIT then
+        textWidthCache = {}
+        byFont = {}
+        textWidthCache[font] = byFont
+        textWidthCacheCount = 0
+    end
+    byFont[text] = w
+    textWidthCacheCount = textWidthCacheCount + 1
     return w
 end
 
@@ -1689,7 +1304,9 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                 local w = INE.GetTextWidth(comp.text)
                 cx = cx + w + 5
                 mx = math.max(mx, cx)
-                dbgPrint("[DBG:WIDTH:" .. depth .. "] text id=" .. tostring(comp.id or "?") .. " text=" .. tostring(comp.text) .. " w=" .. tostring(w) .. " cx=" .. tostring(cx))
+                if ineNodeDebug:GetBool() then
+                    dbgPrint("[DBG:WIDTH:" .. depth .. "] text id=" .. tostring(comp.id or "?") .. " text=" .. tostring(comp.text) .. " w=" .. tostring(w) .. " cx=" .. tostring(cx))
+                end
             elseif comp.type == "select" then
                 selectIndex = selectIndex + 1
                 if comp.cardObjectMode then
@@ -1716,7 +1333,7 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                             displayText = displayText:sub(2, -2)
                         end
                         if comp.pureObjectMode and (not rawVal or (type(rawVal) ~= "string" or rawVal == "")) and displayText == "" then
-                            displayText = "选择对象"
+                            displayText = T("editor.nodeeditor.select_object")
                         end
                         local textW = INE.GetTextWidth(displayText)
                         local w = charW * 1.5 + charW * 0.5 + textW + charW * 2  -- eBtn + sep + text + arrow
@@ -1738,7 +1355,9 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                         cx = cx + w + 5
                         mx = math.max(mx, cx)
                     end
-                    dbgPrint("[DBG:WIDTH:" .. depth .. "] select id=" .. tostring(comp.id or "?") .. " sel=" .. tostring(selectedText or "?") .. " w=" .. tostring(w) .. " cx=" .. tostring(cx))
+                    if ineNodeDebug:GetBool() then
+                        dbgPrint("[DBG:WIDTH:" .. depth .. "] select id=" .. tostring(comp.id or "?") .. " sel=" .. tostring(selectedText or "?") .. " w=" .. tostring(w) .. " cx=" .. tostring(cx))
+                    end
                 else
                     -- 普通下拉框：选项文本宽度 + 下拉箭头留白（与 DrawComponents 普通模式公式一致）
                     local charW = INE.GetTextWidth("字")
@@ -1751,7 +1370,9 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                     local w = INE.GetTextWidth(selectedText) + charW * 3
                     cx = cx + w + 5
                     mx = math.max(mx, cx)
-                    dbgPrint("[DBG:WIDTH:" .. depth .. "] select id=" .. tostring(comp.id or "?") .. " sel=" .. tostring(selectedText or "?") .. " w=" .. tostring(w) .. " cx=" .. tostring(cx))
+                    if ineNodeDebug:GetBool() then
+                        dbgPrint("[DBG:WIDTH:" .. depth .. "] select id=" .. tostring(comp.id or "?") .. " sel=" .. tostring(selectedText or "?") .. " w=" .. tostring(w) .. " cx=" .. tostring(cx))
+                    end
                 end
             elseif comp.type == "number" then
                 -- 数字槽：宽度由 DrawNumberBox 自行计算，此处使用保守估算
@@ -1823,8 +1444,8 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                 local fBtnW = charW * 1.5
                 local sepW = charW * 0.5
                 local totalPrefixW = fBtnW + sepW
-                local funcName = data and data[comp.id] or "选择函数"
-                if not funcName or funcName == "" then funcName = "选择函数" end
+                local funcName = data and data[comp.id] or T("editor.nodeeditor.select_function")
+                if not funcName or funcName == "" then funcName = T("editor.nodeeditor.select_function") end
                 local textW = INE.GetTextWidth(funcName)
                 if textW < charW * 4 then textW = charW * 4 end
                 local dropDownW = math.max(textW + 24, 20)
@@ -1872,7 +1493,9 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
                         local branchW = branchCx - padding
                         cx = cx + branchW
                         mx = math.max(mx, cx)
-                        dbgPrint("[DBG:WIDTH:" .. depth .. "] if id=" .. tostring(comp.id or "?") .. " branchCx=" .. tostring(branchCx) .. " branchW=" .. tostring(branchW) .. " cx=" .. tostring(cx))
+                        if ineNodeDebug:GetBool() then
+                            dbgPrint("[DBG:WIDTH:" .. depth .. "] if id=" .. tostring(comp.id or "?") .. " branchCx=" .. tostring(branchCx) .. " branchW=" .. tostring(branchW) .. " cx=" .. tostring(cx))
+                        end
                         break
                     end
                 end
@@ -1892,12 +1515,14 @@ function INE.CalculateSize(components, nodeData, hasSecondOutput, editor, nodeId
     local dualExtra = 0
     if hasSecondOutput then
         local labelFont = INE:GetScaledFont("SourceHan_Heavy", 11, 1)
-        local labelW = INE.GetTextWidth("不满足", labelFont)
+        local labelW = INE.GetTextWidth(T("editor.nodeeditor.not_satisfied"), labelFont)
         dualExtra = math.max(labelW + 4 + 6 + 4, 40)  -- 标签文本 + 标签间距(4) + 端口半径(6) + 余量(4)
     end
     local width = math.max(minWidth, maxX + padding + dualExtra)
     local height = minHeight
-    dbgPrint("[DBG:WIDTH:" .. callDepth .. "] final: maxX=" .. tostring(maxX) .. " padding=" .. tostring(padding) .. " dual=" .. tostring(hasSecondOutput) .. " w=" .. tostring(width) .. " h=" .. tostring(height))
+    if ineNodeDebug:GetBool() then
+        dbgPrint("[DBG:WIDTH:" .. callDepth .. "] final: maxX=" .. tostring(maxX) .. " padding=" .. tostring(padding) .. " dual=" .. tostring(hasSecondOutput) .. " w=" .. tostring(width) .. " h=" .. tostring(height))
+    end
     
     return width, height
 end
@@ -2025,12 +1650,10 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
     -- 节点输入/输出连接上下文（供 if input/output 条件判断，整棵树共享）
     local ioCtx = self:GetNodeIOContext(editor, node.id)
 
-    -- 使用缩放后的字体测量文本宽度
+    -- 使用缩放后的字体测量文本宽度（复用 INE.GetTextWidth 的 (字体, 文本) 缓存）
     local function getScaledTextWidth(text, fontPrefix, baseSize)
         local fontName = INE:GetScaledFont(fontPrefix, baseSize, scale)
-        surface.SetFont(fontName)
-        local w, _ = surface.GetTextSize(text)
-        return w
+        return INE.GetTextWidth(text, fontName)
     end
 
     local function processCompList(compList, data)
@@ -2075,8 +1698,8 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                         table.insert(editor._interactiveRects, {x = cx, y = cy, w = w, h = compH,
                             nodeId = node.id, compId = comp.id, type = "select"})
                         local expandedKey = node.id .. "_" .. comp.id
-                        if KARDS.CardEditor.Canvas.ExpandedDropdown == expandedKey then
-                            local expInfo = KARDS.CardEditor.Canvas.ExpandedDropdownInfo
+                        if editor.session.ExpandedDropdown == expandedKey then
+                            local expInfo = editor.session.ExpandedDropdownInfo
                             if expInfo and expInfo.dropdownX then
                                 table.insert(editor._interactiveRects, {
                                     x = expInfo.dropdownX, y = expInfo.dropdownY,
@@ -2101,7 +1724,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                     end
                     -- 若纯对象模式且未选择，显示"选择对象"
                     if comp.pureObjectMode and (not rawVal or (type(rawVal) ~= "string" or rawVal == "")) and displayText == "" then
-                        displayText = "选择对象"
+                        displayText = T("editor.nodeeditor.select_object")
                     end
                     local textW = getScaledTextWidth(displayText, "SourceHan_Heavy", 14)
                     local eBtnW = charW * 1.5
@@ -2132,7 +1755,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                     if mouseJustPressed and not KARDS.CardEditor.Canvas.DraggingNode then
                         -- 点击 e 按钮：打开 CardObjectSelector（纯对象模式下点击任意区域也打开）
                         local shouldOpenSelector = isEHit or (comp.pureObjectMode and isTextHit)
-                        if shouldOpenSelector and not KARDS.CardEditor.Canvas.CardObjectSelector then
+                        if shouldOpenSelector and not editor.session.CardObjectSelector then
                             local popupW = charW * 30
                             local popupX = cx
                             local popupY = cy + compH + 2
@@ -2173,8 +1796,8 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                             end
                             -- 4. 当前卡牌（内置对象变量）
                             local ccAppearance = KARDS.CardEditor.Canvas.CardAppearance
-                            local ccName = (ccAppearance and ccAppearance.name) or "新卡牌"
-                            table.insert(opts, {label = "当前卡牌：" .. ccName, type = "variable",
+                            local ccName = (ccAppearance and ccAppearance.name) or T("editor.nodeeditor.new_card")
+                            table.insert(opts, {label = T("editor.nodeeditor.current_card_prefix") .. ccName, type = "variable",
                                 variableName = ccName, cardName = ccName, cardAppearance = ccAppearance,
                                 isCurrentCard = true})
                             -- 5. VarLib 全局对象/对象组变量（e 单个对象 + eg 对象组）
@@ -2193,14 +1816,15 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                                 table.insert(opts, {label = display, type = "connection",
                                     variableName = ov.path, isLibVar = true, isGroup = ov.isGroup})
                             end
-                            KARDS.CardEditor.Canvas.CardObjectSelector = {
+                            editor.session.CardObjectSelector = {
                                 nodeId = node.id, compId = comp.id, nodeRef = node,
                                 x = popupX, y = popupY, searchText = "", page = 1, searchActive = false,
                                 options = opts, filterExpanded = false,
                                 filterFaction = nil, filterLocation = nil,
                                 filterType = nil, filterKeyword = nil,
                             }
-                        elseif isTextHit and not comp.pureObjectMode and not KARDS.CardEditor.Canvas.CardObjectSelector then
+                        elseif isTextHit and not comp.pureObjectMode and not editor.session.CardObjectSelector
+                            and not INE:IsPointerBusy(editor) then
                             -- 点击文本区域（混合模式）：打开普通下拉选择
                             local currentTime = SysTime()
                             if not node.data.dropdowns then node.data.dropdowns = {} end
@@ -2210,11 +1834,11 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                             local ddData = node.data.dropdowns[comp.id]
                             ddData.options = comp.options
                             if currentTime - ddData.lastClickTime > 0.3 then
-                                if KARDS.CardEditor.Canvas.ExpandedDropdown == (node.id .. "_" .. comp.id) then
-                                    KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                                if editor.session.ExpandedDropdown == (node.id .. "_" .. comp.id) then
+                                    editor.session.ExpandedDropdown = nil
+                                    editor.session.ExpandedDropdownInfo = nil
                                 else
-                                    KARDS.CardEditor.Canvas.ExpandedDropdown = node.id .. "_" .. comp.id
+                                    editor.session.ExpandedDropdown = node.id .. "_" .. comp.id
                                     local ddStyle = KARDS.CardEditor.Canvas.DropdownStyle
                                     local screenH = ScrH()
                                     local ddY = cy + compH + 2
@@ -2236,7 +1860,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                                         if dropX < 0 then dropX = 0 end
                                     end
                                     local dropH = numCols == 1 and (#comp.options * ddStyle.rowHeight + ddStyle.padding * 2) or (maxRows * ddStyle.rowHeight + ddStyle.padding * 2)
-                                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = {
+                                    editor.session.ExpandedDropdownInfo = {
                                         x = cx, y = cy, width = totalW, height = compH,
                                         nodeId = node.id, dropdownId = comp.id,
                                         options = comp.options,
@@ -2256,7 +1880,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                     if not comp.pureObjectMode then
                         if type(data[comp.id]) ~= "string" then
                             local ddKey = node.id .. "_" .. comp.id
-                            if KARDS.CardEditor.Canvas.ExpandedDropdown ~= ddKey then
+                            if editor.session.ExpandedDropdown ~= ddKey then
                                 -- 检查 dropdownData 中是否有更新
                                 local ddData = node.data.dropdowns and node.data.dropdowns[comp.id]
                                 if ddData and ddData.selectedIndex then
@@ -2275,7 +1899,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                         nodeId = node.id, compId = comp.id, type = "select_text_area"})
                     -- 悬停时绘制卡牌预览
                     local isHoverOverComponent = mX >= eBtnX and mX <= eBtnX + totalW and mY >= eBtnY and mY <= eBtnY + compH
-                    if isHoverOverComponent and not KARDS.CardEditor.Canvas.CardObjectSelector then
+                    if isHoverOverComponent and not editor.session.CardObjectSelector then
                         local cardAppearance = data[comp.id .. "_appearance"]
                         if cardAppearance then
                             local refH = math.floor((KARDS.CardEditor.Canvas.TotalEditorH or 720) / 3)
@@ -2306,8 +1930,8 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                     if newIdx then data[comp.id] = newIdx end
                     table.insert(editor._interactiveRects, {x = cx, y = cy, w = w, h = compH, nodeId = node.id, compId = comp.id, type = "select"})
                     local expandedKey = node.id .. "_" .. comp.id
-                    if KARDS.CardEditor.Canvas.ExpandedDropdown == expandedKey then
-                        local expInfo = KARDS.CardEditor.Canvas.ExpandedDropdownInfo
+                    if editor.session.ExpandedDropdown == expandedKey then
+                        local expInfo = editor.session.ExpandedDropdownInfo
                         if expInfo and expInfo.dropdownX then
                             table.insert(editor._interactiveRects, {
                                 x = expInfo.dropdownX, y = expInfo.dropdownY,
@@ -2410,7 +2034,9 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                 -- 立即重新计算节点宽度
                 if node.parsedConfig and node.parsedConfig.components then
                     local nw, nh = INE.CalculateSize(node.parsedConfig.components, node.data, node.hasSecondOutput, editor, node.id)
-                    dbgPrint("[DBG:WIDTH] DrawComponents node.id=" .. tostring(node.id) .. " oldW=" .. tostring(node.width) .. " newW=" .. tostring(nw))
+                    if ineNodeDebug:GetBool() then
+                        dbgPrint("[DBG:WIDTH] DrawComponents node.id=" .. tostring(node.id) .. " oldW=" .. tostring(node.width) .. " newW=" .. tostring(nw))
+                    end
                     node.width = nw
                     node.height = nh
                 end
@@ -2448,11 +2074,12 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                     slotData.literalValue = rawVal
                     slotData.variableRef = nil
                 end
-                local editing = INE.TextSlotEditState.active
-                    and INE.TextSlotEditState.node == node
-                    and INE.TextSlotEditState.compId == comp.id
+                local tsState = INE:Field(editor, "TextSlot")
+                local editing = tsState.active
+                    and tsState.node == node
+                    and tsState.compId == comp.id
                 local dispText = isRef and rawVal:sub(5) or rawVal
-                if editing then dispText = INE.TextSlotEditState.text end
+                if editing then dispText = tsState.text end
                 local charW = getScaledTextWidth("字", "SourceHan_Heavy", 14)
                 local tCharW = math.max(14 * scale, charW * 1.4)
                 local tBtnX = cx
@@ -2491,7 +2118,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                 else
                     -- 直接输入模式：文本 / 空值灰占位「文本」
                     draw.RoundedBox(3 * scale, valX, cy, valW, compH, Color(45, 45, 50))
-                    draw.SimpleText(dispText ~= "" and dispText or "文本", compFont,
+                    draw.SimpleText(dispText ~= "" and dispText or T("editor.nodeeditor.text_placeholder"), compFont,
                         valX + 4 * scale, cy + compH / 2,
                         dispText ~= "" and Color(220, 220, 220) or Color(120, 120, 120),
                         TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -2507,7 +2134,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                             slotData.mode = "literal"
                             slotData.literalValue = ""
                             slotData.variableRef = nil
-                            INE.TextSlotEditState.active = false
+                            INE:Field(editor, "TextSlot").active = false
                         end
                     elseif tHov then
                         -- 直接输入模式点 t：展开文本变量下拉
@@ -2522,9 +2149,9 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                             ddData.options = tOpts
                             if currentTime - (ddData.lastClickTime or 0) > 0.3 then
                                 ddData.lastClickTime = currentTime
-                                if KARDS.CardEditor.Canvas.ExpandedDropdown == ddKey then
-                                    KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                                if editor.session.ExpandedDropdown == ddKey then
+                                    editor.session.ExpandedDropdown = nil
+                                    editor.session.ExpandedDropdownInfo = nil
                                 else
                                     local ddStyle = KARDS.CardEditor.Canvas.DropdownStyle
                                     local ddY = cy + compH + 2
@@ -2545,8 +2172,8 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                                     local dropH = numCols == 1
                                         and (#tOpts * ddStyle.rowHeight + ddStyle.padding * 2)
                                         or (maxRows * ddStyle.rowHeight + ddStyle.padding * 2)
-                                    KARDS.CardEditor.Canvas.ExpandedDropdown = ddKey
-                                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = {
+                                    editor.session.ExpandedDropdown = ddKey
+                                    editor.session.ExpandedDropdownInfo = {
                                         x = valX, y = cy, width = valW, height = compH,
                                         nodeId = node.id, dropdownId = ddKey,
                                         options = tOpts,
@@ -2563,14 +2190,15 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                         end
                     elseif valHov then
                         -- 直接输入模式点值区：进入内联输入
-                        INE.TextSlotEditState.active = true
-                        INE.TextSlotEditState.node = node
-                        INE.TextSlotEditState.compId = comp.id
-                        INE.TextSlotEditState.text = rawVal
-                        INE.TextSlotEditState.x = valX
-                        INE.TextSlotEditState.y = cy
-                        INE.TextSlotEditState.w = valW
-                        INE.TextSlotEditState.h = compH
+                        local ts = INE:Field(editor, "TextSlot")
+                        ts.active = true
+                        ts.node = node
+                        ts.compId = comp.id
+                        ts.text = rawVal
+                        ts.x = valX
+                        ts.y = cy
+                        ts.w = valW
+                        ts.h = compH
                     end
                 end
                 -- 下拉选中回写（下拉关闭后按 selectedIndex 变化写引用，与 select 组件同式）
@@ -2641,7 +2269,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                 local fColor = Color(180, 70, 200)
                 local fBtnW = charW * 1.5
                 local sepW = charW * 0.5
-                local funcName = (slotData.variableRef and slotData.variableRef ~= "") and slotData.variableRef or "选择函数"
+                local funcName = (slotData.variableRef and slotData.variableRef ~= "") and slotData.variableRef or T("editor.nodeeditor.select_function")
                 local fnTextW = surface.GetTextSize(funcName)
                 local minDropW = charW * 4
                 local dropDownW = math.max(fnTextW + 24, minDropW, compH)
@@ -2704,7 +2332,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                         end
                         if editor.variables and editor.variables["f"] then
                             for _, fv in ipairs(editor.variables["f"]) do
-                                local fvName = (fv.name ~= nil and fv.name ~= "") and fv.name or fv.internalName or "未命名函数"
+                                local fvName = (fv.name ~= nil and fv.name ~= "") and fv.name or fv.internalName or T("editor.nodeeditor.unnamed_function")
                                 table.insert(funcOptions, { label = fvName, isLocal = false })
                             end
                         end
@@ -2727,7 +2355,7 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                             if popupX + popupW > ScrW() then
                                 popupX = ScrW() - popupW - 10
                             end
-                            KARDS.CardEditor.Canvas.FuncVarPopup = {
+                            editor.session.FuncVarPopup = {
                                 nodeRef = node,
                                 slotDataRef = slotData,
                                 compId = comp.id,
@@ -2739,8 +2367,8 @@ function INE:DrawComponents(editor, node, startX, startY, components, nodeData)
                                 funcOptions = funcOptions,
                             }
                             -- 关闭可能展开的普通下拉框
-                            KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                            KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                            editor.session.ExpandedDropdown = nil
+                            editor.session.ExpandedDropdownInfo = nil
                         end
                     end
                 end
@@ -2888,1712 +2516,11 @@ function INE.DrawDataTypeIcon(dataType, x, y, size)
     end
 end
 
---[[
-    统一计算画布区域，返回画布在屏幕上的位置和尺寸。
-    
-    @param  editor  {table}     编辑器实例对象
-    
-    @return {table} 画布区域 {x, y, w, h}
-]]
-function INE:GetCanvasRect(editor)
-    local canvasX = editor.x + 5 + (editor.borderless and 0 or 160)
-    local canvasY = editor.borderless and editor.y or (editor.y + 45)
-    local canvasW = editor.width - 10 - (editor.borderless and 0 or 160)
-    local canvasH = editor.borderless and editor.height or (editor.height - 45)
-    return {x = canvasX, y = canvasY, w = canvasW, h = canvasH}
-end
 
---[[
-    将画布世界坐标转换为屏幕坐标。
-    
-    @param  editor  {table}     编辑器实例对象
-    @param  worldX  {number}    画布世界X坐标
-    @param  worldY  {number}    画布世界Y坐标
-    
-    @return {number, number} 屏幕X, Y坐标
-]]
-function INE:WorldToScreen(editor, worldX, worldY)
-    local rect = self:GetCanvasRect(editor)
-    local screenX = rect.x + (worldX + editor.canvasOffsetX) * editor.canvasScale
-    local screenY = rect.y + (worldY + editor.canvasOffsetY) * editor.canvasScale
-    -- 四舍五入到整数坐标以避免缩放/平移后小数坐标导致鼠标命中检测失败
-    -- gui.MouseX()/MouseY() 返回整数，若坐标含小数则 100 >= 100.3 为 false
-    return math.Round(screenX), math.Round(screenY)
-end
 
---[[
-    将屏幕坐标转换为画布世界坐标。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {number, number} 画布世界X, Y坐标
-]]
-function INE:ScreenToWorld(editor, screenX, screenY)
-    local rect = self:GetCanvasRect(editor)
-    local worldX = (screenX - rect.x) / editor.canvasScale - editor.canvasOffsetX
-    local worldY = (screenY - rect.y) / editor.canvasScale - editor.canvasOffsetY
-    return worldX, worldY
-end
 
---[[
-    检测节点是否在画布视口内（部分可见也算可见）。
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  node    {table}   节点实例对象
-    
-    @return {boolean} 节点可见返回true，完全在视口外返回false
-]]
-function INE:IsNodeVisible(editor, node)
-    local rect = self:GetCanvasRect(editor)
-    local nodeScreenX, nodeScreenY = self:WorldToScreen(editor, node.x, node.y)
-    local nodeScreenW = node.width * editor.canvasScale
-    local nodeScreenH = node.height * editor.canvasScale
-    
-    if nodeScreenX + nodeScreenW < rect.x then return false end
-    if nodeScreenX > rect.x + rect.w then return false end
-    if nodeScreenY + nodeScreenH < rect.y then return false end
-    if nodeScreenY > rect.y + rect.h then return false end
-    
-    return true
-end
 
---[[
-    检测连接线是否可见（连接的两个节点至少有一个部分可见，或线段端点在画布扩展范围内）。
-    
-    @param  editor    {table}   编辑器实例对象
-    @param  fromNode  {table}   起始节点
-    @param  toNode    {table}   目标节点
-    
-    @return {boolean} 连接线可见返回true，否则返回false
-]]
-function INE:IsConnectionVisible(editor, fromNode, toNode)
-    if self:IsNodeVisible(editor, fromNode) or self:IsNodeVisible(editor, toNode) then
-        return true
-    end
-    local fromScreenX, fromScreenY = self:WorldToScreen(editor, fromNode.x + fromNode.width, fromNode.y + fromNode.height / 2)
-    local toScreenX, toScreenY = self:WorldToScreen(editor, toNode.x, toNode.y + toNode.height / 2)
-    local rect = self:GetCanvasRect(editor)
-    local margin = 100
-    local minX = math.min(fromScreenX, toScreenX) - margin
-    local maxX = math.max(fromScreenX, toScreenX) + margin
-    local minY = math.min(fromScreenY, toScreenY) - margin
-    local maxY = math.max(fromScreenY, toScreenY) + margin
-    return maxX >= rect.x and minX <= rect.x + rect.w and maxY >= rect.y and minY <= rect.y + rect.h
-end
 
---[[
-    将视图居中到指定世界坐标点
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  worldX  {number}  世界X坐标
-    @param  worldY  {number}  世界Y坐标
-]]
-function INE:CenterViewOn(editor, worldX, worldY)
-    local rect = self:GetCanvasRect(editor)
-    editor.canvasOffsetX = rect.w / (2 * editor.canvasScale) - worldX
-    editor.canvasOffsetY = rect.h / (2 * editor.canvasScale) - worldY
-end
-
---[[
-    返回原点：将世界坐标原点居中显示在画布面板中央
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:ResetView(editor)
-    local rect = self:GetCanvasRect(editor)
-    editor.canvasOffsetX = rect.w / 2
-    editor.canvasOffsetY = rect.h / 2
-    editor.canvasScale = 1
-end
-
---[[
-    适配所有节点：调整视图以显示所有节点。
-    计算所有节点的包围盒，将视图居中并缩放至合适比例。
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:FitAllNodes(editor)
-    if #editor.nodes == 0 then
-        INE:ResetView(editor)
-        return
-    end
-    
-    local minX, minY, maxX, maxY = nil, nil, nil, nil
-    for _, node in ipairs(editor.nodes) do
-        local nx1, ny1 = node.x, node.y
-        local nx2, ny2 = node.x + node.width, node.y + node.height
-        minX = (minX == nil) and nx1 or math.min(minX, nx1)
-        minY = (minY == nil) and ny1 or math.min(minY, ny1)
-        maxX = (maxX == nil) and nx2 or math.max(maxX, nx2)
-        maxY = (maxY == nil) and ny2 or math.max(maxY, ny2)
-    end
-    
-    local rect = self:GetCanvasRect(editor)
-    local contentW = rect.w - 40
-    local contentH = rect.h - 40
-    local bboxW = maxX - minX
-    local bboxH = maxY - minY
-    
-    local scaleX = contentW / math.max(bboxW, 100)
-    local scaleY = contentH / math.max(bboxH, 100)
-    local scale = math.min(scaleX, scaleY, 1.0)
-    editor.canvasScale = math.Clamp(scale, INE.ZOOM_MIN, INE.ZOOM_MAX)
-    
-    local centerX = (minX + maxX) / 2
-    local centerY = (minY + maxY) / 2
-    editor.canvasOffsetX = rect.w / (2 * editor.canvasScale) - centerX
-    editor.canvasOffsetY = rect.h / (2 * editor.canvasScale) - centerY
-end
-
---[[
-    缩放视图
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  factor  {number}  缩放因子（>1放大，<1缩小）
-]]
-function INE:ZoomView(editor, factor)
-    local oldScale = editor.canvasScale
-    
-    -- 沿鼠标缩放：先记录鼠标下方的世界坐标（使用旧缩放值计算）
-    local worldX, worldY
-    if editor._viewZoomFollowMouse then
-        local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-        local rect = self:GetCanvasRect(editor)
-        if mouseX >= rect.x and mouseX <= rect.x + rect.w and mouseY >= rect.y and mouseY <= rect.y + rect.h then
-            -- 使用旧缩放计算世界坐标
-            worldX = (mouseX - rect.x) / oldScale - editor.canvasOffsetX
-            worldY = (mouseY - rect.y) / oldScale - editor.canvasOffsetY
-        end
-    end
-    
-    editor.canvasScale = math.Clamp(editor.canvasScale * factor, INE.ZOOM_MIN, INE.ZOOM_MAX)
-    
-    -- 缩放时关闭展开的下拉框、变量弹窗和对象选择器
-    KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
-    KARDS.CardEditor.Canvas.NumericVarPopup = nil
-    KARDS.CardEditor.Canvas.CardObjectSelector = nil
-    
-    -- 沿鼠标缩放：调整偏移使世界坐标点保持在鼠标下
-    if editor._viewZoomFollowMouse and worldX then
-        local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-        local rect = self:GetCanvasRect(editor)
-        local newScreenX = rect.x + (worldX + editor.canvasOffsetX) * editor.canvasScale
-        local newScreenY = rect.y + (worldY + editor.canvasOffsetY) * editor.canvasScale
-        editor.canvasOffsetX = editor.canvasOffsetX + (mouseX - newScreenX) / editor.canvasScale
-        editor.canvasOffsetY = editor.canvasOffsetY + (mouseY - newScreenY) / editor.canvasScale
-    end
-end
-
---[[
-    定位到极端节点
-    
-    @param  editor     {table}   编辑器实例对象
-    @param  direction  {string}  方向："left"/"right"/"top"/"bottom"
-]]
-function INE:FocusExtremeNode(editor, direction)
-    if #editor.nodes == 0 then return end
-    local targetNode = editor.nodes[1]
-    for _, node in ipairs(editor.nodes) do
-        if direction == "left" and node.x < targetNode.x then
-            targetNode = node
-        elseif direction == "right" and node.x + node.width > targetNode.x + targetNode.width then
-            targetNode = node
-        elseif direction == "top" and node.y < targetNode.y then
-            targetNode = node
-        elseif direction == "bottom" and node.y + node.height > targetNode.y + targetNode.height then
-            targetNode = node
-        end
-    end
-    self:CenterViewOn(editor, targetNode.x + targetNode.width/2, targetNode.y + targetNode.height/2)
-end
-
---[[
-=======================================================================================
-INE 通知与悬停提示系统
-=======================================================================================
-独立的通知系统，用于替代旧的 NodeBase / Canvas 提示系统，确保提示显示在最顶层。
-支持弹出通知（自动淡出）和鼠标跟随的悬停提示。
-=======================================================================================
-]]
-
---[[
-    向指定编辑器添加一条弹出通知。
-    
-    @param  editor   {table}    编辑器实例对象
-    @param  text     {string}   通知文本
-    @param  color    {Color}    通知颜色（用于左侧色条和文字）
-    @param  duration {number}   显示时长（秒），默认 3 秒
-]]
--- 通知系统配置（每个编辑器面板独立使用）
-INE.NotificationConfig = {
-    animationDuration = 0.4,       -- 滑入/滑出动画持续时间（秒）
-    displayDuration = 2.0,         -- 显示持续时间（秒）
-    minWidth = 150,                -- 最小宽度
-    maxWidth = 320,                -- 最大宽度
-    padding = 12,                  -- 内边距
-    titleHeight = 20,              -- 标题框高度
-    rowSpacing = 8,                -- 通知间距
-    cornerRadius = 6,              -- 圆角半径
-    titleColor = Color(60, 60, 65), -- 标题框颜色
-    textColor = Color(230, 230, 230),  -- 文本颜色
-    flashDuration = 0.4,           -- 闪烁持续时间
-    flashCount = 3,                -- 闪烁次数
-    fontSize = "SourceHan_Heavy_14" -- 字体
-}
-
---[[
-    缓动函数：Back Out（带回弹效果）。
-    用于通知滑入/滑出动画，形成自然的弹性效果。
-]]
-function INE:EaseOutBack(t, b, c, d, s)
-    s = s or 1.70158
-    local t2 = t / d - 1
-    return c * (t2 * t2 * ((s + 1) * t2 + s) + 1) + b
-end
-
---[[
-    向指定编辑器添加通知。
-    具备以下特性：
-    - 声音反馈（成功/失败音频）
-    - 重复文本自动合并并计数
-    - 自动执行三阶段动画（进入→显示→退出）
-    - 宽度根据文本内容自适应
-    
-    @param  editor   {table}    编辑器实例对象
-    @param  text     {string}   通知文本
-    @param  color    {Color}    通知颜色（用于标题框和背景）
-    @param  duration {number}   显示时长（秒），默认 3 秒
-    @param  isSuccess {boolean} 是否为成功通知（播放成功音效），默认 false
-]]
-function INE:AddNotification(editor, text, color, duration, isSuccess)
-    if not editor or not text then return end
-    editor.notifications = editor.notifications or {}
-    color = color or Color(200, 200, 200)
-    duration = duration or 3
-    local config = INE.NotificationConfig
-    local currentTime = SysTime()
-
-    -- 播放音效
-    if isSuccess then
-        if KARDS.CardEditor.Audio and KARDS.CardEditor.Audio.PlayNotificationSuccess then
-            KARDS.CardEditor.Audio.PlayNotificationSuccess()
-        end
-    else
-        if KARDS.CardEditor.Audio and KARDS.CardEditor.Audio.PlayNotification then
-            KARDS.CardEditor.Audio.PlayNotification()
-        end
-    end
-
-    -- 检查是否有重复的通知（2秒内的相同文本自动合并）
-    for _, notif in ipairs(editor.notifications) do
-        if notif.text == text and currentTime - notif.createdTime < 2 then
-            notif.count = (notif.count or 1) + 1
-            notif.createdTime = currentTime
-            notif.animationTime = 0
-            notif.state = "entering"
-            notif.flashTime = 0
-            notif.flashCount = 0
-            return
-        end
-    end
-
-    -- 计算通知框尺寸
-    surface.SetFont(config.fontSize)
-    local textWidth, textHeight = surface.GetTextSize(text)
-    local notifWidth = math.Clamp(textWidth + config.padding * 2, config.minWidth, config.maxWidth)
-    local notifHeight = textHeight + config.padding * 2 + config.titleHeight
-
-    -- 创建新通知
-    local notif = {
-        text = text,
-        color = color,
-        count = 1,
-        createdTime = currentTime,
-        animationTime = 0,
-        state = "entering",
-        position = 0,
-        flashTime = 0,
-        flashCount = 0,
-        width = notifWidth,
-        height = notifHeight
-    }
-    table.insert(editor.notifications, notif)
-
-    -- 限制通知数量，避免过多堆积
-    while #editor.notifications > 5 do
-        table.remove(editor.notifications, 1)
-    end
-end
-
---[[
-    更新指定编辑器的通知状态。
-    管理三阶段动画（进入→显示→退出）的生命周期，
-    以及闪烁效果和过期清除。
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:UpdateNotifications(editor)
-    if not editor.notifications or #editor.notifications == 0 then return end
-    local config = INE.NotificationConfig
-    local notifications = editor.notifications
-
-    -- 过滤过期的通知
-    local valid = {}
-    for _, notif in ipairs(notifications) do
-        notif.animationTime = (notif.animationTime or 0) + FrameTime()
-
-        local shouldSkip = false
-        if notif.state == "entering" then
-            if notif.animationTime >= config.animationDuration then
-                notif.state = "active"
-                notif.animationTime = 0
-            end
-        elseif notif.state == "active" then
-            if notif.animationTime >= config.displayDuration then
-                notif.state = "exiting"
-                notif.animationTime = 0
-            end
-        elseif notif.state == "exiting" then
-            if notif.animationTime >= config.animationDuration then
-                shouldSkip = true
-            end
-        end
-
-        if not shouldSkip then
-            -- 更新闪烁状态
-            if notif.count > 1 then
-                notif.flashTime = (notif.flashTime or 0) + FrameTime()
-            end
-            table.insert(valid, notif)
-        end
-    end
-
-    -- 按创建时间排序，新通知在上
-    table.sort(valid, function(a, b)
-        return a.createdTime > b.createdTime
-    end)
-
-    -- 更新位置索引
-    for i, notif in ipairs(valid) do
-        notif.position = i - 1
-    end
-
-    editor.notifications = valid
-end
-
---[[
-    绘制指定编辑器的通知列表。
-    通知显示在编辑器面板的右上角，相对于面板边缘定位。
-    支持滑入/滑出动画、计数徽标、闪烁效果。
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:DrawNotifications(editor)
-    if not editor.notifications or #editor.notifications == 0 then return end
-    local config = INE.NotificationConfig
-    local notifications = editor.notifications
-
-    for _, notif in ipairs(notifications) do
-        local totalWidth = notif.width
-        local totalHeight = notif.height
-        
-        -- 垂直位置：相对于编辑器面板顶部，每行依次向下排列
-        local y = editor.y + (editor.borderless and 10 or 45) + notif.position * (totalHeight + config.rowSpacing)
-
-        -- 计算水平滑入/滑出动画偏移
-        local xOffset = 0
-        if notif.state == "entering" then
-            local progress = math.min(notif.animationTime / config.animationDuration, 1)
-            xOffset = INE:EaseOutBack(progress, totalWidth, -totalWidth * 2, 1)
-        elseif notif.state == "active" then
-            xOffset = -totalWidth
-        elseif notif.state == "exiting" then
-            local progress = math.min(notif.animationTime / config.animationDuration, 1)
-            xOffset = INE:EaseOutBack(progress, -totalWidth, totalWidth * 2, 1)
-        end
-
-        -- x 是通知框的左边缘位置（从右侧滑入）
-        local x = editor.x + editor.width + xOffset
-
-        -- 绘制背景圆角框
-        draw.RoundedBox(config.cornerRadius, x, y, totalWidth, totalHeight, notif.color)
-
-        -- 绘制标题框
-        draw.RoundedBoxEx(config.cornerRadius, x, y, totalWidth, config.titleHeight, config.titleColor, true, true, false, false)
-
-        -- 绘制标题文本
-        local titleText = "提示  -Tip-"
-        draw.SimpleText(titleText, config.fontSize, x + config.padding, y + config.titleHeight / 2, config.textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-
-        -- 绘制计数徽标在标题框中
-        if notif.count > 1 then
-            local countText = "×" .. notif.count
-            surface.SetFont(config.fontSize)
-            local countWidth, countHeight = surface.GetTextSize(countText)
-            local countX = x + totalWidth - config.padding - countWidth
-
-            draw.RoundedBox(4, countX - 4, y + config.titleHeight / 2 - countHeight / 2 - 2, countWidth + 8, countHeight + 4, Color(0, 0, 0, 150))
-            draw.SimpleText(countText, config.fontSize, countX, y + config.titleHeight / 2, config.textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        end
-
-        -- 绘制通知文本
-        draw.SimpleText(notif.text, config.fontSize, x + config.padding, y + config.titleHeight + config.padding, config.textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-
-        -- 绘制闪烁边框（计数 > 1 时的闪烁提示）
-        if notif.count > 1 and (notif.flashTime or 0) < config.flashDuration then
-            local flashProgress = notif.flashTime / (config.flashDuration / (config.flashCount * 2))
-            local flashState = math.floor(flashProgress) % 2
-
-            if flashState == 0 then
-                surface.SetDrawColor(255, 255, 255, 200)
-                surface.DrawOutlinedRect(x - 2, y - 2, totalWidth + 4, totalHeight + 4)
-            end
-        end
-    end
-end
-
---[[
-    更新指定编辑器的悬停提示文本。
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  text    {string}  提示文本，传入空字符串或 nil 清除提示
-]]
-function INE:UpdateHoverTooltip(editor, text)
-    if not editor then return end
-    editor.hoverTooltip = editor.hoverTooltip or { text = "", updated = false, x = 0, y = 0 }
-    editor.hoverTooltip.text = text or ""
-    editor.hoverTooltip.updated = true
-end
-
---[[
-    清除指定编辑器的悬停提示。
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:ClearHoverTooltip(editor)
-    if not editor then return end
-    editor.hoverTooltip = editor.hoverTooltip or { text = "", updated = false, x = 0, y = 0 }
-    editor.hoverTooltip.text = ""
-    editor.hoverTooltip.updated = true
-end
-
---[[
-    在绘制开始前标记悬停提示为“本帧未更新”，用于自动清除过期的提示。
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:BeginHoverTooltipFrame(editor)
-    if not editor then return end
-    editor.hoverTooltip = editor.hoverTooltip or { text = "", updated = false, x = 0, y = 0 }
-    editor.hoverTooltip.updated = false
-end
-
---[[
-    绘制指定编辑器的悬停提示。
-    提示显示在鼠标右下方，并限制在屏幕范围内。
-    
-    @param  editor  {table}   编辑器实例对象
-]]
-function INE:DrawHoverTooltip(editor)
-    if not editor or not editor.hoverTooltip then return end
-    local tooltip = editor.hoverTooltip
-    if tooltip.text == "" or tooltip.text == nil then return end
-    
-    local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    local text = tooltip.text
-    local font = "SourceHan_Heavy_14"
-    local padding = 8
-    
-    surface.SetFont(font)
-    local textW, textH = surface.GetTextSize(text)
-    local boxW = textW + padding * 2
-    local boxH = textH + padding * 2
-    
-    local boxX = mouseX + 15
-    local boxY = mouseY + 15
-    
-    -- 防止超出屏幕右/下边界
-    if boxX + boxW > ScrW() then
-        boxX = mouseX - boxW - 10
-    end
-    if boxY + boxH > ScrH() then
-        boxY = mouseY - boxH - 10
-    end
-    
-    draw.RoundedBox(4, boxX, boxY, boxW, boxH, Color(30, 30, 35, 240))
-    draw.SimpleText(text, font, boxX + padding, boxY + padding, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-end
-
-function INE:GetFilteredNodeList(editor)
-    local searchText = string.lower(editor._findNodeSearchText or "")
-    local result = {}
-    for _, node in ipairs(editor.nodes) do
-        if searchText == "" or string.find(string.lower(node.name), searchText, 1, true) then
-            table.insert(result, node)
-        end
-    end
-    return result
-end
-
-function INE:ReadKeyboardChar(editor)
-    editor._findKeyStates = editor._findKeyStates or {}
-    local ch = nil
-    
-    for i = 1, 26 do
-        local key = KEY_A + i - 1
-        local keyDown = input.IsKeyDown(key)
-        if keyDown and not editor._findKeyStates[key] then
-            editor._findKeyStates[key] = true
-            local char = string.char(96 + i)
-            if input.IsKeyDown(KEY_LSHIFT) or input.IsKeyDown(KEY_RSHIFT) then
-                char = string.upper(char)
-            end
-            if input.IsKeyDown(KEY_CAPSLOCK) then
-                char = string.upper(char)
-            end
-            ch = char
-            break
-        elseif not keyDown then
-            editor._findKeyStates[key] = false
-        end
-    end
-    
-    if not ch then
-        for i = 0, 9 do
-            local key = KEY_0 + i
-            local keyDown = input.IsKeyDown(key)
-            if keyDown and not editor._findKeyStates[key] then
-                editor._findKeyStates[key] = true
-                ch = tostring(i)
-                break
-            elseif not keyDown then
-                editor._findKeyStates[key] = false
-            end
-        end
-    end
-    
-    if not ch then
-        local key = KEY_SPACE
-        local keyDown = input.IsKeyDown(key)
-        if keyDown and not editor._findKeyStates[key] then
-            editor._findKeyStates[key] = true
-            ch = " "
-        elseif not keyDown then
-            editor._findKeyStates[key] = false
-        end
-    end
-    
-    if not ch then
-        local key = KEY_MINUS
-        local keyDown = input.IsKeyDown(key)
-        if keyDown and not editor._findKeyStates[key] then
-            editor._findKeyStates[key] = true
-            ch = (input.IsKeyDown(KEY_LSHIFT) or input.IsKeyDown(KEY_RSHIFT)) and "_" or "-"
-        elseif not keyDown then
-            editor._findKeyStates[key] = false
-        end
-    end
-    
-    return ch
-end
-
-function INE:OpenFindNodeWindow(editor)
-    editor._findNodeWindowOpen = true
-    editor._findNodeSearchText = ""
-    editor._findNodeSelectedIndex = 0
-    editor._findNodeInputFocused = true
-    editor._findKeyStates = {}
-    
-    local rect = self:GetCanvasRect(editor)
-    INE:ShowOverlayWindow(editor, {
-        id = "find_node_window",
-        title = "查找节点",
-        x = rect.x + rect.w/2 - 175,
-        y = rect.y + 80,
-        width = 350,
-        height = 300,
-        content = function(editor, win, wx, wy, ww, wh)
-            INE:DrawFindNodeContent(editor, win, wx, wy, ww, wh)
-        end,
-        onClose = function(win)
-            editor._findNodeWindowOpen = false
-        end
-    })
-end
-
-function INE:DrawFindNodeContent(editor, win, wx, wy, ww, wh)
-    local searchText = editor._findNodeSearchText or ""
-    
-    draw.RoundedBox(4, wx + 5, wy + 5, ww - 10, 28, Color(40, 40, 45))
-    
-    if searchText ~= "" then
-        draw.SimpleText(searchText, "Calibri_20", wx + 12, wy + 19, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-    else
-        draw.SimpleText("输入节点名称搜索...", "Calibri_20", wx + 12, wy + 19, Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-    end
-    
-    if editor._findNodeInputFocused and CurTime() % 1 < 0.5 then
-        local textW = 0
-        if searchText ~= "" then
-            surface.SetFont("Calibri_20")
-            textW = surface.GetTextSize(searchText)
-        end
-        local cursorX = wx + 12 + textW + 2
-        surface.SetDrawColor(Color(220, 220, 220))
-        surface.DrawRect(cursorX, wy + 10, 2, 18)
-    end
-    
-    local listStartY = wy + 40
-    local itemH = 26
-    local filteredNodes = INE:GetFilteredNodeList(editor)
-    local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    
-    if #filteredNodes == 0 then
-        draw.SimpleText("未找到匹配的节点", "SourceHan_Heavy_14", wx + ww/2, listStartY + 20, Color(120, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    else
-        for i, node in ipairs(filteredNodes) do
-            local itemY = listStartY + (i - 1) * itemH
-            if itemY + itemH > wy + wh then break end
-            
-            local itemX = wx + 2
-            local itemW = ww - 4
-            
-            local itemHovered = mouseX >= itemX and mouseX <= itemX + itemW and
-                               mouseY >= itemY and mouseY <= itemY + itemH
-            local itemSelected = (i == editor._findNodeSelectedIndex)
-            
-            local bgColor = nil
-            if itemSelected then
-                bgColor = Color(70, 100, 150)
-            elseif itemHovered then
-                bgColor = Color(60, 60, 70)
-            end
-            
-            if bgColor then
-                draw.RoundedBox(2, itemX, itemY, itemW, itemH, bgColor)
-            end
-            
-            draw.SimpleText(node.name, "SourceHan_Heavy_14", wx + 10, itemY + itemH/2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        end
-    end
-end
-
---[[
-    启用画布裁剪区域，限制后续绘制只在画布区域内显示。
-]]
-function INE:BeginCanvasScissor(editor)
-    local rect = self:GetCanvasRect(editor)
-    -- 使用整数坐标避免浮点精度导致裁剪区域异常
-    local x1 = math.floor(rect.x)
-    local y1 = math.floor(rect.y)
-    local x2 = math.ceil(rect.x + rect.w)
-    local y2 = math.ceil(rect.y + rect.h)
-    render.SetScissorRect(x1, y1, x2, y2, true)
-end
-
---[[
-    禁用画布裁剪区域，恢复正常绘制。
-]]
-function INE:EndCanvasScissor()
-    render.SetScissorRect(0, 0, 0, 0, false)
-end
-
---[[
-    显示一个叠加窗口。
-    
-    @param  editor      {table}     编辑器实例
-    @param  windowData  {table}     窗口数据表，至少包含id, title, x, y, width, height, content
-]]
-function INE:ShowOverlayWindow(editor, windowData)
-    windowData.visible = true
-    windowData.draggable = windowData.draggable ~= false
-    editor.overlayWindows = editor.overlayWindows or {}
-    -- 先删除旧条目再重新插入，确保新窗口在 pairs 迭代中排在最后（即绘制在最上层）
-    if editor.overlayWindows[windowData.id] then
-        editor.overlayWindows[windowData.id] = nil
-    end
-    editor.overlayWindows[windowData.id] = windowData
-    -- 记录创建序号用于确定绘制顺序（后创建的在上层）
-    INE._overlayOrderCounter = (INE._overlayOrderCounter or 0) + 1
-    windowData._order = INE._overlayOrderCounter
-end
-
---[[
-    隐藏/关闭叠加窗口。
-    
-    @param  editor    {table}   编辑器实例
-    @param  windowId  {string}  窗口ID
-]]
-function INE:CloseOverlayWindow(editor, windowId)
-    if editor.overlayWindows and editor.overlayWindows[windowId] then
-        local win = editor.overlayWindows[windowId]
-        win.visible = false
-        if win.onClose then win:onClose() end
-        editor.overlayWindows[windowId] = nil
-    end
-end
-
---[[
-    获取指定位置上方的叠加窗口（用于命中检测，逆序遍历后创建的窗口在上层）。
-    
-    @param  editor   {table}   编辑器实例
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {table|nil} 命中的窗口实例，未命中返回nil
-]]
-function INE:GetOverlayWindowAt(editor, screenX, screenY)
-    if not editor.overlayWindows then return nil end
-    local windows = {}
-    for _, win in pairs(editor.overlayWindows) do
-        if win.visible then table.insert(windows, win) end
-    end
-    -- 按创建顺序排序，后创建的在上层（与绘制顺序一致）
-    table.sort(windows, function(a, b) return (a._order or 0) < (b._order or 0) end)
-    for i = #windows, 1, -1 do
-        local win = windows[i]
-        if screenX >= win.x and screenX <= win.x + win.width and
-           screenY >= win.y and screenY <= win.y + win.height then
-            return win
-        end
-    end
-    return nil
-end
-
---[[
-    判断鼠标是否在任何叠加窗口上。
-    
-    @param  editor   {table}   编辑器实例
-    @param  mouseX   {number}  鼠标X坐标
-    @param  mouseY   {number}  鼠标Y坐标
-    
-    @return {boolean} 鼠标在叠加窗口上返回true
-]]
-function INE:IsMouseOverOverlayWindow(editor, mouseX, mouseY)
-    return self:GetOverlayWindowAt(editor, mouseX, mouseY) ~= nil
-end
-
---[[
-    绘制单个叠加窗口。
-    
-    @param  editor  {table}   编辑器实例
-    @param  win     {table}   窗口实例
-]]
-function INE:DrawOverlayWindow(editor, win)
-    local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    
-    draw.RoundedBox(8, win.x + 2, win.y + 2, win.width, win.height, Color(0, 0, 0, 100))
-    draw.RoundedBox(8, win.x, win.y, win.width, win.height, Color(55, 55, 60, 250))
-    draw.RoundedBoxEx(8, win.x, win.y, win.width, 32, Color(65, 65, 75), true, true, false, false)
-    local titleMaxX = win.x + win.width
-    draw.SimpleText(win.title, "SourceHan_Heavy_16", win.x + 10, win.y + 16, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-    
-    local closeX = win.x + win.width - 30
-    local closeY = win.y + 3
-    local closeW = 25
-    local closeH = 25
-    local closeHovered = mouseX >= closeX and mouseX <= closeX + closeW and
-                        mouseY >= closeY and mouseY <= closeY + closeH
-    draw.RoundedBox(4, closeX, closeY, closeW, closeH, closeHovered and Color(200, 70, 70) or Color(180, 60, 60))
-    draw.SimpleText("X", "SourceHan_Heavy_14", closeX + closeW/2, closeY + closeH/2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    
-    win._closeBtn = {x = closeX, y = closeY, w = closeW, h = closeH}
-    
-    -- 变量分类选择器（仅变量对话框显示）
-    if win.showScope then
-        local scope = win.scope or "global"
-        local btnW, btnH = 32, 22
-        local btnY = win.y + 5
-        local gap = 4
-        -- 长期按钮
-        local longX = closeX - btnW - gap
-        local longHov = mouseX >= longX and mouseX <= longX + btnW and mouseY >= btnY and mouseY <= btnY + btnH
-        local longActive = (scope == "longterm")
-        draw.RoundedBox(4, longX, btnY, btnW, btnH,
-            longActive and Color(180, 120, 60) or (longHov and Color(90, 85, 80) or Color(65, 65, 75)))
-        draw.SimpleText("长期", "SourceHan_Heavy_10", longX + btnW/2, btnY + btnH/2,
-            longActive and Color(255, 230, 180) or Color(180, 180, 180), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        win._scopeLongtermBtn = {x = longX, y = btnY, w = btnW, h = btnH}
-        -- 全局按钮
-        local globalX = longX - btnW - gap
-        local globalHov = mouseX >= globalX and mouseX <= globalX + btnW and mouseY >= btnY and mouseY <= btnY + btnH
-        local globalActive = (scope == "global" or not scope)
-        draw.RoundedBox(4, globalX, btnY, btnW, btnH,
-            globalActive and Color(80, 120, 180) or (globalHov and Color(85, 85, 90) or Color(65, 65, 75)))
-        draw.SimpleText("全局", "SourceHan_Heavy_10", globalX + btnW/2, btnY + btnH/2,
-            globalActive and Color(180, 210, 255) or Color(180, 180, 180), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        win._scopeGlobalBtn = {x = globalX, y = btnY, w = btnW, h = btnH}
-    end
-    
-    local clientX = win.x
-    local clientY = win.y + 32
-    local clientW = win.width
-    local clientH = win.height - 32
-    if win.content then
-        win.content(editor, win, clientX, clientY, clientW, clientH)
-    end
-end
-
---[[
-    绘制导入文件选择窗口的内容（文件列表 + 按钮）。
-    
-    @param  editor  {table}   编辑器实例
-    @param  win     {table}   窗口实例
-    @param  cx      {number}  客户区X
-    @param  cy      {number}  客户区Y
-    @param  cw      {number}  客户区宽度
-    @param  ch      {number}  客户区高度
-]]
-function INE:DrawImportWindowContent(editor, win, cx, cy, cw, ch)
-    local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    
-    -- 绘制提示文字
-    draw.SimpleText("选择要导入的文件:", "SourceHan_Heavy_16", cx + 15, cy + 15, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-    
-    -- 文件列表区域
-    local listX = cx + 10
-    local listY = cy + 40
-    local listW = cw - 20
-    local listH = ch - 110
-    
-    -- 列表背景
-    draw.RoundedBox(4, listX, listY, listW, listH, Color(45, 45, 50))
-    
-    -- 文件列表
-    local files = editor._importFiles or {}
-    local itemH = 30
-    local startY = listY + 5
-    local scrollOffset = editor._importScrollOffset or 0
-    
-    -- 存储文件行矩形用于点击检测
-    editor._importFileRects = {}
-    
-    for i = 1, #files do
-        local idx = i + scrollOffset
-        if idx < 1 then idx = 1 end
-        if idx > #files then break end
-        
-        local itemY = startY + (i - 1) * itemH
-        if itemY + itemH > listY + listH then break end
-        
-        local fileName = files[idx]
-        local isSelected = editor._importSelectedFile == fileName
-        local isHovered = mouseX >= listX and mouseX <= listX + listW and mouseY >= itemY and mouseY <= itemY + itemH
-        
-        local itemColor = isSelected and Color(80, 80, 120) or (isHovered and Color(65, 65, 70) or Color(45, 45, 50))
-        draw.RoundedBox(2, listX + 2, itemY, listW - 4, itemH - 2, itemColor)
-        
-        draw.SimpleText(fileName, "SourceHan_Heavy_14", listX + 15, itemY + itemH / 2, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        
-        -- 存储矩形用于点击检测
-        table.insert(editor._importFileRects, {x = listX + 2, y = itemY, w = listW - 4, h = itemH - 2, idx = idx})
-    end
-    
-    -- 按钮区域
-    local btnY = cy + ch - 45
-    
-    -- 加载按钮
-    local loadBtnX = cx + cw / 2 - 175
-    local loadBtnW = 160
-    local loadBtnH = 35
-    local loadEnabled = editor._importSelectedFile ~= nil
-    local loadHovered = mouseX >= loadBtnX and mouseX <= loadBtnX + loadBtnW and mouseY >= btnY and mouseY <= btnY + loadBtnH
-    
-    editor._importLoadBtnRect = {x = loadBtnX, y = btnY, w = loadBtnW, h = loadBtnH}
-    
-    local loadColor = loadEnabled and (loadHovered and Color(100, 150, 255) or Color(80, 120, 200)) or Color(70, 70, 75)
-    draw.RoundedBox(6, loadBtnX, btnY, loadBtnW, loadBtnH, loadColor)
-    draw.SimpleText("加载", "SourceHan_Heavy_16", loadBtnX + loadBtnW / 2, btnY + loadBtnH / 2, loadEnabled and Color(255, 255, 255) or Color(150, 150, 150), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    
-    -- 取消按钮
-    local cancelBtnX = cx + cw / 2 + 15
-    local cancelBtnW = 160
-    local cancelBtnH = 35
-    local cancelHovered = mouseX >= cancelBtnX and mouseX <= cancelBtnX + cancelBtnW and mouseY >= btnY and mouseY <= btnY + cancelBtnH
-    
-    editor._importCancelBtnRect = {x = cancelBtnX, y = btnY, w = cancelBtnW, h = cancelBtnH}
-    
-    local cancelColor = cancelHovered and Color(100, 100, 100) or Color(80, 80, 85)
-    draw.RoundedBox(6, cancelBtnX, btnY, cancelBtnW, cancelBtnH, cancelColor)
-    draw.SimpleText("取消", "SourceHan_Heavy_16", cancelBtnX + cancelBtnW / 2, btnY + cancelBtnH / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-end
-
-
-
-
-
---[[
-    每帧逻辑更新函数。
-    遍历所有可见编辑器，调用各自的输入处理逻辑。
-    由Think钩子每帧调用。
-]]
-function INE:Think()
-    -- ============================================================
-    -- 变量搜索 DTextEntry 生命周期管理
-    -- ============================================================
-    local vsState = INE.VarSearchState
-    local vsEntry = INE.VarSearchTextEntry
-    if vsState.active then
-        if not vsEntry or not IsValid(vsEntry) then
-            local entry = vgui.Create("DTextEntry")
-            entry:SetPos(vsState.x, vsState.y)
-            entry:SetSize(vsState.w, vsState.h)
-            entry:SetText(vsState.text or "")
-            entry:SetDrawBackground(false)
-            entry:SetDrawBorder(false)
-            entry:SetTextColor(Color(255, 255, 255, 0))
-            entry:SetCursorColor(Color(255, 255, 255, 0))
-            entry.Paint = nil
-            entry:MakePopup()
-
-            entry.OnTextChanged = function(self)
-                local txt = self:GetText()
-                if INE.VarSearchState then
-                    INE.VarSearchState.text = txt
-                    -- 同步到编辑器的搜索文本
-                    local edID = INE.VarSearchState.editorID
-                    local typeId = INE.VarSearchState.typeId
-                    if edID and typeId then
-                        local ed = INE.Editors[edID]
-                        if ed then
-                            ed._varSearchText[typeId] = txt
-                        end
-                    end
-                end
-            end
-
-            entry.OnKeyCodeTyped = function(self, keyCode)
-                if keyCode == KEY_ESCAPE then
-                    if INE.VarSearchState then
-                        INE.VarSearchState.active = false
-                    end
-                end
-            end
-
-            INE.VarSearchTextEntry = entry
-        else
-            -- 已存在，确保位置同步（因滚动位置会变）
-            vsEntry:SetPos(vsState.x, vsState.y)
-            vsEntry:SetSize(vsState.w, vsState.h)
-            if not vsEntry:HasFocus() then
-                vsEntry:RequestFocus()
-            end
-        end
-    else
-        if vsEntry and IsValid(vsEntry) then
-            vsEntry:Remove()
-        end
-        INE.VarSearchTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 数字变量对话框 DTextEntry 生命周期管理
-    -- ============================================================
-    local nvState = INE.NumVarFieldState
-    local nvEntry = INE.NumVarTextEntry
-    if nvState.active then
-        -- 检查编辑器/变量是否仍有效
-        local ed = INE.Editors[nvState.editorID]
-        local vd = ed and (ed.variables["n"] or {})[nvState.varIdx]
-        if not vd then
-            nvState.active = false
-        else
-            if not nvEntry or not IsValid(nvEntry) then
-                local currentText = ""
-                if nvState.field == "name" then currentText = vd.name or ""
-                elseif nvState.field == "iname" then currentText = (vd.internalName and not vd.internalName:match("^n_var_")) and vd.internalName or ""
-                elseif nvState.field == "val" then currentText = tostring(vd.initialValue or 0) end
-
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(nvState.x, nvState.y)
-                entry:SetSize(nvState.w, nvState.h)
-                entry:SetText(currentText)
-                entry:SetCaretPos(#currentText)
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.NumVarFieldState and INE.NumVarFieldState.active then
-                        local e = INE.Editors[INE.NumVarFieldState.editorID]
-                        local v = e and (e.variables["n"] or {})[INE.NumVarFieldState.varIdx]
-                        if v then
-                            local f = INE.NumVarFieldState.field
-                            if f == "name" then v.name = txt
-                            elseif f == "iname" then v.internalName = txt
-                            elseif f == "val" then
-                                local num = tonumber(txt)
-                                v.initialValue = (num ~= nil) and num or txt
-                            end
-                        end
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE then
-                        if INE.NumVarFieldState then
-                            INE.NumVarFieldState.active = false
-                        end
-                    end
-                end
-
-                INE.NumVarTextEntry = entry
-            else
-                -- 更新位置（对话框位置可能不变，但确保同步）
-                nvEntry:SetPos(nvState.x, nvState.y)
-                nvEntry:SetSize(nvState.w, nvState.h)
-                -- 同步文本：切换字段（name↔iname↔val）时 DTextEntry 残留旧字段文本
-                local ed2 = INE.Editors[nvState.editorID]
-                local vd2 = ed2 and (ed2.variables["n"] or {})[nvState.varIdx]
-                if vd2 then
-                    local expected = ""
-                    if nvState.field == "name" then expected = vd2.name or ""
-                    elseif nvState.field == "iname" then expected = (vd2.internalName and not vd2.internalName:match("^n_var_")) and vd2.internalName or ""
-                    elseif nvState.field == "val" then expected = tostring(vd2.initialValue or 0) end
-                    if nvEntry:GetText() ~= expected then
-                        nvEntry:SetText(expected)
-                        nvEntry:SetCaretPos(#expected)
-                    end
-                end
-                if not nvEntry:HasFocus() then
-                    nvEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if nvEntry and IsValid(nvEntry) then
-            nvEntry:Remove()
-        end
-        INE.NumVarTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 函数变量对话框 DTextEntry 生命周期管理（函数名称）
-    -- ============================================================
-    local fvState = INE.FuncVarFieldState
-    local fvEntry = INE.FuncVarTextEntry
-    if fvState.active then
-        local ed = INE.Editors[fvState.editorID]
-        local vd = ed and (ed.variables["f"] or {})[fvState.varIdx]
-        if not vd then
-            fvState.active = false
-        else
-            if not fvEntry or not IsValid(fvEntry) then
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(fvState.x, fvState.y)
-                entry:SetSize(fvState.w, fvState.h)
-                entry:SetText(fvState.text or "")
-                entry:SetCaretPos(#(fvState.text or ""))
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.FuncVarFieldState and INE.FuncVarFieldState.active then
-                        INE.FuncVarFieldState.text = txt
-                        local e = INE.Editors[INE.FuncVarFieldState.editorID]
-                        local v = e and (e.variables["f"] or {})[INE.FuncVarFieldState.varIdx]
-                        if v then
-                            v.name = txt
-                        end
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE and INE.FuncVarFieldState then
-                        INE.FuncVarFieldState.active = false
-                    end
-                end
-
-                INE.FuncVarTextEntry = entry
-            else
-                fvEntry:SetPos(fvState.x, fvState.y)
-                fvEntry:SetSize(fvState.w, fvState.h)
-                if not fvEntry:HasFocus() then
-                    fvEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if fvEntry and IsValid(fvEntry) then
-            fvEntry:Remove()
-        end
-        INE.FuncVarTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 函数变量对话框 DTextEntry 生命周期管理（参数添加）
-    -- ============================================================
-    local fpState = INE.FuncParamFieldState
-    local fpEntry = INE.FuncParamTextEntry
-    if fpState.active then
-        local ed = INE.Editors[fpState.editorID]
-        local vd = ed and (ed.variables["f"] or {})[fpState.varIdx]
-        if not vd then
-            fpState.active = false
-        else
-            if not fpEntry or not IsValid(fpEntry) then
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(fpState.x, fpState.y)
-                entry:SetSize(fpState.w, fpState.h)
-                entry:SetText(fpState.text or "")
-                entry:SetCaretPos(#(fpState.text or ""))
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.FuncParamFieldState and INE.FuncParamFieldState.active then
-                        INE.FuncParamFieldState.text = txt
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE and INE.FuncParamFieldState then
-                        INE.FuncParamFieldState.active = false
-                    end
-                end
-
-                INE.FuncParamTextEntry = entry
-            else
-                fpEntry:SetPos(fpState.x, fpState.y)
-                fpEntry:SetSize(fpState.w, fpState.h)
-                if not fpEntry:HasFocus() then
-                    fpEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if fpEntry and IsValid(fpEntry) then
-            fpEntry:Remove()
-        end
-        INE.FuncParamTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 数组变量对话框 DTextEntry 生命周期管理
-    -- ============================================================
-    local avState = INE.ArrayVarFieldState
-    local avEntry = INE.ArrayVarTextEntry
-    if avState.active then
-        local ed = INE.Editors[avState.editorID]
-        local vd = ed and (ed.variables["g"] or {})[avState.varIdx]
-        if not vd then
-            avState.active = false
-        else
-            if not avEntry or not IsValid(avEntry) then
-                local currentText = ""
-                if avState.field == "name" then currentText = vd.name or ""
-                elseif avState.field == "iname" then currentText = (vd.internalName and not vd.internalName:match("^g_var_")) and vd.internalName or ""
-                elseif avState.field == "val_n" or avState.field == "val_t" then currentText = tostring(INE.ArrayVarItemValue or "") end
-
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(avState.x, avState.y)
-                entry:SetSize(avState.w, avState.h)
-                entry:SetText(currentText)
-                entry:SetCaretPos(#currentText)
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.ArrayVarFieldState and INE.ArrayVarFieldState.active then
-                        local e = INE.Editors[INE.ArrayVarFieldState.editorID]
-                        local v = e and (e.variables["g"] or {})[INE.ArrayVarFieldState.varIdx]
-                        if v then
-                            local f = INE.ArrayVarFieldState.field
-                            if f == "name" then v.name = txt
-                            elseif f == "iname" then v.internalName = txt
-                            elseif f == "val_n" or f == "val_t" then INE.ArrayVarItemValue = txt
-                            end
-                        end
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE then
-                        if INE.ArrayVarFieldState then
-                            INE.ArrayVarFieldState.active = false
-                        end
-                    end
-                end
-
-                INE.ArrayVarTextEntry = entry
-            else
-                avEntry:SetPos(avState.x, avState.y)
-                avEntry:SetSize(avState.w, avState.h)
-                -- 同步文本：切换字段（name↔iname↔val）时 DTextEntry 残留旧字段文本
-                local ed2 = INE.Editors[avState.editorID]
-                local vd2 = ed2 and (ed2.variables["g"] or {})[avState.varIdx]
-                if vd2 then
-                    local expected = ""
-                    if avState.field == "name" then expected = vd2.name or ""
-                    elseif avState.field == "iname" then expected = (vd2.internalName and not vd2.internalName:match("^g_var_")) and vd2.internalName or ""
-                    elseif avState.field == "val_n" or avState.field == "val_t" then expected = tostring(INE.ArrayVarItemValue or "") end
-                    if avEntry:GetText() ~= expected then
-                        avEntry:SetText(expected)
-                        avEntry:SetCaretPos(#expected)
-                    end
-                end
-                if not avEntry:HasFocus() then
-                    avEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if avEntry and IsValid(avEntry) then
-            avEntry:Remove()
-        end
-        INE.ArrayVarTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 卡牌对象变量对话框 DTextEntry 生命周期管理
-    -- ============================================================
-    local cvState = INE.CardVarFieldState
-    local cvEntry = INE.CardVarTextEntry
-    if cvState.active then
-        local ed = INE.Editors[cvState.editorID]
-        local vd = ed and (ed.variables["e"] or {})[cvState.varIdx]
-        if not vd then
-            cvState.active = false
-        else
-            if not cvEntry or not IsValid(cvEntry) then
-                local currentText = ""
-                if cvState.field == "name" then currentText = vd.name or ""
-                elseif cvState.field == "iname" then currentText = vd.internalName or "" end
-
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(cvState.x, cvState.y)
-                entry:SetSize(cvState.w, cvState.h)
-                entry:SetText(currentText)
-                entry:SetCaretPos(#currentText)
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.CardVarFieldState and INE.CardVarFieldState.active then
-                        local e = INE.Editors[INE.CardVarFieldState.editorID]
-                        local v = e and (e.variables["e"] or {})[INE.CardVarFieldState.varIdx]
-                        if v then
-                            local f = INE.CardVarFieldState.field
-                            if f == "name" then v.name = txt
-                            elseif f == "iname" then v.internalName = txt
-                            end
-                        end
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE then
-                        if INE.CardVarFieldState then
-                            INE.CardVarFieldState.active = false
-                        end
-                    end
-                end
-
-                INE.CardVarTextEntry = entry
-            else
-                cvEntry:SetPos(cvState.x, cvState.y)
-                cvEntry:SetSize(cvState.w, cvState.h)
-                -- 同步文本：切换字段（name↔iname）时 DTextEntry 残留旧字段文本
-                local ed2 = INE.Editors[cvState.editorID]
-                local vd2 = ed2 and (ed2.variables["e"] or {})[cvState.varIdx]
-                if vd2 then
-                    local expected = ""
-                    if cvState.field == "name" then expected = vd2.name or ""
-                    elseif cvState.field == "iname" then expected = vd2.internalName or "" end
-                    if cvEntry:GetText() ~= expected then
-                        cvEntry:SetText(expected)
-                        cvEntry:SetCaretPos(#expected)
-                    end
-                end
-                if not cvEntry:HasFocus() then
-                    cvEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if cvEntry and IsValid(cvEntry) then
-            cvEntry:Remove()
-        end
-        INE.CardVarTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 字符串变量对话框 DTextEntry 生命周期管理
-    -- ============================================================
-    local svState = INE.StringVarFieldState
-    local svEntry = INE.StringVarTextEntry
-    if svState.active then
-        -- 检查编辑器/变量是否仍有效
-        local ed = INE.Editors[svState.editorID]
-        local vd = ed and (ed.variables["t"] or {})[svState.varIdx]
-        if not vd then
-            svState.active = false
-        else
-            if not svEntry or not IsValid(svEntry) then
-                local currentText = ""
-                if svState.field == "name" then currentText = vd.name or ""
-                elseif svState.field == "iname" then currentText = (vd.internalName and not vd.internalName:match("^t_var_")) and vd.internalName or ""
-                elseif svState.field == "text" then currentText = vd.initialValue or "" end
-
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(svState.x, svState.y)
-                entry:SetSize(svState.w, svState.h)
-                entry:SetText(currentText)
-                entry:SetCaretPos(#currentText)
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.StringVarFieldState and INE.StringVarFieldState.active then
-                        local e = INE.Editors[INE.StringVarFieldState.editorID]
-                        local v = e and (e.variables["t"] or {})[INE.StringVarFieldState.varIdx]
-                        if v then
-                            local f = INE.StringVarFieldState.field
-                            if f == "name" then v.name = txt
-                            elseif f == "iname" then v.internalName = txt
-                            elseif f == "text" then v.initialValue = txt
-                            end
-                        end
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE then
-                        if INE.StringVarFieldState then
-                            INE.StringVarFieldState.active = false
-                        end
-                    end
-                end
-
-                INE.StringVarTextEntry = entry
-            else
-                -- 更新位置
-                svEntry:SetPos(svState.x, svState.y)
-                svEntry:SetSize(svState.w, svState.h)
-                -- 同步文本：切换字段时 DTextEntry 残留旧字段文本
-                local ed2 = INE.Editors[svState.editorID]
-                local vd2 = ed2 and (ed2.variables["t"] or {})[svState.varIdx]
-                if vd2 then
-                    local expected = ""
-                    if svState.field == "name" then expected = vd2.name or ""
-                    elseif svState.field == "iname" then expected = (vd2.internalName and not vd2.internalName:match("^t_var_")) and vd2.internalName or ""
-                    elseif svState.field == "text" then expected = vd2.initialValue or "" end
-                    if svEntry:GetText() ~= expected then
-                        svEntry:SetText(expected)
-                        svEntry:SetCaretPos(#expected)
-                    end
-                end
-                if not svEntry:HasFocus() then
-                    svEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if svEntry and IsValid(svEntry) then
-            svEntry:Remove()
-        end
-        INE.StringVarTextEntry = nil
-    end
-
-    -- ============================================================
-    -- 布尔值变量对话框 DTextEntry 生命周期管理
-    -- ============================================================
-    local bvState = INE.BoolVarFieldState
-    local bvEntry = INE.BoolVarTextEntry
-    if bvState.active then
-        local ed = INE.Editors[bvState.editorID]
-        local vd = ed and (ed.variables["p"] or {})[bvState.varIdx]
-        if not vd then
-            bvState.active = false
-        else
-            if not bvEntry or not IsValid(bvEntry) then
-                local currentText = ""
-                if bvState.field == "name" then currentText = vd.name or ""
-                elseif bvState.field == "iname" then currentText = (vd.internalName and not vd.internalName:match("^p_var_")) and vd.internalName or "" end
-
-                local entry = vgui.Create("DTextEntry")
-                entry:SetPos(bvState.x, bvState.y)
-                entry:SetSize(bvState.w, bvState.h)
-                entry:SetText(currentText)
-                entry:SetCaretPos(#currentText)
-                entry:SetDrawBackground(false)
-                entry:SetDrawBorder(false)
-                entry:SetTextColor(Color(255, 255, 255, 0))
-                entry:SetCursorColor(Color(255, 255, 255, 0))
-                entry.Paint = nil
-                entry:MakePopup()
-
-                entry.OnTextChanged = function(self)
-                    local txt = self:GetText()
-                    if INE.BoolVarFieldState and INE.BoolVarFieldState.active then
-                        local e = INE.Editors[INE.BoolVarFieldState.editorID]
-                        local v = e and (e.variables["p"] or {})[INE.BoolVarFieldState.varIdx]
-                        if v then
-                            local f = INE.BoolVarFieldState.field
-                            if f == "name" then v.name = txt
-                            elseif f == "iname" then v.internalName = txt
-                            end
-                        end
-                    end
-                end
-
-                entry.OnKeyCodeTyped = function(self, keyCode)
-                    if keyCode == KEY_ESCAPE then
-                        if INE.BoolVarFieldState then
-                            INE.BoolVarFieldState.active = false
-                        end
-                    end
-                end
-
-                INE.BoolVarTextEntry = entry
-            else
-                bvEntry:SetPos(bvState.x, bvState.y)
-                bvEntry:SetSize(bvState.w, bvState.h)
-                local ed2 = INE.Editors[bvState.editorID]
-                local vd2 = ed2 and (ed2.variables["p"] or {})[bvState.varIdx]
-                if vd2 then
-                    local expected = ""
-                    if bvState.field == "name" then expected = vd2.name or ""
-                    elseif bvState.field == "iname" then expected = (vd2.internalName and not vd2.internalName:match("^p_var_")) and vd2.internalName or "" end
-                    if bvEntry:GetText() ~= expected then
-                        bvEntry:SetText(expected)
-                        bvEntry:SetCaretPos(#expected)
-                    end
-                end
-                if not bvEntry:HasFocus() then
-                    bvEntry:MakePopup()
-                end
-            end
-        end
-    else
-        if bvEntry and IsValid(bvEntry) then
-            bvEntry:Remove()
-        end
-        INE.BoolVarTextEntry = nil
-    end
-
-    -- 手动追踪鼠标左键按下的跨帧状态（比 input.WasMousePressed 更可靠）
-    local mouseWasDown = INE._mouseButtonPrevDown or false
-    INE._mouseButtonPrevDown = input.IsMouseDown(MOUSE_LEFT)
-    local mouseJustPressed = not mouseWasDown and INE._mouseButtonPrevDown
-
-    -- 预扫描：在所有编辑器 HandleInput 之前，检查是否有可拖动面板正要被标题栏拖拽
-    -- 这样即使父编辑器在遍历中排在前面（子编辑器在后再插入），也能在鼠标按下的同一帧阻止其交互
-    local draggedEditorID = nil
-    for _, ed in pairs(INE.Editors) do
-        if ed.draggable and not ed.borderless and not ed._titleDragging then
-            local mx, my = gui.MouseX(), gui.MouseY()
-            local onTitleBar = mx >= ed.x and mx <= ed.x + ed.width - 35 and
-                               my >= ed.y and my <= ed.y + 35
-            if onTitleBar and mouseJustPressed then
-                ed._titleDragging = true
-                ed._titleDragStartX = mx
-                ed._titleDragStartY = my
-                ed._titleDragStartEditorX = ed.x
-                ed._titleDragStartEditorY = ed.y
-                draggedEditorID = ed.id
-            end
-        end
-    end
-
-    for id, editor in pairs(INE.Editors) do
-        if not editor.hidden then
-            local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-            -- 检测鼠标是否在任何可见函数子编辑器区域内（不论视图模式），若是则非子编辑器一律阻止鼠标交互
-            local mouseBlockedBySubEditor = false
-            if not editor._isFunctionSubEditor then
-                for _, otherEditor in pairs(INE.Editors) do
-                    if otherEditor._isFunctionSubEditor and not otherEditor.hidden then
-                        if otherEditor.x and otherEditor.y and otherEditor.width and otherEditor.height and
-                           mouseX >= otherEditor.x and mouseX <= otherEditor.x + otherEditor.width and
-                           mouseY >= otherEditor.y and mouseY <= otherEditor.y + otherEditor.height then
-                            mouseBlockedBySubEditor = true
-                            break
-                        end
-                    end
-                end
-            end
-
-            -- 检测是否有函数子面板正在被拖动，若是则阻止所有非被拖面板的鼠标交互（预扫+实时检测）
-            local mouseBlockedByTitleDrag = draggedEditorID ~= nil and id ~= draggedEditorID
-            if not mouseBlockedByTitleDrag and draggedEditorID == nil then
-                for _, otherEditor in pairs(INE.Editors) do
-                    if otherEditor._titleDragging then
-                        mouseBlockedByTitleDrag = id ~= otherEditor.id
-                        break
-                    end
-                end
-            end
-            
-            if editor._findNodeWindowOpen then
-                if editor.overlayWindows and not editor.overlayWindows["find_node_window"] then
-                    INE:OpenFindNodeWindow(editor)
-                end
-                
-                local ch = INE:ReadKeyboardChar(editor)
-                if ch then
-                    editor._findNodeSearchText = (editor._findNodeSearchText or "") .. ch
-                    editor._findNodeSelectedIndex = 0
-                end
-                
-                if input.IsKeyDown(KEY_ESCAPE) and not editor._findNodeEscPressed then
-                    INE:CloseOverlayWindow(editor, "find_node_window")
-                    editor._findNodeEscPressed = true
-                end
-                if not input.IsKeyDown(KEY_ESCAPE) then
-                    editor._findNodeEscPressed = false
-                end
-                
-                if input.IsKeyDown(KEY_BACKSPACE) and not editor._findNodeBackspacePressed then
-                    editor._findNodeSearchText = string.sub(editor._findNodeSearchText or "", 1, -2)
-                    editor._findNodeSelectedIndex = 0
-                    editor._findNodeBackspacePressed = true
-                end
-                if not input.IsKeyDown(KEY_BACKSPACE) then
-                    editor._findNodeBackspacePressed = false
-                end
-                
-                local filteredNodes = INE:GetFilteredNodeList(editor)
-                if input.IsKeyDown(KEY_UP) and not editor._findNodeUpPressed then
-                    editor._findNodeSelectedIndex = math.max(1, (editor._findNodeSelectedIndex or 1) - 1)
-                    editor._findNodeUpPressed = true
-                end
-                if not input.IsKeyDown(KEY_UP) then editor._findNodeUpPressed = false end
-                if input.IsKeyDown(KEY_DOWN) and not editor._findNodeDownPressed then
-                    editor._findNodeSelectedIndex = math.min(#filteredNodes, (editor._findNodeSelectedIndex or 0) + 1)
-                    editor._findNodeDownPressed = true
-                end
-                if not input.IsKeyDown(KEY_DOWN) then editor._findNodeDownPressed = false end
-                
-                if input.IsKeyDown(KEY_ENTER) and not editor._findNodeEnterPressed then
-                    editor._findNodeEnterPressed = true
-                    local selectedIdx = editor._findNodeSelectedIndex or 0
-                    if selectedIdx >= 1 and selectedIdx <= #filteredNodes then
-                        local node = filteredNodes[selectedIdx]
-                        INE:CenterViewOn(editor, node.x + node.width/2, node.y + node.height/2)
-                        editor.selectedNodes = {node}
-                        INE:CloseOverlayWindow(editor, "find_node_window")
-                    end
-                end
-                if not input.IsKeyDown(KEY_ENTER) then editor._findNodeEnterPressed = false end
-            end
-            
-            -- 若函数子面板正在被拖动，或鼠标位于函数子编辑器区域内，阻止非子编辑器的所有鼠标交互
-            if mouseBlockedByTitleDrag or mouseBlockedBySubEditor then
-                editor._mouseOverOverlayWindow = true
-            end
-
-            INE:UpdateNotifications(editor)
-            if not mouseBlockedByTitleDrag and not mouseBlockedBySubEditor then
-                INE:HandleInput(editor)
-            end
-        end
-    end
-
-    -- ============================================================
-    -- 文本槽内联输入 DTextEntry 生命周期管理（2026-10-04 新增）
-    -- 「抉择」等模板 <> 文本槽：直接输入模式下点击值区激活，透明 DTextEntry 捕获
-    -- IME/键盘输入（与上方各变量对话框输入框同方案），OnTextChanged 写回统一槽与扁平键。
-    -- ============================================================
-    local tsState = INE.TextSlotEditState
-    local tsEntry = INE.TextSlotTextEntry
-    if tsState.active and tsState.node and tsState.compId then
-        -- 校验节点仍有效（可能被删除）且组件仍属该节点配置
-        local ed = tsState.node.editor
-        local nodeExists = false
-        if ed and ed.nodes then
-            for _, n in ipairs(ed.nodes) do
-                if n == tsState.node then nodeExists = true break end
-            end
-        end
-        if not nodeExists then
-            tsState.active = false
-        elseif not tsEntry or not IsValid(tsEntry) then
-            local entry = vgui.Create("DTextEntry")
-            entry:SetPos(tsState.x, tsState.y)
-            entry:SetSize(tsState.w, tsState.h)
-            entry:SetText(tsState.text or "")
-            entry:SetCaretPos(#(tsState.text or ""))
-            entry:SetDrawBackground(false)
-            entry:SetDrawBorder(false)
-            entry:SetTextColor(Color(255, 255, 255, 0))
-            entry:SetCursorColor(Color(255, 255, 255, 0))
-            entry.Paint = nil
-            entry:MakePopup()
-
-            entry.OnTextChanged = function(self)
-                local txt = self:GetText()
-                local st = INE.TextSlotEditState
-                if not (st and st.active and st.node and st.compId) then return end
-                st.text = txt
-                local node = st.node
-                local data = node.data
-                if not data then return end
-                data[st.compId] = txt
-                data.slots = data.slots or {}
-                local slot = data.slots[st.compId]
-                if not slot then
-                    slot = INE.GetOrCreateSlotData("text", node, st.compId, txt)
-                end
-                slot.mode = "literal"
-                slot.literalValue = txt
-                slot.variableRef = nil
-            end
-
-            entry.OnKeyCodeTyped = function(self, keyCode)
-                if keyCode == KEY_ESCAPE or keyCode == KEY_ENTER then
-                    if INE.TextSlotEditState then INE.TextSlotEditState.active = false end
-                end
-            end
-
-            INE.TextSlotTextEntry = entry
-        else
-            -- 跟随节点拖动 / 缩放更新位置与尺寸
-            tsEntry:SetPos(tsState.x, tsState.y)
-            tsEntry:SetSize(tsState.w, tsState.h)
-            if not tsEntry:HasFocus() then
-                tsEntry:MakePopup()
-            end
-        end
-    else
-        if tsEntry and IsValid(tsEntry) then
-            tsEntry:Remove()
-        end
-        INE.TextSlotTextEntry = nil
-    end
-end
 
 --[[
     处理单个编辑器的鼠标和键盘输入。
@@ -4612,419 +2539,6 @@ end
 ]]
 
 
---[[
-    判断一个点是否在矩形区域内（碰撞检测工具函数）。
-    
-    @param  px    {number}  点的X坐标（屏幕坐标）
-    @param  py    {number}  点的Y坐标（屏幕坐标）
-    @param  rect  {table}   矩形区域 {x, y, w, h}
-    
-    @return {boolean} 点在矩形内返回true，否则返回false
-]]
-function INE:IsPointInRect(px, py, rect)
-    return px >= rect.x and px <= rect.x + rect.w and py >= rect.y and py <= rect.y + rect.h
-end
-
---[[
-    判断点是否在圆形内。
-    用于检测鼠标是否悬停在圆形按钮或数据点上。
-    
-    @param  px      {number}  点X坐标
-    @param  py      {number}  点Y坐标
-    @param  cx      {number}  圆心X坐标
-    @param  cy      {number}  圆心Y坐标
-    @param  radius  {number}  圆半径
-    
-    @return {boolean} 点在圆内返回true，否则返回false
-]]
-function INE:IsPointInCircle(px, py, cx, cy, radius)
-    local dx = px - cx
-    local dy = py - cy
-    return (dx * dx + dy * dy) <= (radius * radius)
-end
-
---[[
-    判断鼠标是否在节点的标题栏区域。
-    标题栏高度为 24px（乘以画布缩放后的屏幕坐标）。
-    开始点（isStartNode）没有标题栏，始终返回 false。
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  node    {table}   节点实例
-    @param  mouseX  {number}  鼠标X坐标（屏幕坐标）
-    @param  mouseY  {number}  鼠标Y坐标（屏幕坐标）
-    
-    @return {boolean} 鼠标在标题栏区域内返回 true
-]]
-function INE:IsMouseOnNodeTitle(editor, node, mouseX, mouseY)
-    if node.isStartNode then return false end
-    local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-    local nodeW = node.width * editor.canvasScale
-    local titleH = 24 * editor.canvasScale
-    return mouseX >= nodeX and mouseX <= nodeX + nodeW and
-           mouseY >= nodeY and mouseY <= nodeY + titleH
-end
-
---[[
-    检测鼠标是否在节点的内容区域（标题栏下方、非端口区域）。
-    用于区分"点击节点体选中输出点"与"拖拽连线从端口开始"。
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  node    {table}   要检测的节点
-    @param  mouseX  {number}  鼠标屏幕X坐标
-    @param  mouseY  {number}  鼠标屏幕Y坐标
-    
-    @return {boolean} 是否在节点内容区域
-]]
-function INE:IsMouseOnNodeBody(editor, node, mouseX, mouseY)
-    if node.isStartNode then return false end
-    local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-    local nodeW = node.width * editor.canvasScale
-    local nodeH = node.height * editor.canvasScale
-    local titleH = 24 * editor.canvasScale
-    return mouseX >= nodeX + 20 * editor.canvasScale and mouseX <= nodeX + nodeW - 20 * editor.canvasScale and
-           mouseY >= nodeY + titleH and mouseY <= nodeY + nodeH - 20 * editor.canvasScale
-end
-
---[[
-    根据节点ID在编辑器中查找节点实例。
-    
-    @param  editor  {table}   编辑器实例对象
-    @param  nodeID  {string}  要查找的节点ID
-    
-    @return {table|nil} 找到的节点实例，未找到返回nil
-]]
-function INE:GetNodeByID(editor, nodeID)
-    for _, node in ipairs(editor.nodes) do
-        if node.id == nodeID then
-            return node
-        end
-    end
-    return nil
-end
-
---[[
-    获取指定屏幕坐标处的数据点（用于数据连接拖拽释放检测）。
-    根据拖拽的数据点类型，检测相反类型的数据点（输出拖到输入，输入拖到输出）。
-
-    @param  editor      {table}   编辑器实例对象
-    @param  screenX     {number}  屏幕X坐标
-    @param  screenY     {number}  屏幕Y坐标
-    @param  fromType    {string}  拖拽起点类型 ("output" 或 "input")
-
-    @return {table|nil} 命中的数据点信息 {node, portData, portType, portIndex}，未命中返回nil
-]]
-function INE:GetDataPortAtPosition(editor, screenX, screenY, fromType)
-    -- 根据拖拽起点类型，检测相反类型的数据点
-    local targetType = (fromType == "output") and "input" or "output"
-    local clickPadding = 4 * editor.canvasScale  -- 点击容差
-
-    -- 逆序遍历节点：后创建/后绘制的节点在上层，优先检测
-    for i = #editor.nodes, 1, -1 do
-        local node = editor.nodes[i]
-        if not node.isUnregistered then
-            if targetType == "input" and node._inputDataPortPositions then
-                for j, portPos in ipairs(node._inputDataPortPositions) do
-                    local clickRadius = (portPos.radius or 0) + clickPadding
-                    if self:IsPointInCircle(screenX, screenY, portPos.x, portPos.y, clickRadius) then
-                        return {
-                            node = node,
-                            portData = portPos.data,
-                            portType = "input",
-                            portIndex = j
-                        }
-                    end
-                end
-            elseif targetType == "output" and node._outputDataPortPositions then
-                for j, portPos in ipairs(node._outputDataPortPositions) do
-                    local clickRadius = (portPos.radius or 0) + clickPadding
-                    if self:IsPointInCircle(screenX, screenY, portPos.x, portPos.y, clickRadius) then
-                        return {
-                            node = node,
-                            portData = portPos.data,
-                            portType = "output",
-                            portIndex = j
-                        }
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    获取指定屏幕坐标处的节点（从上到下逆序遍历，优先返回最上层节点）。
-
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-
-    @return {table|nil} 命中的节点实例，未命中返回nil
-]]
-function INE:GetNodeAtPosition(editor, screenX, screenY)
-    -- 逆序遍历：后创建/后绘制的节点在上层，优先检测
-    for i = #editor.nodes, 1, -1 do
-        local node = editor.nodes[i]
-        -- 跳过开始点节点（只能通过端口圆点选中，不由 GetNodeAtPosition 处理）
-        if not node.isStartNode then
-            local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-            local nodeW = node.width * editor.canvasScale
-            local nodeH = node.height * editor.canvasScale
-
-            if screenX >= nodeX and screenX <= nodeX + nodeW and
-               screenY >= nodeY and screenY <= nodeY + nodeH then
-                return node
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    检测屏幕坐标是否在某个节点的"添加数据点"按钮（绿色/深蓝色圆形）上。
-    数据点按钮位于节点边线上，半径超出节点边界。
-    用于在 GetNodeAtPosition 之前优先检测，确保点击数据点按钮能正确触发。
-
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-
-    @return {table|nil} 命中的节点实例（数据点按钮属于该节点），未命中返回nil
-]]
-function INE:GetDataPortButtonNodeAtPosition(editor, screenX, screenY)
-    -- 逆序遍历：后创建的节点在上层
-    for i = #editor.nodes, 1, -1 do
-        local node = editor.nodes[i]
-        if not node.isStartNode then
-            -- 检查输出数据点按钮（绿色"+"号）
-            if node._dataPortButtonRect then
-                if self:IsPointInRect(screenX, screenY, node._dataPortButtonRect) then
-                    return node
-                end
-            end
-            -- 检查输入数据点按钮（深蓝色"+"号）
-            if node._inputDataPortButtonRect then
-                if self:IsPointInRect(screenX, screenY, node._inputDataPortButtonRect) then
-                    return node
-                end
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    全局检测屏幕坐标是否在任意节点的数据点图标上（输出或输入）。
-    数据点图标位于节点边线上，半径超出节点边界，GetNodeAtPosition 无法命中。
-    需要在 GetNodeAtPosition 之前独立检测。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {table|nil} 命中的数据点信息 {node, portData, portType, portIndex}，未命中返回nil
-]]
-function INE:GetDataPortIconAtPosition(editor, screenX, screenY)
-    local clickPadding = 4 * editor.canvasScale
-    -- 逆序遍历：后创建/后绘制的节点在上层，优先检测
-    for i = #editor.nodes, 1, -1 do
-        local node = editor.nodes[i]
-        -- 允许开始点（含数据源开始点如"钳击对象"）的数据端口作为拖线起点；
-        -- 普通开始点无数据端口，不受影响
-        if not node.isUnregistered then
-            -- 检测输出数据点
-            if node._outputDataPortPositions then
-                for j, portPos in ipairs(node._outputDataPortPositions) do
-                    local clickRadius = (portPos.radius or 0) + clickPadding
-                    if self:IsPointInCircle(screenX, screenY, portPos.x, portPos.y, clickRadius) then
-                        return {
-                            node = node,
-                            portData = portPos.data,
-                            portType = "output",
-                            portIndex = j
-                        }
-                    end
-                end
-            end
-            -- 检测输入数据点
-            if node._inputDataPortPositions then
-                for j, portPos in ipairs(node._inputDataPortPositions) do
-                    local clickRadius = (portPos.radius or 0) + clickPadding
-                    if self:IsPointInCircle(screenX, screenY, portPos.x, portPos.y, clickRadius) then
-                        return {
-                            node = node,
-                            portData = portPos.data,
-                            portType = "input",
-                            portIndex = j
-                        }
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    检测屏幕坐标是否在节点的交互式元素（下拉框、数字框）上。
-    用于 HandleInput 中拦截点击，避免穿透到输出点选中逻辑。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  node     {table}   要检测的节点
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {boolean} 点击在交互式元素上返回 true，否则返回 false
-]]
-function INE:GetNodeInteractiveElement(editor, node, screenX, screenY)
-    -- 使用绘制阶段记录的交互元素包围盒进行命中检测，
-    -- 避免重复布局逻辑导致的位置偏差。
-    local rects = editor._interactiveRects
-    if not rects then return false end
-    
-    for _, rect in ipairs(rects) do
-        if rect.nodeId == node.id and
-           screenX >= rect.x and screenX <= rect.x + rect.w and
-           screenY >= rect.y and screenY <= rect.y + rect.h then
-            return true
-        end
-    end
-    return false
-end
-
---[[
-    检测屏幕坐标是否在指定节点的输出端口上。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  node     {table}   要检测的节点
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {string|nil} 命中返回端口标识 "output"，未命中返回nil
-]]
-function INE:GetOutputPortAtPosition(editor, node, screenX, screenY)
-    if not node.hasOutput then return nil end
-    
-    local portR = 6 * editor.canvasScale
-    local clickR = 24 * editor.canvasScale
-    
-    if node.hasSecondOutput then
-        -- 双分支：检测两个端口
-        local nodeScreenX, nodeScreenY = self:WorldToScreen(editor, node.x, node.y)
-        local nodeW = node.width * editor.canvasScale
-        local nodeH = node.height * editor.canvasScale
-        local portScreenX = nodeScreenX + nodeW
-        
-        -- 满足分支（上）
-        local topPortScreenY = nodeScreenY + nodeH / 3
-        local dx = screenX - portScreenX
-        local dy = screenY - topPortScreenY
-        if dx * dx + dy * dy <= clickR * clickR then
-            return "satisfied"
-        end
-        
-        -- 不满足分支（下）
-        local botPortScreenY = nodeScreenY + nodeH * 2 / 3
-        dy = screenY - botPortScreenY
-        if dx * dx + dy * dy <= clickR * clickR then
-            return "not_satisfied"
-        end
-        
-        return nil
-    else
-        -- 单输出端口：圆形距离检测
-        local portScreenX, portScreenY = self:WorldToScreen(editor, node.x + node.width, node.y + node.height / 2)
-        local dx = screenX - portScreenX
-        local dy = screenY - portScreenY
-        if dx * dx + dy * dy <= clickR * clickR then
-            return "output"
-        end
-        return nil
-    end
-end
-
---[[
-    检测屏幕坐标是否在某个开始点节点的输出端口圆点上。
-    开始点仅通过端口圆点（而非整个节点矩形）进行选中。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {table|nil} 命中的开始点节点实例，未命中返回nil
-]]
-function INE:GetStartNodeAtPort(editor, screenX, screenY)
-    for i = #editor.nodes, 1, -1 do
-        local node = editor.nodes[i]
-        -- 数据源开始点（钳击对象）无执行输出端口，其中数据端口由 GetDataPortIconAtPosition 处理
-        if node.isStartNode and node.name ~= "data_start_point" then
-            local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-            local portR = 6 * editor.canvasScale
-            local portCX = nodeX  -- 端口圆心在 Y 轴（node.x = 0）
-            local portCY = nodeY + node.height * editor.canvasScale / 2  -- 端口圆心Y（垂直居中）
-
-            -- 检测鼠标是否在端口圆点范围内（使用 24*scale 的圆形命中半径）
-            local hitR = 24 * editor.canvasScale
-            local dx = screenX - portCX
-            local dy = screenY - portCY
-            if dx * dx + dy * dy <= hitR * hitR then
-                return node
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    检测屏幕坐标是否在任意节点的输入端口上（返回节点，用于拖拽连线检测悬停）。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {table|nil} 命中输入端口的节点，未命中返回nil
-]]
-function INE:GetInputNodeAtPosition(editor, screenX, screenY)
-    local hitR = 24 * editor.canvasScale
-
-    for i = #editor.nodes, 1, -1 do
-        local node = editor.nodes[i]
-        if not node.isStartNode and node.hasInput then
-            local portScreenX, portScreenY = self:WorldToScreen(editor, node.x, node.y + node.height / 2)
-            local dx = screenX - portScreenX
-            local dy = screenY - portScreenY
-            if dx * dx + dy * dy <= hitR * hitR then
-                return node
-            end
-        end
-    end
-    return nil
-end
-
---[[
-    检测屏幕坐标是否在任意节点的输入端口上。
-    
-    @param  editor   {table}   编辑器实例对象
-    @param  screenX  {number}  屏幕X坐标
-    @param  screenY  {number}  屏幕Y坐标
-    
-    @return {table|nil} 命中返回 {node = 目标节点}，未命中返回nil
-]]
-function INE:GetInputPortAtPosition(editor, screenX, screenY)
-    local hitR = 24 * editor.canvasScale
-    
-    for _, node in ipairs(editor.nodes) do
-        if node.hasInput then
-            local portScreenX, portScreenY = self:WorldToScreen(editor, node.x, node.y + node.height / 2)
-            local dx = screenX - portScreenX
-            local dy = screenY - portScreenY
-            if dx * dx + dy * dy <= hitR * hitR then
-                return {node = node}
-            end
-        end
-    end
-    return nil
-end
 
 --[[
     从编辑器中移除指定节点及其所有关联的连接。
@@ -5222,13 +2736,13 @@ end
 ]]
 function CreateNewNodeEditor(panelID, pos, scale, allowedNodes, hidden, simplified, borderless, showTitleMenu, editorMode, showCoordinates, draggable)
     if not panelID then
-        error("[IndependentNodeEditor] CreateNewNodeEditor: panelID 不能为 nil")
+        error(T("editor.nodeeditor.create_panel_id_nil"))
     end
 
     -- 验证所有允许的节点类型是否已注册
     for _, nodeName in ipairs(allowedNodes or {}) do
         if not INE.RegisteredNodes[nodeName] then
-            error("[IndependentNodeEditor] 节点 '" .. tostring(nodeName) .. "' 未注册，请先使用 LogNewNode 注册")
+            error(T("editor.nodeeditor.node_not_registered_log", tostring(nodeName)))
         end
     end
 
@@ -5584,10 +3098,10 @@ end
 ]]
 function ImportNodeEditorData(panelID, data)
     local editor = INE.Editors[panelID]
-    if not editor then return false, "编辑器不存在" end
+    if not editor then return false, T("editor.nodeeditor.import_editor_missing") end
     
     if not data or not data.nodes then
-        return false, "无效的数据"
+        return false, T("editor.nodeeditor.import_invalid_data")
     end
     
     -- 构建允许节点类型的快速查找表
@@ -5720,7 +3234,7 @@ function AddNodeToEditor(panelID, nodeName, x, y)
     local editor = INE.Editors[panelID]
     if not editor then return nil end
     if not INE.RegisteredNodes[nodeName] then
-        error("[IndependentNodeEditor] 节点未注册: " .. tostring(nodeName))
+        error(T("editor.nodeeditor.node_not_registered", tostring(nodeName)))
     end
     
     local node = INE:CreateNewNodeInstance(nodeName, editor, x or 0, y or 0)
@@ -5781,10 +3295,10 @@ end
 -- ====================================
 function LogNewNode(nodeParams, nodeName)
     if not nodeParams then
-        error("[IndependentNodeEditor] LogNewNode: nodeParams 不能为 nil")
+        error(T("editor.nodeeditor.lognewnode_params_nil"))
     end
     if not nodeName then
-        error("[IndependentNodeEditor] LogNewNode: nodeName 不能为 nil")
+        error(T("editor.nodeeditor.lognewnode_name_nil"))
     end
 
     -- 构建节点模板（注册后用于创建节点实例的原型）

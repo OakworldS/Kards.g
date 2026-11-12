@@ -32,7 +32,7 @@ if SERVER then
     util.AddNetworkString("KardsTableExited")  -- 服务端→客户端：退出成功（WriteEntity 牌桌, WriteUInt slot）
     util.AddNetworkString("KardsTableReadyAck")-- 服务端→客户端：准备回执（WriteEntity 牌桌, WriteUInt slot, WriteBool ready）
     util.AddNetworkString("KardsTableBattleStart") -- 服务端→客户端：对战正式开始（WriteEntity 牌桌, WriteUInt 先手槽位, WriteBool 是否有敌方；有敌方时追加 WriteString 敌方昵称, WriteString 敌方 SteamID64。客户端隐藏 HUD + 摄像头过渡；观战者分支仅 WriteEntity+先手槽位+WriteBool(false)，无敌方信息，见 table_session.lua / cl_init.lua net.Receive）
-    util.AddNetworkString("KardsTableMsg")     -- 服务端→客户端：提示消息（WriteString 文字，如槽位被占用）
+    util.AddNetworkString("KardsTableMsg")     -- 服务端→客户端：提示消息（WriteString 文案；一律经 KARDS.Lang.TFor / ReasonFor 按接收者语言解析后发送，下发内容已是成品文本）
     util.AddNetworkString("KardsTableToggleMode")  -- 客户端→服务端：请求切换组卡/对战模式（WriteEntity 牌桌，宽面判定）
     util.AddNetworkString("KardsTableModeChanged") -- 服务端→客户端：模式已切换（WriteEntity 牌桌, WriteString 模式）
     util.AddNetworkString("KardsDeckCardClick")   -- 客户端→服务端：点击组卡卡牌（WriteEntity 实体）
@@ -63,10 +63,11 @@ if SERVER then
     util.AddNetworkString("KardsDragEnd")  -- 客户端→服务端→其他客户端：拖拽结束（WriteEntity 牌桌, WriteEntity 卡, WriteBool 是否回手牌）
     util.AddNetworkString("KardsCommandExit") -- 客户端→服务端：指令出场完成（WriteEntity 牌桌, WriteEntity 指令卡；服务端据此销毁实体，见 table_battledeck.lua net.Receive / OnPlayCard 指令分支）
     util.AddNetworkString("KardsHintRelay")   -- 客户端→服务端：本方提示中继请求（WriteEntity 牌桌, WriteString 提示文字；服务端转给观战者，对手不可见，见 table_battledeck.lua net.Receive）
-    util.AddNetworkString("KardsHintObserver") -- 服务端→观战者：提示广播（WriteEntity 牌桌, WriteString 被提示玩家名, WriteString 提示文字；观战端牌桌中心 z+ 上方 3D2D 打字机显示，见 cl_battle_hint.lua）
+    util.AddNetworkString("KardsHintObserver") -- 服务端→观战者：提示广播（WriteEntity 牌桌, WriteString 被提示玩家名, WriteString 提示文字；文字经 KARDS.Lang.TFor 按接收者语言解析（错误码走 ReasonFor），观战端牌桌中心 z+ 上方 3D2D 打字机显示，见 cl_battle_hint.lua）
     util.AddNetworkString("KardsSwitchSlot") -- 服务端→客户端：无对手模式操作身份切换（WriteEntity 牌桌, WriteUInt 新槽位；kards_switch 指令，客户端更新视角/相机/手牌卡面，见 cl_init.lua net.Receive）
     util.AddNetworkString("KardsReturnToHand") -- 服务端→客户端：返回手牌动画通知（WriteEntity 牌桌, WriteUInt 槽位, WriteEntity 源战场实体（小模型）, WriteEntity 新卡实体（正常模型动画载体）, WriteUInt 手牌序号, WriteUInt 手牌总数；见 table_battledeck.lua BroadcastReturnToHand / cl_init.lua net.Receive）
     util.AddNetworkString("KardsReturnToHandDone") -- 客户端→服务端：返回手牌动画完成（WriteEntity 牌桌, WriteEntity 新卡实体；服务端据此移除源战场实体并清理映射，见 table_battledeck.lua net.Receive）
+    util.AddNetworkString("KardsConfiscateAnim") -- 服务端→客户端：收缴动画通知（WriteEntity 牌桌, WriteUInt 槽位, WriteEntity 源战场实体（小模型，可能 NULL）, WriteEntity 完整卡实体（动画载体）, WriteUInt 手牌序号, WriteUInt 手牌总数；客户端等源小模型阵亡移除后 0.5 秒原地重现完整卡，再 0.5 秒飞入收缴方手牌，见 table_battledeck.lua BroadcastConfiscate / cl_battle_confiscate.lua net.Receive）
     util.AddNetworkString("KardsUnitRetreat") -- 客户端→服务端：单位撤退（WriteEntity 牌桌, WriteEntity 单位战场实体；服务端 SimRetreat + 布局广播驱动撤退动画，见 table_battledeck.lua OnUnitRetreat / cl_battle_ops.lua）
     util.AddNetworkString("KardsBattleBGM") -- 服务端→客户端：战斗 BGM 启动（WriteEntity 牌桌, WriteUInt 槽位；仅在场玩家收到，观战者不发——客户端本地随机选风格/曲目循环播放，见 cl_battle_bgm.lua）
     util.AddNetworkString("KardsGameOver") -- 服务端→客户端：对局结束结算（WriteEntity 牌桌, WriteUInt 胜利槽位, WriteUInt 失败槽位；客户端播放 1 秒结算动画 + 胜负字样 + 继续按钮，见 table_battledeck.lua OnGameOver / cl_battle_gameover.lua net.Receive）
@@ -147,6 +148,19 @@ function KARDS.IsOperator(ply)
     end
     local group = ply:GetUserGroup()
     return group == "operator" or group == "admin" or group == "superadmin"
+end
+
+--[[
+    开发/调试命令的权限判定（kards_battle_*、kards_test* 等共用）
+    与 KARDS.IsOperator 的区别：服务端控制台执行时 ply 为无效实体，应放行，
+    否则服主在服务器控制台无法使用这些命令；玩家执行时仍要求 operator 及以上。
+
+    @param ply Player 执行玩家，可为 NULL（服务器控制台）
+    @return boolean 是否允许执行
+]]
+function KARDS.CanUseDevCommand(ply)
+    if not IsValid(ply) then return true end
+    return KARDS.IsOperator(ply)
 end
 
 -- 职责拆分文件（各文件头 local ENT = scripted_ents.GetStored("sent_kards_battle_table").t）

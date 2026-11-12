@@ -12,7 +12,7 @@
   - DrawCardObjectSelector（卡牌对象选择器弹窗）
 
 状态数据：
-  - NumericVarPopup（数字变量弹窗状态）
+  - NumericVarPopup（数字变量弹窗状态，已迁入 editor.session，见 ADR 0003）
 
 源文件：cl_canvas_editor.lua
   - 状态数据与功能函数：行 2495~4017
@@ -25,6 +25,9 @@ KARDS = KARDS or {}
 KARDS.CardEditor = KARDS.CardEditor or {}
 KARDS.CardEditor.Canvas = KARDS.CardEditor.Canvas or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 --[[
     注册数字型变量供数字槽选择
     name: 变量名称（显示在弹窗中）
@@ -35,20 +38,20 @@ function KARDS.CardEditor.RegisterNumericVariable(name, value)
     table.insert(vars, {name = name, value = value})
 end
 
--- 数字型变量选择弹窗状态
-KARDS.CardEditor.Canvas.NumericVarPopup = nil  -- { numberId, nodeId, x, y, searchText, page, totalPages }
+-- 数字型变量选择弹窗状态已迁入编辑器会话（editor.session.NumericVarPopup）
+-- 见 docs/adr/0003-节点图值与编辑器会话分离.md
 
--- 绘制数字型变量选择弹窗
-function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
-    local popup = KARDS.CardEditor.Canvas.NumericVarPopup
+-- 绘制数字型变量选择弹窗。状态由 INE 会话持有，本函数只负责绘制与交互
+function KARDS.CardEditor.Canvas.DrawNumericVarPopup(popup, ownerEditor)
+    local session = ownerEditor and ownerEditor.session
     
     -- 弹窗关闭时清理 DTextEntry
     if not popup then
-        if KARDS.CardEditor.Canvas._searchTextEntry then
-            if IsValid(KARDS.CardEditor.Canvas._searchTextEntry) then
-                KARDS.CardEditor.Canvas._searchTextEntry:Remove()
+        if session and session._searchTextEntry then
+            if IsValid(session._searchTextEntry) then
+                session._searchTextEntry:Remove()
             end
-            KARDS.CardEditor.Canvas._searchTextEntry = nil
+            session._searchTextEntry = nil
         end
         return
     end
@@ -87,7 +90,7 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
     -- 搜索文本绘制
     local displayText = searchText
     if displayText == "" then
-        draw.SimpleText("搜索变量...", fontName, px + 8, searchY + inputH / 2, isSearchActive and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.canvasvar.search_variables"), fontName, px + 8, searchY + inputH / 2, isSearchActive and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     else
         draw.SimpleText(displayText, fontName, px + 8, searchY + inputH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     end
@@ -180,7 +183,7 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
                                 node.width = nw
                                 node.height = nh
                             end
-                            KARDS.CardEditor.Canvas.NumericVarPopup = nil
+                            if session then session.NumericVarPopup = nil end
                         end
                         return
                     end
@@ -199,7 +202,7 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
         else
             -- 点击弹窗外区域 → 关闭
             popup.searchActive = false
-            KARDS.CardEditor.Canvas.NumericVarPopup = nil
+            if session then session.NumericVarPopup = nil end
             return
         end
     end
@@ -372,7 +375,7 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
 
         -- 标题
         local inputH = rowH - 2
-        draw.SimpleText("筛选", fontName, filterPX + filterPW / 2, filterPY + inputH / 2 + 2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.canvasvar.filter"), fontName, filterPX + filterPW / 2, filterPY + inputH / 2 + 2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
         local fRowY = filterPY + inputH + 6
         local fRowH = rowH - 2
@@ -411,11 +414,11 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
         -- Row 1：阵营（友方/敌方）
         local f1Y = fRowY
         local f1ColW = (filterPW - fPad * 3) / 2
-        if DrawFilterBtnNum(filterPX + fPad, f1Y, f1ColW, "友方", popup.filterFaction == "友方") then
+        if DrawFilterBtnNum(filterPX + fPad, f1Y, f1ColW, T("editor.canvasvar.faction_friendly"), popup.filterFaction == "友方") then
             if popup.filterFaction == "友方" then popup.filterFaction = nil else popup.filterFaction = "友方" end
             RebuildFilterSearchNum()
         end
-        if DrawFilterBtnNum(filterPX + fPad * 2 + f1ColW, f1Y, f1ColW, "敌方", popup.filterFaction == "敌方") then
+        if DrawFilterBtnNum(filterPX + fPad * 2 + f1ColW, f1Y, f1ColW, T("editor.canvasvar.faction_enemy"), popup.filterFaction == "敌方") then
             if popup.filterFaction == "敌方" then popup.filterFaction = nil else popup.filterFaction = "敌方" end
             RebuildFilterSearchNum()
         end
@@ -423,15 +426,15 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
         -- Row 2：位置（手牌/本回合/总部）
         local f2Y = f1Y + fRowH + 2
         local f2ColW = (filterPW - fPad * 4) / 3
-        if DrawFilterBtnNum(filterPX + fPad, f2Y, f2ColW, "手牌", popup.filterLocation == "手牌") then
+        if DrawFilterBtnNum(filterPX + fPad, f2Y, f2ColW, T("editor.canvasvar.location_hand"), popup.filterLocation == "手牌") then
             if popup.filterLocation == "手牌" then popup.filterLocation = nil else popup.filterLocation = "手牌" end
             RebuildFilterSearchNum()
         end
-        if DrawFilterBtnNum(filterPX + fPad * 2 + f2ColW, f2Y, f2ColW, "本回合", popup.filterLocation == "本回合") then
+        if DrawFilterBtnNum(filterPX + fPad * 2 + f2ColW, f2Y, f2ColW, T("editor.canvasvar.location_this_turn"), popup.filterLocation == "本回合") then
             if popup.filterLocation == "本回合" then popup.filterLocation = nil else popup.filterLocation = "本回合" end
             RebuildFilterSearchNum()
         end
-        if DrawFilterBtnNum(filterPX + fPad * 3 + f2ColW * 2, f2Y, f2ColW, "总部", popup.filterLocation == "总部") then
+        if DrawFilterBtnNum(filterPX + fPad * 3 + f2ColW * 2, f2Y, f2ColW, T("editor.canvasvar.location_hq"), popup.filterLocation == "总部") then
             if popup.filterLocation == "总部" then popup.filterLocation = nil else popup.filterLocation = "总部" end
             RebuildFilterSearchNum()
         end
@@ -440,16 +443,16 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
         local f3Y = f2Y + fRowH + 2
         local showCmdAndCounter = true
         local typeColW = showCmdAndCounter and (filterPW - fPad * 4) / 3 or (filterPW - fPad * 2)
-        if DrawFilterBtnNum(filterPX + fPad, f3Y, typeColW, "单位", popup.filterType == "单位") then
+        if DrawFilterBtnNum(filterPX + fPad, f3Y, typeColW, T("editor.canvasvar.type_unit"), popup.filterType == "单位") then
             if popup.filterType == "单位" then popup.filterType = nil else popup.filterType = "单位" end
             RebuildFilterSearchNum()
         end
         if showCmdAndCounter then
-            if DrawFilterBtnNum(filterPX + fPad * 2 + typeColW, f3Y, typeColW, "指令", popup.filterType == "指令") then
+            if DrawFilterBtnNum(filterPX + fPad * 2 + typeColW, f3Y, typeColW, T("editor.canvasvar.type_order"), popup.filterType == "指令") then
                 if popup.filterType == "指令" then popup.filterType = nil else popup.filterType = "指令" end
                 RebuildFilterSearchNum()
             end
-            if DrawFilterBtnNum(filterPX + fPad * 3 + typeColW * 2, f3Y, typeColW, "反制", popup.filterType == "反制") then
+            if DrawFilterBtnNum(filterPX + fPad * 3 + typeColW * 2, f3Y, typeColW, T("editor.canvasvar.type_counter"), popup.filterType == "反制") then
                 if popup.filterType == "反制" then popup.filterType = nil else popup.filterType = "反制" end
                 RebuildFilterSearchNum()
             end
@@ -546,7 +549,7 @@ function KARDS.CardEditor.Canvas.DrawNumericVarPopup()
         render.SetScissorRect(0, 0, 0, 0, false)
     end
 
-    -- 搜索框的键盘输入由 HandleInput 中的按键事件处理
+    -- 搜索框的键盘输入由 RouteInput 中的按键事件处理
 end
 
 -- ================================================================
@@ -554,9 +557,8 @@ end
 -- 外观与 DrawNumericVarPopup 相同：搜索框 + 3列网格 + 分页导航
 -- 选项为函数变量（全局函数变量 + 当前槽局部函数）
 -- ================================================================
-function KARDS.CardEditor.Canvas.DrawFuncVarPopup()
+function KARDS.CardEditor.Canvas.DrawFuncVarPopup(popup, ownerEditor)
     local INE = KARDS.CardEditor.IndependentNodeEditor
-    local popup = KARDS.CardEditor.Canvas.FuncVarPopup
     if not popup then return end
 
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
@@ -591,7 +593,7 @@ function KARDS.CardEditor.Canvas.DrawFuncVarPopup()
     end
 
     if searchText == "" then
-        draw.SimpleText("搜索函数...", fontName, px + 8, searchY + inputH / 2, isSearchActive and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.canvasvar.search_functions"), fontName, px + 8, searchY + inputH / 2, isSearchActive and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     else
         draw.SimpleText(searchText, fontName, px + 8, searchY + inputH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     end
@@ -673,7 +675,7 @@ function KARDS.CardEditor.Canvas.DrawFuncVarPopup()
                             node.height = nh
                         end
                     end
-                    KARDS.CardEditor.Canvas.FuncVarPopup = nil
+                    if ownerEditor and ownerEditor.session then ownerEditor.session.FuncVarPopup = nil end
                     return
                 end
             end
@@ -689,7 +691,7 @@ function KARDS.CardEditor.Canvas.DrawFuncVarPopup()
         else
             -- 点击弹窗外区域 → 关闭
             popup.searchActive = false
-            KARDS.CardEditor.Canvas.FuncVarPopup = nil
+            if ownerEditor and ownerEditor.session then ownerEditor.session.FuncVarPopup = nil end
             return
         end
     end
@@ -799,12 +801,11 @@ end
 -- 卡牌对象选择器弹窗（INE 编辑器单选组件的卡牌对象模式）
 -- 外观与 DrawNumericVarPopup 相同，但选项为已保存卡牌/卡牌对象变量/数据连接变量
 -- ================================================================
-function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
+function KARDS.CardEditor.Canvas.DrawCardObjectSelector(sel, ownerEditor)
     local INE = KARDS.CardEditor.IndependentNodeEditor
-    local sel = KARDS.CardEditor.Canvas.CardObjectSelector
     if not sel then return end
     if not sel.options or #sel.options == 0 then
-        KARDS.CardEditor.Canvas.CardObjectSelector = nil
+        if ownerEditor and ownerEditor.session then ownerEditor.session.CardObjectSelector = nil end
         return
     end
 
@@ -858,7 +859,7 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
     end
 
     if searchText == "" then
-        draw.SimpleText("搜索卡牌...", fontName, px + 8, searchY + inputH / 2, isSearchActive and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.canvasvar.search_cards"), fontName, px + 8, searchY + inputH / 2, isSearchActive and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     else
         draw.SimpleText(searchText, fontName, px + 8, searchY + inputH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     end
@@ -1063,7 +1064,7 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
                             end
                             table.sort(labels)
                             if #labels > 0 then
-                                local displayText = "多选(" .. #labels .. ")"
+                                local displayText = T("editor.canvasvar.multi_select_count", #labels)
                                 node.data[sel.compId] = displayText
                                 node.data[sel.compId .. "_files"] = files
                                 node.data[sel.compId .. "_appearances"] = appearances
@@ -1097,7 +1098,7 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
                                 node.width = nw
                                 node.height = nh
                             end
-                            KARDS.CardEditor.Canvas.CardObjectSelector = nil
+                            if ownerEditor and ownerEditor.session then ownerEditor.session.CardObjectSelector = nil end
                         end
                     end
                     return
@@ -1121,7 +1122,7 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
         else
             -- 点击外部：关闭弹窗，在 multiSelect 模式下已写入数据
             sel.searchActive = false
-            KARDS.CardEditor.Canvas.CardObjectSelector = nil
+            if ownerEditor and ownerEditor.session then ownerEditor.session.CardObjectSelector = nil end
             return
         end
     end
@@ -1316,14 +1317,14 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
     draw.RoundedBox(3, multiBtnX, btnY, halfBtnW, btnH, multiActive and Color(70, 110, 160) or Color(45, 45, 45))
     surface.SetDrawColor(multiActive and Color(100, 150, 220, 200) or Color(70, 70, 70))
     surface.DrawOutlinedRect(multiBtnX, btnY, halfBtnW, btnH)
-    draw.SimpleText("多选", fontName, multiBtnX + halfBtnW / 2, btnY + btnH / 2, multiActive and Color(255, 255, 255) or Color(160, 160, 160), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.canvasvar.multi_select"), fontName, multiBtnX + halfBtnW / 2, btnY + btnH / 2, multiActive and Color(255, 255, 255) or Color(160, 160, 160), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
     -- "包括全局"按钮
     local globalActive = sel.includeGlobal
     draw.RoundedBox(3, globalBtnX, btnY, halfBtnW, btnH, globalActive and Color(70, 110, 160) or Color(45, 45, 45))
     surface.SetDrawColor(globalActive and Color(100, 150, 220, 200) or Color(70, 70, 70))
     surface.DrawOutlinedRect(globalBtnX, btnY, halfBtnW, btnH)
-    draw.SimpleText("包括全局", fontName, globalBtnX + halfBtnW / 2, btnY + btnH / 2, globalActive and Color(255, 255, 255) or Color(160, 160, 160), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.canvasvar.include_globals"), fontName, globalBtnX + halfBtnW / 2, btnY + btnH / 2, globalActive and Color(255, 255, 255) or Color(160, 160, 160), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
     -- ================================================================
     -- 筛选面板（展开时绘制在右侧）
@@ -1347,7 +1348,7 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
         surface.DrawOutlinedRect(filterPX, filterPY, filterPW, filterPH)
 
         -- 标题
-        draw.SimpleText("筛选", fontName, filterPX + filterPW / 2, filterPY + inputH / 2 + 2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.canvasvar.filter"), fontName, filterPX + filterPW / 2, filterPY + inputH / 2 + 2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
         local fRowY = filterPY + inputH + 6
         local fRowH = rowH - 2
@@ -1387,24 +1388,24 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
         -- Row 1: 阵营（友方/敌方）
         local f1Y = fRowY
         local f1ColW = (filterPW - fPad * 3) / 2
-        if DrawFilterBtn(filterPX + fPad, f1Y, f1ColW, "友方", sel.filterFaction == "友方") then
+        if DrawFilterBtn(filterPX + fPad, f1Y, f1ColW, T("editor.canvasvar.faction_friendly"), sel.filterFaction == "友方") then
             if sel.filterFaction == "友方" then sel.filterFaction = nil else sel.filterFaction = "友方" end
             RebuildFilterSearch()
         end
-        if DrawFilterBtn(filterPX + fPad * 2 + f1ColW, f1Y, f1ColW, "敌方", sel.filterFaction == "敌方") then
+        if DrawFilterBtn(filterPX + fPad * 2 + f1ColW, f1Y, f1ColW, T("editor.canvasvar.faction_enemy"), sel.filterFaction == "敌方") then
             if sel.filterFaction == "敌方" then sel.filterFaction = nil else sel.filterFaction = "敌方" end
             RebuildFilterSearch()
         end
 
         -- Row 2: 位置（手牌/场上）
         local f2Y = f1Y + fRowH + 2
-        if DrawFilterBtn(filterPX + fPad, f2Y, f1ColW, "手牌", sel.filterLocation == "手牌") then
+        if DrawFilterBtn(filterPX + fPad, f2Y, f1ColW, T("editor.canvasvar.location_hand"), sel.filterLocation == "手牌") then
             if sel.filterLocation == "手牌" then sel.filterLocation = nil else sel.filterLocation = "手牌" end
             -- 清除不兼容的类型/关键词
             if sel.filterLocation == "手牌" and sel.filterKeyword == "老兵" then sel.filterKeyword = nil end
             RebuildFilterSearch()
         end
-        if DrawFilterBtn(filterPX + fPad * 2 + f1ColW, f2Y, f1ColW, "场上", sel.filterLocation == "场上") then
+        if DrawFilterBtn(filterPX + fPad * 2 + f1ColW, f2Y, f1ColW, T("editor.canvasvar.location_board"), sel.filterLocation == "场上") then
             if sel.filterLocation == "场上" then sel.filterLocation = nil else sel.filterLocation = "场上" end
             -- 场上时清除不兼容的类型/关键词
             if sel.filterLocation == "场上" then
@@ -1419,16 +1420,16 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
         local showCmdAndCounter = sel.filterLocation ~= "场上"
         local typeColW = showCmdAndCounter and (filterPW - fPad * 4) / 3 or (filterPW - fPad * 2)
 
-        if DrawFilterBtn(filterPX + fPad, f3Y, typeColW, "单位", sel.filterType == "单位") then
+        if DrawFilterBtn(filterPX + fPad, f3Y, typeColW, T("editor.canvasvar.type_unit"), sel.filterType == "单位") then
             if sel.filterType == "单位" then sel.filterType = nil else sel.filterType = "单位" end
             RebuildFilterSearch()
         end
         if showCmdAndCounter then
-            if DrawFilterBtn(filterPX + fPad * 2 + typeColW, f3Y, typeColW, "指令", sel.filterType == "指令") then
+            if DrawFilterBtn(filterPX + fPad * 2 + typeColW, f3Y, typeColW, T("editor.canvasvar.type_order"), sel.filterType == "指令") then
                 if sel.filterType == "指令" then sel.filterType = nil else sel.filterType = "指令" end
                 RebuildFilterSearch()
             end
-            if DrawFilterBtn(filterPX + fPad * 3 + typeColW * 2, f3Y, typeColW, "反制", sel.filterType == "反制") then
+            if DrawFilterBtn(filterPX + fPad * 3 + typeColW * 2, f3Y, typeColW, T("editor.canvasvar.type_counter"), sel.filterType == "反制") then
                 if sel.filterType == "反制" then sel.filterType = nil else sel.filterType = "反制" end
                 RebuildFilterSearch()
             end
@@ -1552,4 +1553,15 @@ function KARDS.CardEditor.Canvas.DrawCardObjectSelector()
             )
         end
     end
+end
+
+-- ================================================================
+-- 弹窗渲染注册（ADR 0003 决策 3）
+-- 状态在编辑器会话，绘制仍由 Canvas 提供，INE 只负责持有状态与触发
+-- ================================================================
+local INE_PopupReg = KARDS.CardEditor.IndependentNodeEditor
+if INE_PopupReg and INE_PopupReg.RegisterPopupRenderer then
+    INE_PopupReg:RegisterPopupRenderer("NumericVarPopup", KARDS.CardEditor.Canvas.DrawNumericVarPopup)
+    INE_PopupReg:RegisterPopupRenderer("FuncVarPopup", KARDS.CardEditor.Canvas.DrawFuncVarPopup)
+    INE_PopupReg:RegisterPopupRenderer("CardObjectSelector", KARDS.CardEditor.Canvas.DrawCardObjectSelector)
 end

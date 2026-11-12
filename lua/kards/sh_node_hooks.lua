@@ -152,6 +152,20 @@ function KARDS.NodeParser.TriggerKeepTriggers(tableID, player)
     KARDS.EffectRegistry.Trigger(tableID, KARDS.EffectRegistry.EVENTS.TurnBegin, { player = player })
 end
 
+-- 延时效果证明（2026-11-07 用户规格）：保持触发 / 跨刻等待即将执行时，把「来源卡」交给
+-- 实体层展示证明动画（服务端只传身份，动画由客户端本地播放）。
+-- 经 KARDS.Battle:NotifyDelayedProof 依赖倒置（牌桌实体注册回调，见 sh_battle_card.lua）；
+-- 无牌桌实体（纯逻辑测试）时静默，不影响效果执行。
+-- @param tableID string 牌桌唯一标识符
+-- @param card    table|nil 延时效果来源卡牌句柄（缺省不展示）
+local function NotifyDelayedProof(tableID, card)
+    if not tableID or not card then return end
+    local battle = KARDS.Battle
+    if battle and battle.NotifyDelayedProof then
+        battle:NotifyDelayedProof(tableID, card)
+    end
+end
+
 -- 保持触发注册项 ID（同节点重复执行覆盖旧注册；停止保持触发按同 ID 移除）
 -- @param tableID string 牌桌唯一标识符
 -- @param node    table 节点实例
@@ -171,31 +185,64 @@ local function TriggerOutNames(node, outTarget, outIcon)
     return (ot[1] and ot[1].name) or outTarget, (ot[2] and ot[2].name) or outIcon
 end
 
+-- 数值修饰计算（属性变更收尾）
+-- 修饰索引：1 增加 / 2 减少 / 3 设为 / 4 至多 / 5 至少
+-- @param current number 操作原数值
+-- @param modIdx  number 修饰索引
+-- @param value   number 编辑器填写的数值
+-- @return number 取整并夹在 0 到 99 的新数值
+local function ApplyNumericModifier(current, modIdx, value)
+    local v = tonumber(value) or 0
+    if modIdx == 2 then
+        current = current - v
+    elseif modIdx == 3 then
+        current = v
+    elseif modIdx == 4 then
+        current = math.min(current, v)
+    elseif modIdx == 5 then
+        current = math.max(current, v)
+    else
+        current = current + v
+    end
+    return math.max(0, math.min(99, math.floor(current)))
+end
+
 -- 拦截注册实现（interceptOnce / keepIntercept 共用）
 -- M1.3（2026-10-05 反制）：注册目标由 OnBeforePlayCard 改为统一操作钩子 OnBeforeOperation，
--- 按节点声明的操作类型（拦截分支内操作类型选择器）过滤 args.opType，命中且函数执行成功即拦截。
+-- 按节点声明的操作类型（拦截分支内操作类型选择器）过滤 args.opType。
+-- 收尾方式（2026-11-05 属性变更）：
+--   反制 = 函数执行成功即取消操作（args.intercepted = true）；
+--   属性变更 = 不取消操作，按修饰改写 args.amount（args.modified = true），不要求函数槽。
 -- @param ctx  table 执行上下文
 -- @param card table 效果发起卡牌句柄（拦截钩子绑定实体，实体离场自动注销）
--- @param node table 节点实例（funcslot_1 函数 / 拦截分支操作类型选择器）
+-- @param node table 节点实例（funcslot_1 函数 / 拦截分支操作类型与收尾方式选择器）
 -- @param once boolean 是否拦截一次（true = 首次拦截后注销钩子；false = 持续拦截）
 -- @return boolean 是否注册成功
 local function RegisterIntercept(ctx, card, node, once)
+    local branchIdx = once and 4 or 5
+    local sem = KARDS.NodeParser.BaseSemantics.trigger_function.branches[branchIdx]
+    -- 收尾方式：1 反制 / 2 属性变更；旧卡无该槽时回退反制
+    local finish = tonumber(ReadSlot(node, sem.finishSelect)) or 1
+    local modIdx = tonumber(ReadSlot(node, sem.modSelect)) or 1
+    local valueRaw = sem.valueNumber and ReadSlot(node, sem.valueNumber) or 0
     local funcName = ReadSlot(node, "funcslot_1")
-    if not funcName or funcName == "" then
+    -- 反制必须有函数；属性变更只改数值，函数槽可空
+    if finish ~= 2 and (not funcName or funcName == "") then
         print("[NodeParser] trigger_function(拦截): 未选择函数（funcslot_1）")
         return false
     end
     local tableID = ctx.tableID or ctx.table_id
     local owner = card:GetOwner()
-    local funcData = FindFunctionData(ctx, funcName, node, "funcslot_1")
-    if not funcData then
-        print("[NodeParser] trigger_function(拦截): 找不到函数定义: " .. tostring(funcName))
-        return false
+    local funcData
+    if finish ~= 2 then
+        funcData = FindFunctionData(ctx, funcName, node, "funcslot_1")
+        if not funcData then
+            print("[NodeParser] trigger_function(拦截): 找不到函数定义: " .. tostring(funcName))
+            return false
+        end
     end
     -- 操作类型：语义表给出本分支的操作类型选择组件 id（拦截一次 select_2 / 保持拦截 select_3），
     -- 选项值索引映射为 TickLog.OpTypes 英文键；旧格式效果无该槽时回退打出指令（保持既有反制行为）
-    local branchIdx = once and 4 or 5
-    local sem = KARDS.NodeParser.BaseSemantics.trigger_function.branches[branchIdx]
     local opType = INTERCEPT_OPTYPES[tonumber(ReadSlot(node, sem.opSelect))] or "play_command"
     -- 钩子ID：同节点重复执行覆盖旧注册（幂等）
     local hookID = "tfi_" .. tostring(tableID) .. "_" .. tostring(node.id or node.name or "node")
@@ -207,24 +254,38 @@ local function RegisterIntercept(ctx, card, node, once)
         local actor = args.player
         if not actor and args.card and args.card.GetOwner then actor = args.card:GetOwner() end
         if actor == owner then return args end
-        -- 调用拦截函数：函数效果执行成功即视为「已拦截」（骨架约定，见 templates.md 拦截扩展）
-        local ok = KARDS.NodeParser.CallFunctionData(ctx, args.card or actor, funcData, { args.card or actor })
-        if ok then
-            args.intercepted = true
+        local triggered = false
+        if finish == 2 then
+            -- 属性变更：改写操作数值，不取消操作；操作无数值参数时不触发
+            if type(args.amount) ~= "number" then return args end
+            local value = tonumber(KARDS.NodeParser.ResolveNumberValue(ctx, valueRaw)) or 0
+            args.amount = ApplyNumericModifier(args.amount, modIdx, value)
+            args.modified = true
+            triggered = true
+        else
+            -- 反制：调用拦截函数，函数效果执行成功即视为「已拦截」（骨架约定，见 templates.md 拦截扩展）
+            local ok = KARDS.NodeParser.CallFunctionData(ctx, args.card or actor, funcData, { args.card or actor })
+            if ok then
+                args.intercepted = true
+                triggered = true
+            end
+        end
+        if triggered then
             -- 事件音效（2026-08-13）：反制拦截触发 trigger——通知牌桌实体广播音效
             -- （无事件源实体，客户端回退音源方位为牌桌 WorldCenter，见 table_session.lua
             -- SetSoundCallback 注册 / sh_battle_combat.lua NotifyEventSound）
             if KARDS.Battle and KARDS.Battle.NotifyEventSound then
                 KARDS.Battle:NotifyEventSound(tableID, "trigger", card)
             end
+            -- 拦截一次：先注销钩子，再播放反制，避免反制自身效果写入再次命中本钩子
+            if once then
+                KARDS.EngineHooks.Unregister(tableID, KARDS.EngineHooks.HookPoints.OnBeforeOperation, hookID)
+            end
             -- 反制自动打出（M5.1）：绑定卡为已激活的反制时，命中敌方操作 → 自动打出
             -- （移出手牌、公开隐藏花费、按指令口径广播动画，见 sh_battle_card.lua FireCounter）
             if KARDS.Counter and KARDS.Counter:IsActive(tableID, card)
                 and KARDS.Battle and KARDS.Battle.FireCounter then
                 KARDS.Battle:FireCounter(tableID, card, args)
-            end
-            if once then -- 拦截一次：首次拦截后注销钩子（指令/反制卡反制后移除）
-                KARDS.EngineHooks.Unregister(tableID, KARDS.EngineHooks.HookPoints.OnBeforeOperation, hookID)
             end
         end
         return args
@@ -281,6 +342,8 @@ local TriggerFunctionActs = {
             handler = function(payload)
                 -- 仅注册者回合开始执行（如「方面军」友方回合开始）
                 if entity:GetOwner() == payload.player then
+                    -- 延时效果证明：执行前展示来源卡（2026-11-07 用户规格）
+                    NotifyDelayedProof(tableID, card)
                     KARDS.NodeParser.CallFunctionData(ctx, entity, funcData, { entity })
                 end
             end,
@@ -412,6 +475,8 @@ function KARDS.NodeParser.ResumeTurnNodes(tableID, player, eventKey)
                 p.current = p.current + 1
                 if p.current >= p.times then
                     table.remove(list, i)
+                    -- 延时效果证明：恢复执行前展示来源卡（2026-11-07 用户规格）
+                    NotifyDelayedProof(tableID, p.card)
                     KARDS.NodeParser.ResumeEffect(p.ctx, p.card, p.targets, p.effect, p.nodeId)
                 end
             end

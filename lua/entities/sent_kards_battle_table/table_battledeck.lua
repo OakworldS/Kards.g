@@ -504,11 +504,12 @@ function ENT:LoadPlayerDeck(ply)
 end
 
 --[[
-    卡组存档 → 数据层卡组池（含品质上限复验，2026-08-18 规划 D5）
+    卡组存档 → 数据层卡组池
 
+    品质上限复验（2026-08-18 规划 D5）当前暂时关闭，Beta 版启用品质校验：
     存档为 data 目录明文 JSON，主机/本地可篡改卡牌品质计数（如 39 张全填 elite）；
-    组卡网格入口有携带上限限制，但加载路径（battle 对局 / 虚拟对手）此前不复验。
-    本方法按「同卡品质携带上限」（DeckQualityLimit：normal 4 / limited 3 /
+    组卡网格入口有携带上限限制，加载路径（battle 对局 / 虚拟对手）需复验。
+    启用后按「同卡品质携带上限」（DeckQualityLimit：normal 4 / limited 3 /
     special 2 / elite 1）逐张复验，超限部分丢弃——卡组总张数不足 39 时数据层不建，
     仅视觉放置（同现有非 39 张处理），不产生越限品质堆砌。
 
@@ -519,17 +520,21 @@ end
 function ENT:DeckPoolFromSave(deckData, playerID)
     local pool = {}
     if not deckData then return pool end
-    local qualityCounts = {} -- [fileName] = 已计入张数
     for _, entry in ipairs(deckData.cards or {}) do
         for _ = 1, (entry.count or 1) do
             local h = self:DeckCardHandleFromFile(entry.fileName, playerID)
             if h then
+                -- 品质校验（Beta 版启用）：去掉下方注释块首尾，并补回循环外的计数表
+                --   local qualityCounts = {} -- [fileName] = 已计入张数
+                --[[
                 local q = (h.GetQuality and h:GetQuality()) or "normal"
                 local cur = qualityCounts[entry.fileName] or 0
                 if cur < (self.DeckQualityLimit[q] or 4) then
                     qualityCounts[entry.fileName] = cur + 1
                     pool[#pool + 1] = h
                 end
+                ]]
+                pool[#pool + 1] = h
             end
         end
     end
@@ -564,6 +569,9 @@ function ENT:DeckCardHandleFromFile(fileName, owner)
     local card = KARDS.CardInterface.CreateMockCard(fileName, type, owner, {
         attack = app.attack or 0, defense = app.defense or 0,
         cost = app.cost or 0, actionCost = app.actionCost,
+        -- 卡面文本（2026-10-17 多语言）：中英双字段随卡牌句柄透传，NW 同步时分别下发
+        name = app.name, nameEn = app.nameEn,
+        description = app.specialEffect, descriptionEn = app.specialEffectEn,
         -- 国籍（readme 国籍/国家）：卡堆顶面卡背（SyncDeckTopBack → Kards_DeckTopBack
         -- NW → 客户端按国家卡背目录改写档位 manifest）与 H3/H5 国籍筛选依赖；
         -- 2026-08-12 补传（此前恒 nil → 顶卡卡背兜底 usa）
@@ -1057,6 +1065,13 @@ function ENT:LoadPlayerBattleDeck(ply, slot)
                 "table_return_to_hand_anim", { handler = function(payload)
                     self:BroadcastReturnToHand(payload and payload.card)
                 end })
+            -- 收缴动画（2026-10-15）：数据层 SimConfiscate 触发 Confiscate 事件 → 实体层在源
+            -- 小模型原位创建完整卡载体并延迟广播（同 ReturnToHand 注册式事件通道）
+            -- 处理器载荷：{ card = 单位句柄, newOwner = 收缴方, handTotal = 插入前手牌数 }
+            KARDS.EffectRegistry.Register(self.TableID, KARDS.EffectRegistry.EVENTS.Confiscate,
+                "table_confiscate_anim", { handler = function(payload)
+                    self:BroadcastConfiscate(payload)
+                end })
             -- 洗入动画（2026-09-26 缺口 D）：数据层 shuffleInto 三来源统一经 ShuffleInto
             -- 事件通知，实体层建动画载体 + 广播 KardsShuffleInto（同 ReturnToHand 模式）
             KARDS.EffectRegistry.Register(self.TableID, KARDS.EffectRegistry.EVENTS.ShuffleInto,
@@ -1091,7 +1106,7 @@ function ENT:LoadPlayerBattleDeck(ply, slot)
                     if not IsValid(self) then return end
                     local player = payload and payload.player
                     if not player then return end
-                    self:SendActionHint((player == "P2") and 2 or 1, "前线已被敌方占领")
+                    self:SendActionHint((player == "P2") and 2 or 1, "frontline_occupied")
                 end })
             -- 单位攻击冲刺（2026-09-26 缺口 G）：效果路径（节点「交战」「战斗」）经事件桥接，
             -- 与手动路径（OnUnitEngage / OnUnitAttackHQ 直接调用）共用 BroadcastUnitAction
@@ -1266,12 +1281,9 @@ function ENT:LoadPlayerBattleDeck(ply, slot)
                     if not IsValid(self) then return end
                     self:ClearTurnTimer() -- 冻结后不再自动推进回合
                     local cheater = payload and payload.cheater or "unknown"
-                    local msg = "检测到作弊，对局已冻结（作弊方 " .. tostring(cheater) .. "）"
                     for _, p in ipairs(player.GetAll()) do
                         if p == self.Slots[1] or p == self.Slots[2] then
-                            net.Start("KardsTableMsg")
-                                net.WriteString(msg)
-                            net.Send(p)
+                            KARDS.TableSync.Notify(p, "msg.cheat_frozen", tostring(cheater))
                         end
                     end
                 end })
@@ -1297,6 +1309,14 @@ function ENT:LoadPlayerBattleDeck(ply, slot)
             self:OnBattleDraw(playerID, drawn, overdraw, overdrawnCards, noDeckConsume)
         end)
     end
+    -- 延时效果证明回调（keepTrigger / turn「等待」在回合时间刻触发 → 向来源卡归属玩家
+    -- 播放「来源卡入场」证明动画；幂等每桌一次，见 ENT:BroadcastDelayedProof）
+    if not self._kardsDelayedProofCallbackRegistered then
+        self._kardsDelayedProofCallbackRegistered = true
+        KARDS.Battle:SetDelayedProofCallback(self.TableID, function(card)
+            self:BroadcastDelayedProof(card)
+        end)
+    end
     -- 弃牌选择回调（SimDiscard 无卡且无数值序数时为「让玩家选择」；幂等每桌一次）：
     -- 进入 table_discard.lua 选择会话（广播 KardsDiscardOffer，玩家点击手牌 +「确认」回传）
     if not self._kardsDiscardCallbackRegistered then
@@ -1308,14 +1328,18 @@ function ENT:LoadPlayerBattleDeck(ply, slot)
     local playerID = (slot == 1) and "P1" or "P2"
     -- 1) 数据层：有卡组存档且为 39 张 → SimSetupDeck（洗牌一次，此后顺序固定）
     local deck = self:LoadPlayerDeck(ply)
-    -- 品质上限复验（2026-08-18 规划 D5）：存档为 data 明文可篡改品质计数，超限丢弃
+    -- 品质上限复验（2026-08-18 规划 D5）：当前关闭，Beta 版启用
     local pool = self:DeckPoolFromSave(deck, playerID)
+    -- 对局开始资格：存档存在、卡牌数为 39、且有总部（总部是胜负判定载体；
+    -- 无总部时对局无法结束）。品质校验当前关闭，Beta 版启用后此处自动按复验结果判定。
+    -- SetReady 据此拒绝空卡组准备（2026-10-17）。
+    local hasValidDeck = deck ~= nil and #pool == 39 and deck.hq ~= nil
     if deck and #pool == 39 then
         KARDS.Battle:SimSetupDeck(playerID, pool)
     elseif deck then
         print(("[Kards] 卡组槽: 卡组 %s 非 39 张（%d），数据层跳过（仅视觉放置）"):format(tostring(deck.name), #pool))
     else
-        net.Start("KardsTableMsg") net.WriteString("未找到你的卡组存档（请先在组卡模式保存），卡组槽留空") net.Send(ply)
+        KARDS.TableSync.Notify(ply, "msg.no_deck_save")
     end
     -- 2) 视觉：6 档厚度卡堆模型 + 隐藏总部（性能优化方案 2026-08-09 起，详见
     --    BuildSlotDeckVisual 注释；卡堆档位/总部实体与玩家实体无关，无对手模式下
@@ -1323,7 +1347,10 @@ function ENT:LoadPlayerBattleDeck(ply, slot)
     self:BuildSlotDeckVisual(slot, #pool == 39, deck)
     -- 记录卡组存档（无对手模式：虚拟对手默认复制本方卡组，见 SetupVirtualOpponent）
     local bd = self._kardsBattleDecks and self._kardsBattleDecks[slot]
-    if bd then bd.deckData = deck end
+    if bd then
+        bd.deckData = deck
+        bd.hasValidDeck = hasValidDeck
+    end
 end
 
 --[[
@@ -1432,7 +1459,7 @@ function ENT:SetupVirtualOpponent(slot, deckData)
     if self._kardsBattleDecks and self._kardsBattleDecks[slot] then return false end -- 已有卡组（真实玩家）
     local playerID = (slot == 1) and "P1" or "P2"
     -- 数据层：与 LoadPlayerBattleDeck 同款 39 张校验 → SimSetupDeck（owner 不同）；
-    -- 品质上限复验同 LoadPlayerBattleDeck（2026-08-18 规划 D5）
+    -- 品质上限复验同 LoadPlayerBattleDeck（当前关闭，Beta 版启用）
     local pool = self:DeckPoolFromSave(deckData, playerID)
     if deckData and #pool == 39 then
         KARDS.Battle:SimSetupDeck(playerID, pool)
@@ -1521,11 +1548,14 @@ function ENT:OnBattleDraw(playerID, drawn, overdraw, overdrawnCards, noDeckConsu
             if #targets > 0 then
                 local me = self.Slots and self.Slots[slot]
                 local name = (IsValid(me) and me:Nick()) or playerID
-                net.Start("KardsHintObserver")
-                    net.WriteEntity(self)
-                    net.WriteString(name)
-                    net.WriteString("手牌已满")
-                for _, p in ipairs(targets) do net.Send(p) end
+                -- 观战者各自语言不同 → 逐人发送（2026-10-17 多语言化）
+                for _, p in ipairs(targets) do
+                    net.Start("KardsHintObserver")
+                        net.WriteEntity(self)
+                        net.WriteString(name)
+                        net.WriteString(KARDS.Lang.TFor(p, "battle.overdraw.observer"))
+                    net.Send(p)
+                end
             end
         end
         -- 手牌序号：爆牌卡不进手牌（不占序号，idx=0 占位，客户端爆牌分支不使用）；
@@ -1593,9 +1623,44 @@ function ENT:OnBattleDraw(playerID, drawn, overdraw, overdrawnCards, noDeckConsu
     end
 end
 
+--[[
+    延时效果证明广播（2026-11-07 用户规格）：保持触发 / turn「等待」在回合时间刻即将执行时，
+    把来源卡身份发给「来源卡归属玩家」，由该玩家客户端本地播放证明动画
+    （cl_battle_delayed_proof.lua：从牌桌左边缘移入 + 逆时针旋转 + 透视放大，0.8 秒后反向，
+    去程播放 hq_start.ogg）。
+
+    只定向发归属玩家（不广播）：与 KardsTableDrawFace 的卡面定向口径一致，避免向对手
+    泄露卡面（打出过的指令卡对手仍只见卡背）；观战者不参与证明动画。
+    无对手模式虚拟对手无玩家实体 → 静默跳过。
+
+    @param card table 延时效果来源卡牌句柄（数据层卡牌表，非实体）
+]]
+function ENT:BroadcastDelayedProof(card)
+    if not IsValid(self) or not card then return end
+    local owner = card.GetOwner and card:GetOwner() or nil
+    if not owner then return end
+    local slot = (owner == "P1") and 1 or 2
+    local ply = self.Slots and self.Slots[slot]
+    if not IsValid(ply) then return end
+    local cardName = card.GetName and card:GetName() or ""
+    if cardName == "" then return end
+    local safeName = self:DeckSafeName(card:GetID())
+    net.Start("KardsDelayedProof")
+        net.WriteEntity(self)
+        net.WriteString(cardName)   -- 卡文件名（客户端 DeckFindCardInfo 查外观数据）
+        net.WriteString(safeName)   -- 卡面文件安全标识（客户端写 kards_deck/<safeName>/）
+        net.WriteUInt(slot, 8)      -- 来源卡归属槽位（客户端据此决定左边缘方向与文字朝向）
+    net.Send(ply)
+end
+
 -- 返回手牌动画兜底清理延迟（秒）：客户端动画完成 KardsReturnToHandDone 通知提前
 -- 清理；断线/异常未通知时仍移除源战场实体（小模型）并清理 fieldCardEnts 映射。
 local ReturnAnimServerRemoveDelay = 3.0
+
+-- 收缴动画兜底揭示延迟（秒）：覆盖阵亡移除 + 0.5 秒重现 + 0.5 秒停留 + 余量
+-- 消费点：BroadcastConfiscate 的兜底 timer 把载体 Kards_ConfiscateHidden 置 false，
+-- 避免客户端动画未触发揭示时载体永久不可见。
+local ConfiscateServerRevealFallback = 4.0
 
 --[[
     返回手牌：在源战场实体位置创建正常卡模型动画载体（小模型 → 正常模型原地切换）
@@ -1713,6 +1778,74 @@ function ENT:BroadcastReturnToHand(card)
                 end
             end
             if c and deck.fieldCardEnts then deck.fieldCardEnts[c] = nil end
+        end)
+    end)
+end
+
+--[[
+    收缴动画广播（数据层 SimConfiscate 触发 Confiscate 事件时调用）
+
+    在源战场实体（小模型单位）位置创建完整卡动画载体（复用 SpawnReturnedCard，同时登记为
+    收缴方手牌实体），先置隐藏（NW Kards_ConfiscateHidden），延迟 0.1 秒广播
+    KardsConfiscateAnim（牌桌 / 槽位 / 源小模型 / 完整卡载体 / 手牌序号 / 总数）。
+
+    客户端时序（见 cl_battle_confiscate.lua）：等源小模型阵亡移除 → 0.5 秒后载体原地现身
+    → 再 0.5 秒飞入手牌末位。源小模型由既有阵亡路径（ScheduleFieldDeathRemove）回收，
+    本广播不负责其清理。
+
+    @param payload table { card = 单位句柄, newOwner = 收缴方, handTotal = 插入前手牌数 }
+
+    @return nil 无返回值
+    说明：slot 取收缴方（newOwner）所在槽；idx = handTotal + 1，total = idx，均按事件先于
+          手牌插入触发计算；载体创建后即 SetNoDraw(true) 并写 NW Kards_ConfiscateHidden，
+          等客户端揭示（服务端仅在兜底延迟后强显）。
+]]
+function ENT:BroadcastConfiscate(payload)
+    if not IsValid(self) or not payload or not payload.card then return end
+    local card = payload.card
+    local slot = (payload.newOwner == "P1") and 1 or 2
+    local deck = self._kardsBattleDecks and self._kardsBattleDecks[slot]
+    if not deck then return end
+    -- 源战场实体（小模型）：事件先于 SimRemoveFromField 触发，此刻仍在场可读原位。
+    -- 注意收缴不限定归属，被收缴单位仍在原归属方阵线上（收缴方 deck 查不到），故两槽皆查
+    local unitEnt
+    for s = 1, 2 do
+        local d = self._kardsBattleDecks and self._kardsBattleDecks[s]
+        if d and d.fieldCardEnts and d.fieldCardEnts[card] then
+            unitEnt = d.fieldCardEnts[card]
+            break
+        end
+    end
+    local idx = (payload.handTotal or 0) + 1
+    local total = idx
+    local cardEnt = self:SpawnReturnedCard(slot, card, unitEnt)
+    if not IsValid(cardEnt) then return end
+    -- 载体先隐藏：客户端揭示前不可见（NW 同步到各端；断线兜底见下）
+    cardEnt:SetNoDraw(true)
+    cardEnt:SetNWBool("Kards_ConfiscateHidden", true)
+    timer.Simple(0.1, function()
+        if not IsValid(self) or not IsValid(cardEnt) then return end
+        net.Start("KardsConfiscateAnim")
+            net.WriteEntity(self)
+            net.WriteUInt(slot, 8)
+            net.WriteEntity(unitEnt or NULL)
+            net.WriteEntity(cardEnt)
+            net.WriteUInt(idx, 8)
+            net.WriteUInt(total, 8)
+        net.Broadcast()
+        -- 卡面定向只发本方（同 BroadcastReturnToHand：卡名不入广播，对方/观战者看不到）
+        local owner = self.Slots and self.Slots[slot]
+        if IsValid(owner) then
+            net.Start("KardsTableDrawFace")
+                net.WriteEntity(cardEnt)
+                net.WriteString(card:GetName())
+                net.WriteString(card:GetName())
+                net.WriteString(card:GetType())
+            net.Send(owner)
+        end
+        -- 兜底：客户端动画未触发揭示时（断线等）强显载体，避免永久不可见
+        timer.Simple(ConfiscateServerRevealFallback, function()
+            if IsValid(cardEnt) then cardEnt:SetNWBool("Kards_ConfiscateHidden", false) end
         end)
     end)
 end
@@ -2726,12 +2859,12 @@ end
 -- 单位操作（readme 7.1 操作：移动或攻击；判定/决策全在战斗系统）
 -- ====================================================================
 
--- 操作失败提示（KardsTableMsg → 客户端 Flash 显示，见 cl_init.lua）
+-- 操作失败提示（KardsTableMsg → 客户端 Flash 显示，见 cl_init.lua）。
+-- 失败原因可为引擎错误码（"code" / "code|参数"）或已是成品文案，统一经 ReasonFor
+-- 按接收玩家语言解析（2026-10-17 多语言化）。
 function ENT:SendOpFail(ply, msg)
     if not IsValid(ply) or not ply:IsPlayer() then return end
-    net.Start("KardsTableMsg")
-        net.WriteString(msg)
-    net.Send(ply)
+    KARDS.TableSync.Broadcast("KardsTableMsg", { text = KARDS.Lang.ReasonFor(ply, msg) }, { ply })
 end
 
 --[[
@@ -2740,9 +2873,10 @@ end
     复用观战提示通道 KardsHintObserver（其接收器 cl_battle_hint.lua 不校验接收者身份，
     故可直接定向发给参战玩家），语义由「观战同步」扩展为「定向行动提示」。
     当前唯一用途：节点效果拉入前线被拒绝时提示「前线已被敌方占领」。
+    提示文字可为引擎错误码，按接收玩家语言解析（2026-10-17 多语言化）。
 
     @param slot number 目标槽位（1/2）
-    @param text string 提示文字
+    @param text string 提示文字（错误码或成品文案）
 ]]
 function ENT:SendActionHint(slot, text)
     local ply = self.Slots and self.Slots[slot]
@@ -2750,7 +2884,7 @@ function ENT:SendActionHint(slot, text)
     net.Start("KardsHintObserver")
         net.WriteEntity(self)
         net.WriteString(ply:Nick())
-        net.WriteString(tostring(text or ""))
+        net.WriteString(KARDS.Lang.ReasonFor(ply, tostring(text or "")))
     net.Send(ply)
 end
 
@@ -2765,15 +2899,15 @@ end
 ]]
 function ENT:UnitOpGuard(ply, slot, ent)
     if not self._kardsFormalBattleStarted then
-        self:SendOpFail(ply, "对战尚未开始")
+        self:SendOpFail(ply, "not_started")
         return false
     end
     if self._kardsTurnSlot ~= slot then
-        self:SendOpFail(ply, "当前不是你的回合")
+        self:SendOpFail(ply, "not_your_turn")
         return false
     end
     if not IsValid(ent) then
-        self:SendOpFail(ply, "单位实体无效")
+        self:SendOpFail(ply, "invalid_unit")
         return false
     end
     return true
@@ -2844,11 +2978,12 @@ local KeywordIconFile = {
     stealth     = true,
     suppress    = true, -- 动态状态（被压制）
     control     = true, -- 动态状态（被控制）
+    neutralized = true, -- 动态状态（被抑制）
 }
 
 --[[
     构建单位词条展示编码串（2026-08-13，客户端词条图标数据源）：
-    格式 "id[:数值][,id[:数值]...]"，顺序 = 卡面词条数组顺序 + 追加动态状态（压制/控制）。
+    格式 "id[:数值][,id[:数值]...]"，顺序 = 卡面词条数组顺序 + 追加动态状态（压制/控制/抑制）。
       - armor / countdown：编码当前数值（重甲 X / 倒计时当前值——倒计时每回合 -1，
         客户端据此显示等级数字并在数值变化时播放橙白闪烁）；
       - frenzy：编码剩余攻击次数（2 - 本回合已攻击次数；0 = 已攻击两次 → 图标恢复原色）；
@@ -2897,10 +3032,11 @@ function ENT:BuildUnitKeywordsStr(card)
             end
         end
     end
-    -- 动态状态（外部施加，不经 HasActiveKeyword 过滤）：被压制 / 被控制
+    -- 动态状态（外部施加，不经 HasActiveKeyword 过滤）：被压制 / 被控制 / 被抑制
     if st then
         if KARDS.KeywordStates.Suppression.Is(st, card) then push("suppress") end
         if KARDS.KeywordStates.Control.Get(st, card) then push("control") end
+        if KARDS.KeywordStates.Inhibit.Is(st, card) then push("neutralized") end
     end
     -- 被守护 guarded（readme 7.2.2）：相邻存在守护单位且自身非守护 → 动态赋予（与
     -- CanAttackTarget 守护判定同款逻辑）；守护单位本身不获得被守护（active("guard") 排除）
@@ -3392,11 +3528,11 @@ end
 ]]
 function ENT:OnUnitEngage(ply, slot, attackerEnt, defenderEnt)
     if not self:UnitOpGuard(ply, slot, attackerEnt) then return end
-    if not IsValid(defenderEnt) then return self:SendOpFail(ply, "目标单位无效") end
+    if not IsValid(defenderEnt) then return self:SendOpFail(ply, "invalid_target") end
     local deck = self._kardsBattleDecks and self._kardsBattleDecks[slot]
     local attacker = deck and self:FieldCardByEnt(deck, attackerEnt)
     if not attacker or attacker:GetType() ~= "unit" then
-        return self:SendOpFail(ply, "单位实体无效")
+        return self:SendOpFail(ply, "invalid_unit")
     end
     -- 防御方可能在敌方卡组槽：遍历反查（总部不在此路径——攻击总部走 OnUnitAttackHQ）
     local defender = nil
@@ -3406,7 +3542,7 @@ function ENT:OnUnitEngage(ply, slot, attackerEnt, defenderEnt)
         if defender then break end
     end
     if not defender or defender:GetType() ~= "unit" then
-        return self:SendOpFail(ply, "目标单位无效")
+        return self:SendOpFail(ply, "invalid_target")
     end
     -- 隐蔽揭示（2026-08-13）：SimEngage 内部已先揭示（数据层先揭示→再攻击→再触发
     -- 反制），此处捕获结算前的隐蔽状态——涉及隐蔽单位时先广播揭示事件（客户端翻面
@@ -3452,12 +3588,12 @@ function ENT:OnUnitAttackHQ(ply, slot, attackerEnt)
     local deck = self._kardsBattleDecks and self._kardsBattleDecks[slot]
     local attacker = deck and self:FieldCardByEnt(deck, attackerEnt)
     if not attacker or attacker:GetType() ~= "unit" then
-        return self:SendOpFail(ply, "单位实体无效")
+        return self:SendOpFail(ply, "invalid_unit")
     end
     local playerID = (slot == 1) and "P1" or "P2"
     local enemyID = (playerID == "P1") and "P2" or "P1"
     local hq = KARDS.Battlefield:GetHQ(self.TableID, enemyID)
-    if not hq then return self:SendOpFail(ply, "敌方总部不存在") end
+    if not hq then return self:SendOpFail(ply, "no_enemy_hq") end
     -- 隐蔽揭示（2026-08-13）：隐蔽单位攻击总部同样先揭示（SimAttack 内部已先揭示）——
     -- 先广播揭示事件（客户端翻面动画+音效），延迟 RevealDelay 后再结算布局/属性广播
     local st = KARDS.Battle and KARDS.Battle.KeywordStates
@@ -3495,12 +3631,12 @@ function ENT:OnUnitMoveFront(ply, slot, unitEnt)
     local deck = self._kardsBattleDecks and self._kardsBattleDecks[slot]
     local card = deck and self:FieldCardByEnt(deck, unitEnt)
     if not card or card:GetType() ~= "unit" then
-        return self:SendOpFail(ply, "单位实体无效")
+        return self:SendOpFail(ply, "invalid_unit")
     end
     local ok, reason = KARDS.Battle:SimMoveToFrontline(card)
     if not ok then
         -- 作弊停局（reason=cheat）亦提示（对局已停止，客户端据此知晓异常）
-        return self:SendOpFail(ply, reason or "移动失败")
+        return self:SendOpFail(ply, reason or "move_failed")
     end
     -- 部署音效（2026-08-14 用户规格：单位移动到前线时播放该单位的部署音效，与
     -- 部署单位同款——手动锁定优先 / 按单位类型×规模自动分配，见 BroadcastEventSound
@@ -3514,7 +3650,8 @@ end
 
     成功（支援阵线未满 → 单位移到/插入支援阵线最右侧）后走 ApplyCombatOutcome：
     广播本方支援阵线布局 + 前线布局 + 指挥点——客户端 KardsFieldLayout 接收器据此
-    驱动单位从当前位置（前线行）飞向支援阵线槽位（fieldRepos 组 0.15s cos 位置动画），
+    驱动单位从当前位置（前线行）飞向支援阵线槽位（fieldRepos 组匀速位置动画，时长按
+    位移等比缩放，见 cl_init.lua UnitMoveAnimDur），
     对方/观战端同步看到。失败原因 → 客户端提示（如支援阵线已满）。
 
     @param ply     Player 操作玩家
@@ -3526,11 +3663,11 @@ function ENT:OnUnitRetreat(ply, slot, unitEnt)
     local deck = self._kardsBattleDecks and self._kardsBattleDecks[slot]
     local card = deck and self:FieldCardByEnt(deck, unitEnt)
     if not card or card:GetType() ~= "unit" then
-        return self:SendOpFail(ply, "单位实体无效")
+        return self:SendOpFail(ply, "invalid_unit")
     end
     local ok, reason = KARDS.Battle:SimRetreat(card)
     if not ok then
-        return self:SendOpFail(ply, reason or "撤退失败")
+        return self:SendOpFail(ply, reason or "retreat_failed")
     end
     self:ApplyCombatOutcome({ card })
 end

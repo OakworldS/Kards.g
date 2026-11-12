@@ -273,18 +273,18 @@ end
 
     @param tableID string 牌桌唯一标识符
     @param card    table 单位卡牌句柄
-    @return boolean, string|nil 能否行动；失败时第二返回值为原因
-            （"单位被压制，本回合不能行动" / "单位入场时不能立即行动"，2026-08-12 区分）
+    @return boolean, string|nil 能否行动；失败时第二返回值为原因码
+            （"suppressed" / "entered_this_turn"，2026-08-12 区分）
 ]]
 function KARDS.Battle:CanUnitAct(tableID, card)
     local st = self.KeywordStates and self.KeywordStates[tableID]
     if KARDS.KeywordStates.Suppression.Is(st, card) then
-        return false, "单位被压制，本回合不能行动" -- 被压制：不能移动或攻击（readme 7.2.1）
+        return false, "suppressed" -- 被压制：不能移动或攻击（readme 7.2.1）
     end
     local entered = self.EnteredTurns[tableID] and self.EnteredTurns[tableID][card]
     if entered == nil then return true end -- 未入场（模拟直接行动）不检查
     if entered == (self.TurnNumbers[tableID] or 0) and not card:HasKeyword("blitz") then
-        return false, "单位入场时不能立即行动" -- 本回合刚入场且无闪击（readme 7.2.2）
+        return false, "entered_this_turn" -- 本回合刚入场且无闪击（readme 7.2.2）
     end
     return true
 end
@@ -547,6 +547,8 @@ function KARDS.Battle:ClearTableState(tableID)
     if self.PincerPartners then self.PincerPartners[tableID] = nil end
     if self.DrawCallbacks then self.DrawCallbacks[tableID] = nil end
     if self.DiscardCallbacks then self.DiscardCallbacks[tableID] = nil end
+    -- 延时效果证明回调（同上：注册闭包强引用牌桌实体，销毁时断引用）
+    if self.DelayedProofCallbacks then self.DelayedProofCallbacks[tableID] = nil end
     -- 六个按桌回调注册表：注册闭包强引用牌桌实体，必须在销毁时断引用
     for _, regName in ipairs({
         "StatsChangedCallbacks",

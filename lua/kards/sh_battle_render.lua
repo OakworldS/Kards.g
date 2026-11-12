@@ -289,6 +289,7 @@ function KARDS.BattleRender:SpawnCard(tableID, card, modelID, scale, pos, ang)
     -- 服务端：同步卡牌属性 NW 变量 + 广播 3D2D 文字叠加注册（客户端 cl_card_text_overlay.lua 接收）
     if SERVER and card then
         ent:SetNWString("Kards_CardName", tostring(card.GetName and card:GetName() or ""))
+        ent:SetNWString("Kards_CardNameEn", tostring(card.GetNameEn and card:GetNameEn() or ""))
         ent:SetNWInt("Kards_CardCost", card.GetCost and card:GetCost() or 0)
         ent:SetNWInt("Kards_CardActionCost", card.GetActionCost and card:GetActionCost() or 0)
         ent:SetNWInt("Kards_CardAttack", (card.GetStat and card:GetStat("attack")) or 0)
@@ -305,7 +306,8 @@ function KARDS.BattleRender:SpawnCard(tableID, card, modelID, scale, pos, ang)
                 end
             end)
         end
-        ent:SetNWString("Kards_CardDescription", "")
+        ent:SetNWString("Kards_CardDescription", tostring(card.GetDescription and card:GetDescription() or ""))
+        ent:SetNWString("Kards_CardDescriptionEn", tostring(card.GetDescriptionEn and card:GetDescriptionEn() or ""))
         ent:SetNWBool("Kards_CardIsCommand", (card.GetType and card:GetType()) == "command" or (card.GetType and card:GetType()) == "headquarter")
         ent:SetNWBool("Kards_CardIsHeadquarter", (card.GetType and card:GetType()) == "headquarter")
         -- 可见词条计数（次词条如海军不显示、不计入布局，见 KARDS.CardInterface.IsHiddenKeyword）
@@ -320,11 +322,12 @@ function KARDS.BattleRender:SpawnCard(tableID, card, modelID, scale, pos, ang)
             end
         end
         ent:SetNWBool("Kards_CardHasKeywords", hasVisibleKw)
-        -- 词条显示文本（KARDS.CardEditor.Data.BuildKeywordsText 共享函数构建，sh_card_data.lua 定义；
-        -- 客户端 cl_card_text_overlay.lua 以 3D2D 文字绘制词条）
+        -- 词条同步串为词条 id（如 "blitz|intel:2"），客户端按本机语言重建显示文本
+        -- （sh_card_data.lua SerializeKeywords / DeserializeKeywords）；不直接同步文本，
+        -- 避免一条 NW 值只能容纳一种语言。
         ent:SetNWString("Kards_CardKeywords",
             (card.GetKeywords and KARDS.CardEditor and KARDS.CardEditor.Data
-                and KARDS.CardEditor.Data.BuildKeywordsText and KARDS.CardEditor.Data.BuildKeywordsText(card:GetKeywords() or {}))
+                and KARDS.CardEditor.Data.SerializeKeywords and KARDS.CardEditor.Data.SerializeKeywords(card:GetKeywords() or {}))
             or "")
         net.Start("KARDS_Battle_CardOverlayAdd")
         net.WriteEntity(ent)
@@ -657,11 +660,21 @@ if SERVER then
     -- 战场卡牌 3D2D 文字叠加：实体生成广播（客户端 cl_card_text_overlay.lua 接收注册）
     util.AddNetworkString("KARDS_Battle_CardOverlayAdd")
 
-    concommand.Add("kards_battle_list", function()
+    -- 开发命令权限：服务器控制台（ply 无效）放行，玩家需 operator 及以上，
+    -- 判定见 init.lua 的 KARDS.CanUseDevCommand
+    local function denied(ply, name)
+        if KARDS.CanUseDevCommand(ply) then return false end
+        print(("[KARDS BattleRender] %s：需要 operator 及以上权限"):format(name))
+        return true
+    end
+
+    concommand.Add("kards_battle_list", function(ply)
+        if denied(ply, "kards_battle_list") then return end
         KARDS.BattleRender:PrintAvailableModels()
     end)
 
     concommand.Add("kards_battle_table", function(ply, cmd, args)
+        if denied(ply, "kards_battle_table") then return end
         local scale = tonumber(args[1]) or KARDS.BattleRender.Defaults.TableScale
         local modelID = args[2]
         local ent, err = KARDS.BattleRender:SpawnTable(KARDS.BattleRender.Defaults.TableID, modelID, scale)
@@ -672,12 +685,14 @@ if SERVER then
         end
     end)
 
-    concommand.Add("kards_battle_clear", function()
+    concommand.Add("kards_battle_clear", function(ply)
+        if denied(ply, "kards_battle_clear") then return end
         KARDS.BattleRender:Clear(KARDS.BattleRender.Defaults.TableID)
         print("[KARDS BattleRender] 已清理牌桌与卡牌实体")
     end)
 
     concommand.Add("kards_battle_demo", function(ply, cmd, args)
+        if denied(ply, "kards_battle_demo") then return end
         local cardScale = tonumber(args[1]) or KARDS.BattleRender.Defaults.CardScale
         local tableScale = tonumber(args[2]) or KARDS.BattleRender.Defaults.TableScale
         KARDS.BattleRender:RunDemo(cardScale, tableScale)

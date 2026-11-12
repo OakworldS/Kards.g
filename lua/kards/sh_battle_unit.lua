@@ -79,6 +79,8 @@ function KARDS.Battle:SimInhibit(card)
     if not st or not card or card:GetType() ~= "unit" then return false end
     KARDS.KeywordStates.Inhibit.Set(st, card)
     KARDS.TickLog:Push(self.TableID, card, { "neutralized" }, {})
+    -- 词条串刷新（关键词随抑制消失、抑制图标出现；经 OnBattleStatsChanged → SyncUnitNW）
+    self:NotifyStatsChanged(card)
     return true
 end
 
@@ -337,7 +339,7 @@ local function DeployToSupport(self, card, slotIndex, fixed, opts)
     -- 部署单位消耗卡牌花费（指挥点，readme 7.1 操作）；不足拒绝
     local cost = card:GetCost()
     if not KARDS.CommandPoints:CanPay(self.TableID, card:GetOwner(), cost) then
-        return false, "指挥点不足（需要 " .. cost .. "）"
+        return false, "not_enough_points|" .. tostring(cost)
     end
     local addFn = fixed and KARDS.Battlefield.AddToSupportFixed or KARDS.Battlefield.AddToSupport
     -- AddToSupport/AddToSupportFixed 均为冒号定义（首参 self = Battlefield）；
@@ -439,7 +441,7 @@ end
 --[[
     单位从本方支援阵线移动至前线（骨架，readme 7.1 操作 / 7.1 注 前线占领）
 
-    前置拒绝（readme 7.1）：前线已被敌方占领 → 拒绝移动（提示"前线已被敌方占领"）；
+    前置拒绝（readme 7.1）：前线已被敌方占领 → 拒绝移动（返回代码 frontline_occupied）；
     一个单位只能操作一次（readme 7.1）：已移动 / 已攻击 → 拒绝（移动/攻击互斥）。
 
     触发作弊（他方单位试图进入已控制的前线）时：
@@ -460,31 +462,31 @@ function KARDS.Battle:SimMoveToFrontline(card, slotIndex)
     -- 单位本回合能否行动（被压制 / 刚部署且无闪击 → 拒绝，readme 7.2.1 / 7.2.2）
     local canAct, actReason = self:CanUnitAct(self.TableID, card)
     if not canAct then
-        print("[Battle] SimMoveToFrontline 失败: " .. tostring(actReason or "单位本回合不能行动"))
-        return false, actReason or "单位本回合不能行动"
+        print("[Battle] SimMoveToFrontline 失败: " .. tostring(actReason or "cannot_act"))
+        return false, actReason or "cannot_act"
     end
     -- 行动互斥（readme 7.1：一个单位只能操作一次）：已攻击 → 拒绝（攻击后不能移动）
     local st = self.KeywordStates[self.TableID]
     if st and KARDS.KeywordStates.TurnAction.HasAttacked(st, card) then
         print("[Battle] SimMoveToFrontline 失败: 单位本回合已攻击过（攻击后不能移动，readme 7.1）")
-        return false, "单位本回合已攻击过（攻击后不能移动）"
+        return false, "already_attacked"
     end
     -- 行动互斥：已移动 → 拒绝（移动一次即不可再移动；坦克例外由攻击检查器负责，此处不放开）
     if st and KARDS.KeywordStates.TurnAction.HasMoved(st, card) then
         print("[Battle] SimMoveToFrontline 失败: 单位本回合已移动过（readme 7.1）")
-        return false, "单位本回合已移动过"
+        return false, "already_moved"
     end
     -- 前线占领（readme 7.1 注）：前线已被敌方占领 → 拒绝移动（仅本方 / 无主前线可进入）
     local flOwner = KARDS.Battlefield:GetFrontlineOwner(self.TableID)
     if flOwner ~= nil and flOwner ~= card:GetOwner() then
         print("[Battle] SimMoveToFrontline 失败: 前线已被敌方占领（readme 7.1 注）")
-        return false, "前线已被敌方占领"
+        return false, "frontline_occupied"
     end
     -- 移动消耗行动花费（隐蔽未揭示 → 行动花费为 1，readme 7.2.2）；不足拒绝
     local actionCost = self:GetActionCost(self.TableID, card)
     if not KARDS.CommandPoints:CanPay(self.TableID, card:GetOwner(), actionCost) then
         print("[Battle] SimMoveToFrontline 失败: 指挥点不足（需要行动花费 " .. tostring(actionCost) .. "）")
-        return false, ("指挥点不足（需要行动花费 %s）"):format(tostring(actionCost))
+        return false, "not_enough_action_points|" .. tostring(actionCost)
     end
     local ok, reason = KARDS.Battlefield:MoveToFrontline(self.TableID, card, slotIndex)
     if reason == "cheat" then
@@ -525,7 +527,7 @@ function KARDS.Battle:SimRetreat(card, slotIndex)
     local ok, reason = KARDS.Battlefield:Retreat(self.TableID, card, slotIndex)
     if not ok then
         print("[Battle] SimRetreat 失败: " .. tostring(reason))
-        return false
+        return false, reason
     end
     -- 烟幕（readme 7.2.2）：移动后失去烟幕
     if self:HasActiveKeyword(self.TableID, card, "smoke") then
@@ -672,7 +674,7 @@ end
     @param card table 单位卡牌句柄
     @return boolean 是否成功
     @return string|nil 失败原因（不传 reason 时由调用方按 nil 处理；2026-09-26 缺口 F
-            起返回 "前线已被敌方占领" 供行动作接线 FrontlineDenied 提示）
+            起返回 "frontline_occupied" 供行动作接线 FrontlineDenied 提示）
 ]]
 function KARDS.Battle:SimJoinFrontline(card)
     -- 统一操作钩子（M1）：加入前线可被反制拦截（主动卡 = 加入单位）
@@ -686,7 +688,7 @@ function KARDS.Battle:SimJoinFrontline(card)
     local flOwner = KARDS.Battlefield:GetFrontlineOwner(self.TableID)
     if flOwner ~= nil and flOwner ~= card:GetOwner() then
         print("[Battle] SimJoinFrontline 失败: 前线已被敌方占领（readme 7.1 注）")
-        return false, "前线已被敌方占领"
+        return false, "frontline_occupied"
     end
     local ok, reason = KARDS.Battlefield:JoinFrontline(self.TableID, card)
     if reason == "cheat" then
@@ -787,13 +789,15 @@ end
 ]]
 function KARDS.Battle:SimRepair(card, amount)
     if not card or card:GetType() ~= "unit" then return false end
-    -- 统一操作钩子（M1）：修复可被反制拦截（主动卡 = 被修复单位）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "repair", {
-        player = card:GetOwner(), card = card,
-    }).intercepted then
+    -- 统一操作钩子（M1）：修复可被反制拦截（主动卡 = 被修复单位）；
+    -- 属性变更可改写 args.amount（修复量）
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "repair", {
+        player = card:GetOwner(), card = card, amount = amount or 1,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("repair", card)
     end
-    amount = math.max(0, math.floor(amount or 1))
+    amount = math.max(0, math.floor(tonumber(opArgs.amount) or amount or 1))
     local old = card:GetStat("defense") or 0
     card:ApplyChange("defense", "increase", amount)
     -- 飘字（2026-08-14）：修复 → 防御增加绿色飘字（delta = new - old，含 99 上限截断）
@@ -1015,6 +1019,8 @@ function KARDS.Battle:SimUnneutralize(card)
     end
     KARDS.KeywordStates.Inhibit.Clear(st, card)
     KARDS.TickLog:Push(self.TableID, card, { "unneutralized" }, {})
+    -- 词条串刷新（关键词恢复、抑制图标消失；经 OnBattleStatsChanged → SyncUnitNW）
+    self:NotifyStatsChanged(card)
     return true
 end
 
@@ -1194,6 +1200,85 @@ function KARDS.Battle:SimReturnToHand(card)
 end
 
 --[[
+    收缴（readme 7.2.2 + 2026-10-15 用户规格）：把一个战场单位收缴进 newOwner 手牌。
+
+    流程：
+      1. 校验目标在场（总部不可被收缴）、手牌未满
+      2. 触发 Confiscate 事件（实体层在目标小模型原位创建完整卡动画载体；事件先于移除触发，
+         保证源实体仍在场可读位置，同 SimReturnToHand 的时序约定）
+      3. 改归属为 newOwner；攻防设为 1；国籍改为 newOwner 主国
+      4. 触发阵亡（SimRemoveFromField "death"，含亡计与阵亡动画）
+      5. 插入 newOwner 手牌
+    手牌已满时按普通消灭处理（仅阵亡动画，无收缴动画），返回 false。
+
+    不限定目标归属：敌方单位与本方单位均可被收缴（2026-10-15 用户规格）。
+
+    @param card     table 单位卡牌句柄
+    @param newOwner string 收缴方玩家标识
+    @return boolean 是否成功收缴
+
+    返回 false 的情形：card 非单位卡、newOwner 为空、目标不在战场、操作钩子拦截、
+    收缴方手牌已满（此情形仍走普通消灭路径触发阵亡与亡计）。
+    成功时做两件事：把 card 追加到 newOwner 手牌末位，并记录 confiscate 刻与广播 CountsChanged。
+]]
+function KARDS.Battle:SimConfiscate(card, newOwner)
+    if not card or card:GetType() ~= "unit" then return false end
+    if not newOwner then return false end
+    -- 统一操作钩子（M1）：收缴可被反制拦截（主动卡 = 被收缴单位）
+    if KARDS.EngineHooks.TriggerOperation(self.TableID, "confiscate", {
+        player = newOwner, card = card,
+    }).intercepted then
+        return self:InterceptOperation("confiscate", card)
+    end
+    -- 目标须在战场（需要在场读取原位；总部不可被收缴）
+    if not KARDS.Battlefield:FindCardZone(self.TableID, card) then
+        print("[Battle] SimConfiscate 失败: 目标不在战场")
+        return false
+    end
+    local hand = KARDS.Deck:GetHand(self.TableID, newOwner)
+    -- 手牌已满（2026-10-15）：按普通消灭处理，仅阵亡动画，无收缴动画
+    if not hand or #hand >= KARDS.Deck.MAX_HAND then
+        print("[Battle] SimConfiscate 手牌已满，按普通消灭处理: "
+            .. tostring(card.GetName and card:GetName() or ""))
+        self:SimRemoveFromField(card, "death")
+        return false
+    end
+    -- 手牌序号：事件先于插入触发，收缴总为追加末位（idx = 当前手牌数 + 1）
+    local handTotal = #hand
+    -- 收缴动画事件（实体层在此创建完整卡载体；此刻目标小模型仍在场）
+    KARDS.EffectRegistry.Trigger(self.TableID, KARDS.EffectRegistry.EVENTS.Confiscate,
+        { card = card, newOwner = newOwner, handTotal = handTotal })
+    -- 归属与形态：归属改为收缴方、攻防设为 1、国籍改为收缴方主国
+    card:SetOwner(newOwner)
+    card:ApplyChange("attack", "set", 1)
+    card:ApplyChange("defense", "set", 1)
+    card:SetCountry(self:GetPlayerMainCountry(newOwner))
+    -- 阵亡（含亡计刻与「阵亡」开始点效果链）
+    self:SimRemoveFromField(card, "death")
+    -- 入手
+    table.insert(hand, card)
+    KARDS.TickLog:Push(self.TableID, card, { "confiscate" }, {})
+    KARDS.EffectRegistry.Trigger(self.TableID, KARDS.EffectRegistry.EVENTS.CountsChanged,
+        { player = newOwner })
+    return true
+end
+
+-- 取玩家主国国籍（先手方取 Battle.FriendlyMainCountry，其余取 Battle.EnemyMainCountry；
+-- 派生规则同 sh_varlib.lua GetDevelopPoolCards 第 1029 至 1032 行）
+-- @param player string 玩家标识
+-- @return string|nil 主国国籍 id
+-- 说明：player 与 KARDS.Battle.Players 首位一致时按先手方取 FriendlyMainCountry；
+--       KARDS.VarLib.Get 或 T.Battle 数据缺失时返回 nil。
+-- 用法：local country = self:GetPlayerMainCountry("P1")
+function KARDS.Battle:GetPlayerMainCountry(player)
+    local T = KARDS.VarLib and KARDS.VarLib.Get(self.TableID)
+    if not T or not T.Battle then return nil end
+    local players = KARDS.Battle.Players or {}
+    local isFriendly = players[1] == player
+    return isFriendly and T.Battle.FriendlyMainCountry or T.Battle.EnemyMainCountry
+end
+
+--[[
     召唤单位：将单位放入 owner 阵营的指定阵线（效果召唤，readme 7.1 效果）
 
     归属与 owner 不同时先转移（SetOwner）；zone 1=支援阵线（首个空槽）2=前线。
@@ -1204,7 +1289,7 @@ end
     @param zone  number|nil 目标阵线（1=支援阵线，2=前线；缺省 1）
     @return boolean 是否成功
     @return string|nil 失败原因（2026-09-26 缺口 F：zone==2 且前线被敌方占领时透传
-            "前线已被敌方占领"）
+            "frontline_occupied"）
 ]]
 function KARDS.Battle:SimSummonUnit(owner, unit, zone)
     if not unit or unit:GetType() ~= "unit" then return false end
@@ -1241,12 +1326,14 @@ function KARDS.Battle:SimChangeCommandPoints(player, amount, op)
         return false
     end
     -- 统一操作钩子（M1）：指挥点变更可被反制拦截（无主动卡，作用对象 = 目标玩家）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "command_points", {
-        player = player,
-    }).intercepted then
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "command_points", {
+        player = player, amount = amount or 0,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("command_points", nil)
     end
-    amount = math.max(0, math.floor(amount or 0))
+    -- 属性变更（反制数值改写）：回读 amount，变更方向仍由 op 决定
+    amount = math.max(0, math.floor(tonumber(opArgs.amount) or amount or 0))
     local cur = cp.Points[player] or 0
     local new
     if op == 2 then
@@ -1288,12 +1375,14 @@ function KARDS.Battle:SimChangeCommandSlots(player, amount, op)
         return false
     end
     -- 统一操作钩子（M1）：指挥点槽变更可被反制拦截（无主动卡，作用对象 = 目标玩家）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "command_slot", {
-        player = player,
-    }).intercepted then
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "command_slot", {
+        player = player, amount = amount or 0,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("command_slot", nil)
     end
-    amount = math.max(0, math.floor(amount or 0))
+    -- 属性变更（反制数值改写）：回读 amount，变更方向仍由 op 决定
+    amount = math.max(0, math.floor(tonumber(opArgs.amount) or amount or 0))
     local cap = KARDS.CommandPoints.MAX_SLOT_ABSOLUTE
     local cur = cp.Slots[player] or 0
     local new

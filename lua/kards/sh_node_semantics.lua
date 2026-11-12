@@ -31,13 +31,13 @@ KARDS.NodeParser.SET_OBJ_OPS = {
 }
 KARDS.NodeParser.SET_OBJ_EMPTY_OP = "设为"
 -- 对象数值属性（值 = 数字或 "var:" 引用）
-KARDS.NodeParser.SET_OBJ_NUM_PROPS = { 花费 = true, 行动花费 = true, 攻击力 = true, 防御力 = true }
+KARDS.NodeParser.SET_OBJ_NUM_PROPS = { ["花费"] = true, ["行动花费"] = true, ["攻击力"] = true, ["防御力"] = true }
 -- 对象插图属性（值 = "../data/kards_images/<文件>"）
-KARDS.NodeParser.SET_OBJ_IMG_PROPS = { 卡牌插图 = true, 历史插图 = true }
+KARDS.NodeParser.SET_OBJ_IMG_PROPS = { ["卡牌插图"] = true, ["历史插图"] = true }
 -- 对象文本槽属性（值 = "var:<名>" 引用 或 直接文本）
-KARDS.NodeParser.SET_OBJ_TEXT_SLOT_PROPS = { 卡牌名称 = true, 描述 = true, 历史文本 = true }
+KARDS.NodeParser.SET_OBJ_TEXT_SLOT_PROPS = { ["卡牌名称"] = true, ["描述"] = true, ["历史文本"] = true }
 -- 对象词条属性（值 = 逗号分隔词条 id）
-KARDS.NodeParser.SET_OBJ_KEYWORD_PROPS = { 词条 = true }
+KARDS.NodeParser.SET_OBJ_KEYWORD_PROPS = { ["词条"] = true }
 
 -- ====================================================================
 -- 卡牌专属固定变量（每张卡牌固定存在的专属全局变量）
@@ -133,21 +133,102 @@ function KARDS.NodeParser.GetFixedVarValue(card, varType, key)
     return nil
 end
 
+-- 词条集合快照（id → true）：用于判断一次「词条」写入是否新获得某词条
+-- @param card table 卡牌句柄
+-- @return table id → true
+-- 说明：词条元素可为字符串 id，也可为 { id, ... } 表，统一取 kw[1] 作为键。
+local function SnapshotKeywords(card)
+    local set = {}
+    if card and card.GetKeywords then
+        for _, kw in ipairs(card:GetKeywords() or {}) do
+            set[type(kw) == "table" and kw[1] or kw] = true
+        end
+    end
+    return set
+end
+
+-- 收缴触发（readme 7.2.2 + 2026-10-15 用户规格）：「词条」写入使卡牌新获得 收缴/被收缴 时，
+-- 立即使该单位阵亡并收缴进效果发起方手牌。收缴方 = 效果发起卡归属（缺省 = 目标自身归属）；
+-- 收缴不限定目标归属（本方也可以收缴本方单位）。
+-- @param ctx    table|nil 执行上下文（含 _srcCard）
+-- @param card   table 目标卡牌句柄
+-- @param before table 写入前的词条集合快照（SnapshotKeywords 结果）
+-- @return nil 无返回值（触发的收缴由 KARDS.Battle:SimConfiscate 执行）
+-- 说明：仅在本次新增 confiscate 或 confiscated 词条（写入前快照中不存在）时触发一次；
+--       收缴方优先取 ctx._srcCard 归属，缺省退回目标自身归属。
+local function MaybeTriggerConfiscate(ctx, card, before)
+    if not card or not card.GetKeywords then return end
+    if not (KARDS.Battle and KARDS.Battle.SimConfiscate) then return end
+    before = before or {}
+    local gained = false
+    for _, kw in ipairs(card:GetKeywords() or {}) do
+        local id = type(kw) == "table" and kw[1] or kw
+        if (id == "confiscate" or id == "confiscated") and not before[id] then
+            gained = true
+            break
+        end
+    end
+    if not gained then return end
+    local src = ctx and ctx._srcCard
+    local newOwner = (src and src.GetOwner and src:GetOwner())
+        or (card.GetOwner and card:GetOwner())
+    KARDS.Battle:SimConfiscate(card, newOwner)
+end
+
+--[[
+    属性写入拦截（反制「属性变更」）
+
+    编辑器属性写入前经统一操作钩子 OnBeforeOperation（opType = stat_change），
+    反制卡可选择两种收尾：取消本次写入（args.intercepted）或改写写入数值（args.amount）。
+    只挂在编辑器属性写入的两个入口（本函数数值字段与 HandleObjectEntry 数值属性分支），
+    不放进 SetCardField，避免修复 / 伤害 / 词条写入被误判为属性变更，也避免递归拦截。
+
+    @param ctx      table 执行上下文（需 tableID；_srcCard 用于解析发起方玩家）
+    @param card     table 目标卡牌句柄
+    @param field    string 字段名（attack / defense / cost / actionCost）
+    @param modifier string 变更方式（set / increase / decrease）
+    @param amount   number 写入或变动数值
+    @return number 改写后的数值（amount 非数字或未注册钩子时原样返回）
+    @return boolean 是否被取消
+]]
+local function InterceptStatWrite(ctx, card, field, modifier, amount)
+    if type(amount) ~= "number" then return amount, false end
+    local tableID = ctx and ctx.tableID
+    if not tableID or not (KARDS.EngineHooks and KARDS.EngineHooks.TriggerOperation) then
+        return amount, false
+    end
+    local src = ctx._srcCard
+    local actor = (src and src.GetOwner and src:GetOwner())
+        or (card and card.GetOwner and card:GetOwner())
+    local args = KARDS.EngineHooks.TriggerOperation(tableID, "stat_change", {
+        player = actor, card = card, field = field, modifier = modifier, amount = amount,
+    })
+    if args.intercepted then return amount, true end
+    return tonumber(args.amount) or amount, false
+end
+
 -- 写入卡牌专属固定变量（数据层，写回发起卡牌）
 -- @param value any 新值
+-- @param ctx   table|nil 执行上下文（「词条组合」写入触发收缴时判定收缴方；缺省退回卡牌归属）
 -- @return boolean 是否成功（品质/自身等无写入通道字段提示但不视为成功）
-function KARDS.NodeParser.SetFixedVarValue(card, varType, key, value)
+function KARDS.NodeParser.SetFixedVarValue(card, varType, key, value, ctx)
     if not card then return false end
     local app = GetCardApp(card)
     if varType == "n" then
+        -- 属性变更反制（2026-11-05）：数值字段写入前经统计写入拦截，可取消或改写
+        local function writeNumeric(field, modifier)
+            local v, blocked = InterceptStatWrite(ctx, card, field, modifier, value)
+            if blocked then return false end
+            return KARDS.NodeParser.SetCardField(card, field, v, modifier)
+        end
         if key == "KARDS.User.卡牌花费" then
-            return KARDS.NodeParser.SetCardField(card, "cost", value)
+            return writeNumeric("cost", "set")
         elseif key == "KARDS.User.行动花费" then
-            return KARDS.NodeParser.SetCardField(card, "actionCost", value)
+            return writeNumeric("actionCost", "set")
         elseif key == "KARDS.User.攻击" then
-            return KARDS.NodeParser.SetCardField(card, "attack", value, "set")
+            return writeNumeric("attack", "set")
         elseif key == "KARDS.User.防御" then
-            return KARDS.NodeParser.SetCardField(card, "defense", value, "set")
+            return writeNumeric("defense", "set")
         end
     elseif varType == "t" then
         if key == "KARDS.User.名称" then
@@ -158,7 +239,10 @@ function KARDS.NodeParser.SetFixedVarValue(card, varType, key, value)
             if app then app.historyText = tostring(value) return true end
         elseif key == "KARDS.User.词条组合" then
             -- 值 = 逗号分隔词条 id（对齐对象属性「词条」写入通道）
-            return KARDS.NodeParser.SetCardField(card, "keywords", value)
+            local before = SnapshotKeywords(card)
+            local ok = KARDS.NodeParser.SetCardField(card, "keywords", value)
+            if ok then MaybeTriggerConfiscate(ctx, card, before) end
+            return ok
         elseif key == "KARDS.User.品质" then
             print("[NodeParser] 提示: 卡牌专属固定变量「品质」无写入通道（外观字段，运行时只读）")
             return false
@@ -441,7 +525,7 @@ function KARDS.NodeParser.SetTarget(ctx, target, value, change)
             elseif fk == "KARDS.User.防御" then fxOld = ctx.initiatorCard:GetStat("defense") or 0
             elseif fk == "KARDS.User.行动花费" then fxOld = ctx.initiatorCard._actionCost or 0 end
         end
-        local ok = KARDS.NodeParser.SetFixedVarValue(ctx.initiatorCard, target.varType, target.key, value)
+        local ok = KARDS.NodeParser.SetFixedVarValue(ctx.initiatorCard, target.varType, target.key, value, ctx)
         if ok then
             KARDS.NodeParser.PushStatChange(ctx, ctx.initiatorCard, change or ("=" .. tostring(value)))
             -- 飘字（2026-08-14）：固定变量 n 型（攻击/防御/行动花费）设为 → 攻防白色、
@@ -866,11 +950,15 @@ function KARDS.NodeParser.HandleObjectEntry(ctx, entry, varName)
             or (opLabel == "攻击力") and "attack"
             or "defense"
         local objOp = entry.objOpIdx or 1
+        -- 攻击/防御：卡牌接口 ApplyChange 原生支持 set/increase/decrease
+        local modifier = (objOp == 2) and "increase" or (objOp == 3) and "decrease" or "set"
+        -- 属性变更反制（2026-11-05）：写入前经 stat_change 钩子，可取消或改写写入数值
+        local blocked
+        amount, blocked = InterceptStatWrite(ctx, card, field, modifier, amount)
+        if blocked then return false end
         local ok
         local change
         if field == "attack" or field == "defense" then
-            -- 攻击/防御：卡牌接口 ApplyChange 原生支持 set/increase/decrease
-            local modifier = (objOp == 2) and "increase" or (objOp == 3) and "decrease" or "set"
             local old = card:GetStat(field) or 0
             ok = KARDS.NodeParser.SetCardField(card, field, amount, modifier)
             -- 飘字（2026-08-14）：对象数值属性（攻击/防御）→ 设为/减少白色、增加绿色
@@ -901,8 +989,13 @@ function KARDS.NodeParser.HandleObjectEntry(ctx, entry, varName)
 
     -- 词条属性
     if KARDS.NodeParser.SET_OBJ_KEYWORD_PROPS[opLabel] then
+        local before = SnapshotKeywords(card)
         local ok = KARDS.NodeParser.SetCardField(card, "keywords", entry.value)
-        if ok then KARDS.NodeParser.PushStatChange(ctx, card, "=" .. tostring(entry.value)) end
+        if ok then
+            KARDS.NodeParser.PushStatChange(ctx, card, "=" .. tostring(entry.value))
+            -- 收缴 / 被收缴：授予瞬间触发收缴（2026-10-15 用户规格）
+            MaybeTriggerConfiscate(ctx, card, before)
+        end
         return ok
     end
 
@@ -1109,7 +1202,7 @@ end
 -- ====================================================================
 -- action（data_static/kards/node_templates/action.json）：
 --   mainSelect select_2（获得/取消/被消灭）
---     获得 → subSelect select_3（19 项动作），items 键 = select_3 选项值
+--     获得 → subSelect select_3（20 项动作），items 键 = select_3 选项值
 --     取消 → subSelect select_10（被压制/被抑制/被控制/免疫 状态），items 键 = 选项值
 --     被消灭 → 直接动作 destroy
 KARDS.NodeParser.BaseSemantics = {
@@ -1138,6 +1231,7 @@ KARDS.NodeParser.BaseSemantics = {
                     [17] = { act = "summonUnit", unit = "select_8", zone = "select_9" }, -- 召唤单位
                     [18] = { act = "elevateToVeteran" },    -- 升为老兵
                     [19] = { act = "returnToDeckTop" },     -- 返回卡组顶（放到所有者牌堆顶）
+                    [20] = { act = "confiscate" },           -- 收缴
                 },
             },
             [2] = { -- 取消
@@ -1326,19 +1420,21 @@ KARDS.NodeParser.BaseSemantics = {
     --   e 输入注册/触发的目标实体；funcslot_1 函数；select_5 效果图标（主动效果/被动效果/无/@combat_keywords）
     --   拦截分支（4/5）内另有操作类型选择：拦截一次 select_2 / 保持拦截 select_3（16 种操作，见
     --   sh_node_hooks.lua INTERCEPT_OPTYPES），决定拦截 args.opType 命中的操作类型
+    --   收尾方式：拦截一次 select_6 / 保持拦截 select_8（反制1/属性变更2）
+    --   属性变更数值：拦截一次 select_7 修饰 + number_1 数值 / 保持拦截 select_9 修饰 + number_2 数值
     --   输出 e目标、t效果图标类型（base 输出端口）
     --   触发一次 = 立即同步调用函数子图；保持触发 = 注册到目标实体每回合自动执行；
     --   停止保持触发 = 移除目标实体上的注册；
     --   拦截一次/保持拦截 = 注册 OnBeforeOperation 引擎钩子并按操作类型过滤（复用 args.intercepted；
-    --   拦截一次首次命中后自动注销，见 sh_node_hooks.lua RegisterIntercept）
+    --   反制直接取消操作，属性变更则改写 args.amount，拦截一次首次命中后自动注销，见 sh_node_hooks.lua RegisterIntercept）
     trigger_function = {
         mainSelect = "select_1",
         branches = {
             [1] = { act = "triggerOnce" },   -- 触发一次：立即执行函数子图（同步，函数完成后本节点再继续）
             [2] = { act = "keepTrigger" },   -- 保持触发：注册到目标实体，实体拥有者回合开始自动执行
             [3] = { act = "stopTrigger" },   -- 停止保持触发：从目标实体移除本节点注册的保持触发
-            [4] = { act = "interceptOnce", opSelect = "select_2" }, -- 拦截一次：按操作类型拦截，首次命中后自动注销
-            [5] = { act = "keepIntercept", opSelect = "select_3" }, -- 保持拦截：按操作类型持续拦截敌方操作
+            [4] = { act = "interceptOnce", opSelect = "select_2", finishSelect = "select_6", modSelect = "select_7", valueNumber = "number_1" }, -- 拦截一次：按操作类型拦截或改写数值，首次命中后自动注销
+            [5] = { act = "keepIntercept", opSelect = "select_3", finishSelect = "select_8", modSelect = "select_9", valueNumber = "number_2" }, -- 保持拦截：按操作类型持续拦截或改写敌方操作
         },
     },
     -- trigger（data_static/kards/node_templates/trigger.json）：

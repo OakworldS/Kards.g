@@ -318,9 +318,7 @@ if SERVER then
             local oppSlot = 3 - (data.slot or 0)
             local opp = ent.Slots and ent.Slots[oppSlot]
             if IsValid(opp) and opp:IsPlayer() and ent._kardsFormalBattleStarted then
-                net.Start("KardsTableMsg")
-                    net.WriteString("您的对手已下线！")
-                net.Send(opp)
+                KARDS.TableSync.Notify(opp, "msg.opponent_offline")
             end
             -- 最后一人断线：牌桌已无人在槽，复位开局标记并释放全服对战锁
             --（规划 S1；断线路径走会话状态机 Exit，不经过 ExitSlot）
@@ -349,16 +347,12 @@ if SERVER then
             return
         end
         if not KARDS.IsOperator(ply) then
-            net.Start("KardsTableMsg")
-                net.WriteString("权限不足（需 operator 及以上）")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.no_permission")
             return
         end
         local data = ply._kardsTable
         if not data or not IsValid(data.ent) then
-            net.Start("KardsTableMsg")
-                net.WriteString("未在牌桌内，无法强制开始对战")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.not_in_table_force_start")
             return
         end
         data.ent:StartFormalBattle(true)
@@ -374,37 +368,27 @@ if SERVER then
     concommand.Add("kards_switch", function(ply, cmd, args)
         if not IsValid(ply) or not ply:IsPlayer() then return end
         if not KARDS.IsOperator(ply) then
-            net.Start("KardsTableMsg")
-                net.WriteString("权限不足（需 operator 及以上）")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.no_permission")
             return
         end
         local data = ply._kardsTable
         if not data or not IsValid(data.ent) then
-            net.Start("KardsTableMsg")
-                net.WriteString("未在牌桌内，无法切换操作方")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.not_in_table_switch")
             return
         end
         local ent = data.ent
         if not ent._kardsFormalBattleStarted then
-            net.Start("KardsTableMsg")
-                net.WriteString("对局尚未开始，无法切换操作方")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.battle_not_started_switch")
             return
         end
         if ent:GetPlayerCount() ~= 1 then
-            net.Start("KardsTableMsg")
-                net.WriteString("仅无对手模式（牌桌内仅一名玩家）可切换 P1/P2")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.only_solo_switch")
             return
         end
         if ent._kardsFakeUser then
             -- 伪用户接管中（2026-09-13）：对方由控制台指令操作，交换位置会打乱
             -- 槽位/视角归属，禁用直到 kards_fakeuser 0 关闭
-            net.Start("KardsTableMsg")
-                net.WriteString("伪用户接管中，无法切换操作方（先 kards_fakeuser 0 关闭）")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.fakeuser_switch")
             return
         end
         local oldSlot = data.physSlot or data.slot
@@ -412,9 +396,7 @@ if SERVER then
         -- 切换目标槽位须已有卡组（对局开始时两槽均补齐，StartFormalBattle）
         local targetDeck = ent._kardsBattleDecks and ent._kardsBattleDecks[newSlot]
         if not targetDeck then
-            net.Start("KardsTableMsg")
-                net.WriteString("对方槽位无卡组，无法切换")
-            net.Send(ply)
+            KARDS.TableSync.Notify(ply, "msg.enemy_slot_no_deck")
             return
         end
         -- 卡组归属互换（旧槽现无真人 → 转虚拟对手；新槽有真人 → 转真实玩家）
@@ -440,6 +422,27 @@ if SERVER then
             net.WriteEntity(ent)
             net.WriteUInt(newSlot, 8)
         net.Send(ply)
+        -- 卡面定向补发（2026-11-12）：手牌卡面标识平时只经 KardsTableDrawFace 发给
+        -- 当时的本方玩家，无对手模式切到新槽后，该客户端没有新槽手牌的卡面记录，
+        -- InitDrawCardFace 因卡名为空一直早退（入队重试也永远失败），重新调度代选
+        -- 与切换后的本方手牌会一直显示卡背。这里把新槽手牌卡面补发给切换后的操作者，
+        -- 客户端 cardFaces 就绪后由 KardsDrawFacePending 自动完成卡面初始化。
+        local ownerName = (newSlot == 1) and "P1" or "P2"
+        local hand = KARDS.Deck:GetHand(ent.TableID, ownerName) or {}
+        local cardEnts = targetDeck.cardEnt
+        if cardEnts then
+            for _, handCard in ipairs(hand) do
+                local handEnt = cardEnts[handCard]
+                if IsValid(handEnt) then
+                    net.Start("KardsTableDrawFace")
+                        net.WriteEntity(handEnt)
+                        net.WriteString(handCard:GetName())
+                        net.WriteString(handCard:GetName())
+                        net.WriteString(handCard:GetType())
+                    net.Send(ply)
+                end
+            end
+        end
         print(("[Kards] 无对手模式: %s 移动到 P%d"):format(ply:Nick(), newSlot))
     end)
 end
@@ -512,9 +515,7 @@ function ENT:TryEnterSlot(ply)
     -- 观战分支，见 table_session.lua），再次 kards_enter 走 ExitSlot 退出观战。
     -- 注：槽位判空（GetPlayerSlot）之前拒绝，双人退出后空槽/虚拟对手槽均不可进入。
     if self._kardsFormalBattleStarted then
-        net.Start("KardsTableMsg")
-            net.WriteString("对局已开始，无法中途加入（牌桌外自动观战）")
-        net.Send(ply)
+        KARDS.TableSync.Notify(ply, "msg.join_in_progress")
         return false
     end
     -- 槽位判定：玩家必须处于本桌某槽位范围内
@@ -522,16 +523,12 @@ function ENT:TryEnterSlot(ply)
     if not slot then return false end
     -- 组卡模式：仅 P2（槽位 2）可进入牌桌（组卡构建由 P2 进行）
     if self.Mode == "deck" and slot ~= 2 then
-        net.Start("KardsTableMsg")
-            net.WriteString("组卡模式仅 P2 可进入牌桌")
-        net.Send(ply)
+        KARDS.TableSync.Notify(ply, "msg.deck_mode_p2_only")
         return false
     end
     -- 占用检测：目标槽位已被其他玩家占用则拒绝并提示
     if IsValid(self.Slots[slot]) then
-        net.Start("KardsTableMsg")
-            net.WriteString("该槽位已被占用")
-        net.Send(ply)
+        KARDS.TableSync.Notify(ply, "msg.slot_taken")
         return false
     end
     -- 分配槽位 + 会话状态机进入（保存进入前状态 + 冻结 + 移至槽位 + 煤油灯）
@@ -604,9 +601,15 @@ function ENT:ExitSlot(ply)
 end
 
 --[[
-    根据槽位占用更新牌桌上方灯具（gmod_light 全向点光，煤油灯色暖橙黄）：
+    根据槽位占用更新牌桌上方灯具：
     有玩家在玩家槽（已进入牌桌）→ 确保灯具存在；无玩家 → 移除灯具。
     在会话状态机 Enter / Exit 末尾调用。
+
+    2026-10-24 用户规格：由 gmod_light（全向点光，无实时阴影）换为 gmod_lamp
+    （GMod Q 菜单「工具 > 灯」的投影灯，内部创建 env_projectedtexture 并固定
+    enableshadows=1）——玩家视频设置「阴影质量：高」时投射实时阴影（卡牌/单位
+    在桌面投下随光源变化的影子），低档位时引擎自动退化为无阴影投影光。
+    灯具朝向垂直向下（Angle(90,0,0)），暖橙黄煤油灯色，牌桌正上方。
 ]]
 function ENT:UpdateTableLight()
     local hasPlayer = false
@@ -619,9 +622,9 @@ function ENT:UpdateTableLight()
     local light = self._kardsLight
     if hasPlayer then
         if not IsValid(light) then
-            -- 创建 gmod_light 灯具（GMod Q 菜单「工具 > 灯具」实际生成的实体）：
-            -- 全向点光、无模型（空灯具），煤油灯色（暖橙黄），牌桌正上方。
-            -- 实测 light_dynamic 运行时创建渲染不可靠，改用灯工具同款 gmod_light。
+            -- 创建 gmod_lamp 投影灯（灯工具同款 gmod_lamp 实体）：
+            -- 直射锥形光 + 实时阴影（阴影质量高档时），煤油灯色（暖橙黄），牌桌正上方。
+            -- 实测 light_dynamic 运行时创建渲染不可靠，gmod_light 无实时阴影（2026-10-24 前用）。
             local top = self:LocalToWorld(Vector(0, 0, 80)) -- fallback：牌桌正上方
             local phys = self:GetPhysicsObject()
             if IsValid(phys) then
@@ -629,16 +632,21 @@ function ENT:UpdateTableLight()
                 local mins, maxs = phys:GetAABB()
                 top = self:LocalToWorld(Vector((mins.x + maxs.x) / 2, (mins.y + maxs.y) / 2, maxs.z + 60)) -- 桌面顶上方 60 单位
             end
-            light = ents.Create("gmod_light")
+            light = ents.Create("gmod_lamp")
             if IsValid(light) then
+                -- 参数顺序同沙盒灯工具 MakeLamp：模型/贴图/锥角/距离/亮度/开关均在 Spawn 前设置
+                --（gmod_lamp 的 NetworkVarNotify 在 SetOn(true) 时即创建 env_projectedtexture 子实体）
+                light:SetModel("models/maxofs2d/lamp_projector.mdl")
                 light:SetPos(top)
+                light:SetAngles(Angle(90, 0, 0)) -- pitch 90 = 正向垂直向下照桌面
+                light:SetFlashlightTexture("effects/flashlight001")
+                light:SetLightFOV(110)                 -- 光锥角（覆盖牌桌 90x45 与余量）
+                light:SetDistance(300)                 -- 投射远裁剪面（灯距桌面 60，余量充足）
                 light:SetColor(Color(255, 185, 90, 255)) -- 煤油灯色（暖橙黄）
-                light:SetBrightness(2)                   -- 亮度（工具范围 -6~6，默认 2；减半自 4）
-                light:SetLightSize(400)                  -- 光照半径（覆盖牌桌 90x45）
-                light:SetToggle(false)
-                light:SetOn(true)
+                light:SetBrightness(2)                 -- 亮度（env_projectedtexture 为颜色倍率，同旧灯）
+                light:Switch(true)                     -- 点亮（创建投影光子实体）
                 light:Spawn()
-                -- 空灯具：隐藏模型（仅光照）+ 冻结（不因重力落下/不碰撞）
+                -- 隐藏灯具本体（模型 + 光斑 sprite，仅保留投影光照）+ 冻结（不因重力落下/不碰撞）
                 light:SetNoDraw(true)
                 light:SetSolid(SOLID_NONE)
                 light:SetMoveType(MOVETYPE_NONE)
@@ -663,6 +671,9 @@ end
     标记后检查双方是否均已就绪（CheckBattleStart）——若两槽均有玩家且均准备，
     自动进入 3 秒倒计时后开始对战；任一条件不满足则取消挂起的倒计时。
 
+    准备前校验该槽卡组有效（2026-10-17）：无存档 / 不足 40 张 / 缺总部时拒绝并提示。
+    无总部的一方既无手牌也无胜负判定载体，开局后对局无法结束。
+
     @param ply Player
     @param ready boolean 目标准备状态
 ]]
@@ -671,6 +682,14 @@ function ENT:SetReady(ply, ready)
     local data = ply._kardsTable
     if not data or data.ent ~= self then return end
     if self._kardsFormalBattleStarted then return end -- 对战已开始：忽略准备切换
+    -- 卡组有效性校验（见上方说明）：只拦「准备」，取消准备不受影响
+    if ready then
+        local bd = self._kardsBattleDecks and self._kardsBattleDecks[data.slot]
+        if not (bd and bd.hasValidDeck) then
+            KARDS.TableSync.Notify(ply, "msg.ready_no_deck")
+            return
+        end
+    end
     data.ready = ready
     net.Start("KardsTableReadyAck")
         net.WriteEntity(self)
@@ -700,10 +719,10 @@ function ENT:CheckBattleStart()
     if self._kardsStartCountdownToken then return end -- 已在倒计时
     local token = (self._kardsStartCountdownToken or 0) + 1
     self._kardsStartCountdownToken = token
-    -- 提示双方：进入 3 秒等待（闪屏消息，见客户端 Flash）
-    net.Start("KardsTableMsg")
-        net.WriteString("双方已就绪，3 秒后开始对战")
-    net.Send({ p1, p2 })
+    -- 提示双方：进入 3 秒等待（闪屏消息，见客户端 Flash；逐人按各自语言发送）
+    for _, p in ipairs({ p1, p2 }) do
+        KARDS.TableSync.Notify(p, "msg.both_ready_3s")
+    end
     timer.Simple(3, function()
         if not IsValid(self) then return end
         if self._kardsStartCountdownToken ~= token then return end -- 已取消
@@ -733,17 +752,17 @@ function ENT:StartFormalBattle(forced)
     -- 本桌不置 _kardsFormalBattleStarted，就绪状态保留，锁释放后可再次尝试开局
     if not KARDS.FormalBattleLock.TryAcquire(self) then
         self:CancelBattleStartCountdown()
-        local msg = "已有一场正式对战正在进行，请等待其结束"
         local targets = {}
         for _, p in pairs(self.Slots or {}) do
             if IsValid(p) and p:IsPlayer() then targets[#targets + 1] = p end
         end
         if #targets > 0 then
-            net.Start("KardsTableMsg")
-                net.WriteString(msg)
-            net.Send(targets)
+            -- 逐人按各自语言下发（2026-10-17 多语言化）
+            for _, p in ipairs(targets) do
+                KARDS.TableSync.Notify(p, "msg.battle_lock_busy")
+            end
         else
-            print("[Kards] " .. msg)
+            print("[Kards] 已有一场正式对战正在进行，请等待其结束")
         end
         return
     end

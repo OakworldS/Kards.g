@@ -111,6 +111,10 @@ KARDS.CardInterface.Keywords = {
     can_elevate_to_veteran = true, -- 可升为老兵：标记卡牌可升级为老兵版本（升级条件由效果文本定义）
     guarded = true,     -- 被守护：只能被轰炸机和炮兵攻击（readme 7.2.1；拦截：战斗机有被守护则完全封锁该阵线，readme 7.3）
     immune = true,      -- 免疫：单位或总部具有免疫时不会受到伤害（readme 7.2.1）
+    -- 收缴（readme 7.2.2）：授予瞬间触发收缴；带此词条的单位攻击并击杀目标时收缴目标
+    confiscate = true,
+    -- 被收缴（readme 7.2.1）：授予瞬间触发收缴；仅作触发标记，不留存常驻状态
+    confiscated = true,
 }
 
 -- 次词条（隐藏词条，2026-10-04）：不在卡面与战场 3D2D 显示、不建立词条状态，
@@ -215,6 +219,12 @@ function KARDS.MockCardMethods:SetOwner(owner)
     return self._owner
 end
 
+-- 设置国籍（收缴：被收缴体国籍改为收缴方主国，2026-10-15 用户规格；返回新国籍）
+function KARDS.MockCardMethods:SetCountry(country)
+    self._country = country
+    return self._country
+end
+
 -- 更换单位类型（转换效果用，readme 7.3）；非单位卡拒绝，非法类型拒绝并返回 nil
 function KARDS.MockCardMethods:SetUnitType(unitType)
     if self._type ~= "unit" then return nil end
@@ -235,6 +245,21 @@ function KARDS.MockCardMethods:GetName()
     -- 对象比较按 ID 判等），卡面标识则须沿用源卡（_faceName，见 sh_node_acts_field.lua
     -- CloneCard）——卡面外观 / 3D2D 文字 / 效果链（指向）均按显示名查卡牌信息。
     return self._faceName or self._id
+end
+
+-- 英文卡牌名（卡面文本英文化，2026-10-17）：未配置时返回空字符串（调用方回退 GetName）
+function KARDS.MockCardMethods:GetNameEn()
+    return self._nameEn or ""
+end
+
+-- 卡牌效果描述（卡面文本；未配置时返回空字符串）
+function KARDS.MockCardMethods:GetDescription()
+    return self._description or ""
+end
+
+-- 英文效果描述（未配置时返回空字符串，调用方回退 GetDescription）
+function KARDS.MockCardMethods:GetDescriptionEn()
+    return self._descriptionEn or ""
 end
 
 function KARDS.MockCardMethods:GetStat(stat)
@@ -396,7 +421,7 @@ end
     @param id       string 卡牌唯一标识
     @param cardType string 卡牌类型（"unit" / "command" / "counter_command" / "headquarter"）
     @param owner    string 归属玩家标识
-    @param stats    table|nil 初始属性 { attack = 数值, defense = 数值, cost = 卡牌花费?, actionCost = 行动花费?, unitType = 单位类型?, keywords = 词条数组?, combatModifiers = 倍率数组?, country = 国籍?, quality = 品质? }
+    @param stats    table|nil 初始属性 { attack = 数值, defense = 数值, cost = 卡牌花费?, actionCost = 行动花费?, unitType = 单位类型?, keywords = 词条数组?, combatModifiers = 倍率数组?, country = 国籍?, quality = 品质?, name = 卡牌名?, nameEn = 英文卡牌名?, description = 效果描述?, descriptionEn = 英文效果描述? }
                     unitType 仅在 cardType = "unit" 时有效（readme 7.3），
                     非单位卡（总部/指令/反制）强制为 nil；
                     actionCost 同样仅单位卡可有，非单位卡恒为 nil（readme 7.1 操作）；
@@ -449,6 +474,10 @@ function KARDS.CardInterface.CreateMockCard(id, cardType, owner, stats)
     end
     local card = {
         _id = id,
+        _name = (stats and stats.name) or nil,           -- 卡牌名（编辑器保存的 name）
+        _nameEn = (stats and stats.nameEn) or nil,       -- 英文卡牌名（nameEn）
+        _description = (stats and stats.description) or nil,     -- 效果描述（specialEffect）
+        _descriptionEn = (stats and stats.descriptionEn) or nil, -- 英文效果描述（specialEffectEn）
         _type = cardType,
         _owner = owner or "P1",
         -- 国籍 / 品质（readme 国籍/国家 与 编辑器外观属性 quality）；

@@ -17,6 +17,9 @@
 =======================================================================================
 ]]
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- ============ 工厂函数：数据驱动创建控件 ============
 
 -- 创建 DTextEntry 输入框，减少重复代码
@@ -112,12 +115,12 @@ function KARDS.CardEditor.Canvas.CreateControls()
 
     -- 国家选择按钮（圆形）；description = 二战简介，悬停按钮时在常驻5国按钮行左侧以打字机动画显示
     local countries = {
-        { id = "none", name = "无", icon = nil, color = nil },
-        { id = "uk", name = "英国", icon = "materials/kards/flags/uk.png", color = Color(100, 180, 255), description = "本土在不列颠空战中顶住德军轰炸坚持抵抗，牵制西线并参与诺曼底登陆，是同盟国三大支柱之一" },
-        { id = "usa", name = "美国", icon = "materials/kards/flags/usa.png", color = Color(60, 80, 60), description = "珍珠港遭袭后全面参战，大西洋与太平洋两线作战，以强大工业产能支撑盟军反攻" },
-        { id = "ussr", name = "苏联", icon = "materials/kards/flags/ussr.png", color = Color(80, 30, 30), description = "东线承受德军主力进攻，莫斯科、斯大林格勒、库尔斯克会战扭转战局，最终攻克柏林" },
-        { id = "japan", name = "日本", icon = "materials/kards/flags/japan.png", color = Color(100, 70, 30), description = "偷袭珍珠港挑起太平洋战争，一度席卷东南亚，遭盟军反攻后在原子弹轰炸下无条件投降" },
-        { id = "germany", name = "德国", icon = "materials/kards/flags/germany.png", color = Color(80, 80, 80), description = "闪击波兰挑起二战，横扫西欧后入侵苏联，多线作战陷于消耗，1945 年无条件投降" }
+        { id = "none", name = T("editor.appearanceedit.country_none"), icon = nil, color = nil },
+        { id = "uk", name = T("editor.appearanceedit.country_uk"), icon = "materials/kards/flags/uk.png", color = Color(100, 180, 255), description = T("editor.appearanceedit.country_uk_desc") },
+        { id = "usa", name = T("editor.appearanceedit.country_usa"), icon = "materials/kards/flags/usa.png", color = Color(60, 80, 60), description = T("editor.appearanceedit.country_usa_desc") },
+        { id = "ussr", name = T("editor.appearanceedit.country_ussr"), icon = "materials/kards/flags/ussr.png", color = Color(80, 30, 30), description = T("editor.appearanceedit.country_ussr_desc") },
+        { id = "japan", name = T("editor.appearanceedit.country_japan"), icon = "materials/kards/flags/japan.png", color = Color(100, 70, 30), description = T("editor.appearanceedit.country_japan_desc") },
+        { id = "germany", name = T("editor.appearanceedit.country_germany"), icon = "materials/kards/flags/germany.png", color = Color(80, 80, 80), description = T("editor.appearanceedit.country_germany_desc") }
     }
 
     KARDS.CardEditor.Canvas.CountryButtons = {}
@@ -241,7 +244,7 @@ function KARDS.CardEditor.Canvas.CreateControls()
     -- 切换编辑器状态按钮
     local toggleBtn = vgui.Create("DButton", KARDS.CardEditor.Canvas.RootPanel)
     toggleBtn:SetSize(200, 40)
-    toggleBtn:SetText("停用编辑器")
+    toggleBtn:SetText(T("editor.appearanceedit.disable_editor"))
     toggleBtn:SetVisible(false)
     toggleBtn.DoClick = function()
         RunConsoleCommand("kards_toggle_appearance")
@@ -249,10 +252,12 @@ function KARDS.CardEditor.Canvas.CreateControls()
     KARDS.CardEditor.Canvas.ToggleAppearanceDButton = toggleBtn
 
     -- ============ 使用工厂函数创建输入框控件 ============
-    -- DTextEntry: 卡牌名称输入框
+    -- DTextEntry: 卡牌名称输入框（按当前语言读写 name / nameEn）
     CreateTextEntry("NameInput", {
-        defaultValue = KARDS.CardEditor.Canvas.CardAppearance.name,
-        onChange = function(val) KARDS.CardEditor.Canvas.CardAppearance.name = val end
+        defaultValue = KARDS.CardEditor.Data.GetLocalizedField(KARDS.CardEditor.Canvas.CardAppearance, "name"),
+        onChange = function(val)
+            KARDS.CardEditor.Data.SetLocalizedField(KARDS.CardEditor.Canvas.CardAppearance, "name", val)
+        end
     })
 
     -- DNumberWang: 花费输入框
@@ -347,7 +352,7 @@ function KARDS.CardEditor.Canvas.UpdateControlsFromAppearance()
     local cKey = a and tostring(a.country):lower() or ""
     KARDS.CardEditor.Canvas.SelectedCountry = validCountries[cKey] and cKey or "none"
     if IsValid(KARDS.CardEditor.Canvas.NameInput) then
-        KARDS.CardEditor.Canvas.NameInput:SetValue(a.name or "")
+        KARDS.CardEditor.Canvas.NameInput:SetValue(KARDS.CardEditor.Data.GetLocalizedField(a, "name"))
     end
     if IsValid(KARDS.CardEditor.Canvas.CostInput) then
         KARDS.CardEditor.Canvas.CostInput:SetValue(a.cost or 0)
@@ -373,20 +378,22 @@ function KARDS.CardEditor.Canvas.UpdateControlsFromAppearance()
     if IsValid(KARDS.CardEditor.Canvas.HeavyArmorNumber) then
         KARDS.CardEditor.Canvas.HeavyArmorNumber:SetValue(a.keywordValues and a.keywordValues.heavy_armor or 0)
     end
-    -- 同步卡牌名称状态
+    -- 同步卡牌名称状态（按当前语言：英文环境为 nameEn）
+    local nameText = KARDS.CardEditor.Data.GetLocalizedField(a, "name")
     local cnis = KARDS.CardEditor.Canvas._cardNameInputState
     if cnis then
-        cnis.text = a.name or ""
+        cnis.text = nameText
     else
-        KARDS.CardEditor.Canvas._cardNameInputState = { text = a.name or "", active = false, caretPos = 0 }
+        KARDS.CardEditor.Canvas._cardNameInputState = { text = nameText, active = false, caretPos = 0 }
     end
 
-    -- 同步描述状态
+    -- 同步描述状态（按当前语言：英文环境为 specialEffectEn）
+    local descText = KARDS.CardEditor.Data.GetLocalizedField(a, "specialEffect")
     local ds = KARDS.CardEditor.Canvas._descInputState
     if ds then
-        ds.text = a.specialEffect or ""
+        ds.text = descText
     else
-        KARDS.CardEditor.Canvas._descInputState = { text = a.specialEffect or "", active = false, caretPos = 0 }
+        KARDS.CardEditor.Canvas._descInputState = { text = descText, active = false, caretPos = 0 }
     end
 
     -- 同步老兵描述状态（透明输入框）
@@ -413,11 +420,12 @@ function KARDS.CardEditor.Canvas.UpdateControlsFromAppearance()
     -- 换卡/重置时收起可能展开的转换目标卡列表
     KARDS.CardEditor.Canvas._convertTargetExpanded = false
 
+    local vetDescText = KARDS.CardEditor.Data.GetLocalizedField(va, "specialEffect")
     local vds = KARDS.CardEditor.Canvas._vetDescInputState
     if vds then
-        vds.text = va.specialEffect or ""
+        vds.text = vetDescText
     else
-        KARDS.CardEditor.Canvas._vetDescInputState = { text = va.specialEffect or "", active = false, caretPos = 0 }
+        KARDS.CardEditor.Canvas._vetDescInputState = { text = vetDescText, active = false, caretPos = 0 }
     end
 end
 function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
@@ -487,16 +495,16 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
     local bmStartY = cy + 12
     local bmHeight = 28
     local bmGap = 6
-    local bmNormalW = 36
+    local bmNormalW = 40
 
     -- 根据卡牌类型动态计算书签前缀
-    local typePrefix = "单位"
+    local typePrefix = T("editor.appearanceedit.type_unit")
     if app.cardType == "command" then
-        typePrefix = "指令"
+        typePrefix = T("editor.appearanceedit.type_command")
     elseif app.cardType == "counter_command" then
-        typePrefix = "反制"
+        typePrefix = T("editor.appearanceedit.type_counter")
     elseif app.cardType == "headquarter" then
-        typePrefix = "总部"
+        typePrefix = T("editor.appearanceedit.type_headquarter")
     end
 
     -- 总部模式：仅显示 属性/历史/插图/描述 四个书签
@@ -537,7 +545,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
         local dynamicFullName = string.gsub(bm.fullName, "单位", typePrefix, 1)
 
         -- 根据 dynamicFullName 文字长度计算每个书签的目标展开宽度
-        surface.SetFont("SourceHan_Heavy_14")
+        surface.SetFont("SourceHan_Heavy_16")
         local textW = surface.GetTextSize(dynamicFullName)
         local targetW = textW + APPLE_SPACE.lg  -- 左右各12px内边距
         local targetExtendW = math.max(0, targetW - bmNormalW)
@@ -598,9 +606,9 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
                 local typedBefore = string.sub(beforeStr, 1, math.min(remaining, #beforeStr))
                 displayText = typedBefore .. shortName .. typedAfter
             end
-            draw.SimpleText(displayText, "SourceHan_Heavy_14", bmX + APPLE_SPACE.sm, bmY + bmHeight / 2, textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(displayText, "SourceHan_Heavy_16", bmX + APPLE_SPACE.sm, bmY + bmHeight / 2, textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         else
-            draw.SimpleText(bm.shortName, "SourceHan_Heavy_14", sepX - bmNormalW / 2, bmY + bmHeight / 2, textColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(bm.shortName, "SourceHan_Heavy_16", sepX - bmNormalW / 2, bmY + bmHeight / 2, textColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         end
 
         -- 点击选择书签
@@ -997,7 +1005,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
                         if cp ~= nil then ds.caretPos = cp end
                     end
                     local a = KARDS.CardEditor.Canvas.CardAppearance
-                    if a then a.specialEffect = ds.text end
+                    if a then KARDS.CardEditor.Data.SetLocalizedField(a, "specialEffect", ds.text) end
                 end
             end
             entry.OnKeyCodeTyped = function(self, keyCode)
@@ -1044,7 +1052,9 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
                         if cp ~= nil then ds.caretPos = cp end
                     end
                     local a = KARDS.CardEditor.Canvas.CardAppearance
-                    if a and a.veteranAppearance then a.veteranAppearance.specialEffect = ds.text end
+                    if a and a.veteranAppearance then
+                        KARDS.CardEditor.Data.SetLocalizedField(a.veteranAppearance, "specialEffect", ds.text)
+                    end
                 end
             end
             entry.OnKeyCodeTyped = function(self, keyCode)
@@ -1088,7 +1098,7 @@ function KARDS.CardEditor.Canvas.DrawCardAppearanceEditor(cx, cy, cw, ch)
                         if cp ~= nil then ns.caretPos = cp end
                     end
                     local a = KARDS.CardEditor.Canvas.CardAppearance
-                    if a then a.name = ns.text end
+                    if a then KARDS.CardEditor.Data.SetLocalizedField(a, "name", ns.text) end
                 end
             end
             entry.OnKeyCodeTyped = function(self, keyCode)

@@ -27,6 +27,9 @@
     SubmitMulligan）自含。
 ]]
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 服务端抽牌通知（OnBattleDraw 广播，含重新调度发牌/补抽）：抽牌临时卡实体
 -- （卡堆顶，见 table_battledeck.lua SpawnDeckDrawCard）→ 按「槽位 × 补抽标记 ×
 -- 本方/对方」路由：
@@ -152,9 +155,9 @@ local function DeckDrawOverdraw(ent, slot, isMine)
     KARDS.InitDrawCardFace(ent)
     KARDS.drawFacePending[ent] = true
     if isMine then
-        KARDS.BattleHint.Push("你的手牌已满", true)
+        KARDS.BattleHint.Push(T("battle.overdraw.mine"), true)
     elseif KARDS.Perspective and KARDS.Perspective.LocalView ~= nil then
-        KARDS.BattleHint.Push("敌方手牌已满", true)
+        KARDS.BattleHint.Push(T("battle.overdraw.enemy"), true)
     end
     OverdrawFly(ent, slot, "left")
 end
@@ -365,6 +368,62 @@ local ReturnAnimOwnerDur1 = 0.45  -- 原位 → 牌桌中心飞行时长（秒�
 local ReturnAnimOwnerHold = 0.5   -- 牌桌中心停留时长（秒，同抽牌动画 hold）
 local ReturnAnimOwnerDur2 = 0.4   -- 牌桌中心 → 手牌空位飞行时长（秒，同抽牌动画 dur2）
 
+--[[
+    手牌飞入动画（共用实现，2026-10-15 抽取）：卡实体从当前位置飞向手牌末位空位，
+    含手牌让位重排（KARDS.RenumberHand 组 "handRepos" 独立并行）。
+
+    视角三分（同抽牌动画 KardsTableDeckDraw）：
+      本方 / 观战：原位 → 牌桌中心（z 抬升 +3.4，贴近视线）→ 手牌末位空位；
+      对方：直接飞手牌末位空位 + 翻面（pitch 0 → 180 卡背朝上），时长为本方/观战一半。
+    动画组用 "deckDraw"（已列入 KardsRealHandFacing / 拖拽 / 悬停的动画中跳过组）。
+
+    返回手牌（KardsReturnToHand）与收缴（cl_battle_confiscate.lua）共用。
+
+    @param slot       number 手牌槽位（1/2）
+    @param cardEnt    Entity 卡牌实体（动画载体）
+    @param idx        number 手牌序号（追加末位）
+    @param total      number 手牌总张数
+    @param onComplete function|nil 动画完成回调（仅本方/观战三段分支触发）
+
+    @return nil 无返回值
+    说明：本方/观战走三段（时长 ReturnAnimOwnerDur1 / ReturnAnimOwnerHold / ReturnAnimOwnerDur2），
+          对方视角合并为一段且总时长减半（该分支直接返回，不挂 onComplete）；
+          飞行前先 KARDS.RenumberHand 让出末位空位，动画组用 "deckDraw"。
+]]
+function KARDS.PlayHandFlyIn(slot, cardEnt, idx, total, onComplete)
+    if not IsValid(cardEnt) then return end
+    local isMine = KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == slot
+    local obs = (not isMine) and (KARDS.Perspective.LocalView == nil)
+    -- 手牌按新张数重排（空位动画）：追加末位（idx=total），其余手牌重排让出末位空位
+    KARDS.RenumberHand(slot, cardEnt, total)
+    local handPos, handAng = KARDS.HandFanPos(slot, idx, total)
+    local endYaw = handAng.y
+    local startPos = cardEnt:GetLocalPos()
+    local startYaw = cardEnt:GetLocalAngles().y
+    -- 对方视角：直接移动到手牌空位，同时空位让位 / 卡牌移动 / 卡牌翻面（pitch 0 →
+    -- 180 卡背朝上，同对方手牌常态姿态）同时进行，总时长为本方/观战的一半（用户规格）
+    if not isMine and not obs then
+        local dur = (ReturnAnimOwnerDur1 + ReturnAnimOwnerHold + ReturnAnimOwnerDur2) / 2
+        KARDS.AnimPlayer:Play(cardEnt, {
+            { t = 0, pos = startPos, ang = Angle(0, startYaw, 0) },
+            { t = dur, pos = handPos, ang = Angle(180, endYaw, 0) },
+        }, { group = "deckDraw" })
+        return
+    end
+    -- 本方 / 观战：原位 → 牌桌中心（z 抬升 +3.4，同抽牌桌中高度）→ 手牌末位空位
+    local centerYaw = obs and ((slot == 1) and 0 or 180) or ((slot == 1) and 180 or 0)
+    local centerPos = KARDS.Animation.Board2D:RelPos(3, 0) + Vector(0, 0, 3.4)
+    KARDS.AnimPlayer:Play(cardEnt, {
+        { t = 0, pos = startPos, ang = Angle(0, startYaw, 0) },
+        { t = ReturnAnimOwnerDur1, pos = centerPos, ang = Angle(0, centerYaw, 0) },
+        { t = ReturnAnimOwnerDur1 + ReturnAnimOwnerHold, pos = centerPos, ang = Angle(0, centerYaw, 0) },
+        { t = ReturnAnimOwnerDur1 + ReturnAnimOwnerHold + ReturnAnimOwnerDur2, pos = handPos, ang = Angle(0, endYaw, 0) },
+    }, {
+        group = "deckDraw",
+        onComplete = onComplete,
+    })
+end
+
 -- ====================================================================
 -- 返回手牌动画（数据层 SimReturnToHand → 实体层 KardsReturnToHand 广播，
 -- 见 table_battledeck.lua SpawnReturnedCard / BroadcastReturnToHand）
@@ -396,7 +455,6 @@ net.Receive("KardsReturnToHand", function()
         if IsValid(unitEnt) then KARDS.BattleState.remoteDrags[unitEnt] = nil end
     end
     local isMine = KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == slot
-    local obs = (not isMine) and (KARDS.Perspective.LocalView == nil)
     -- 小模型原地切换为正常模型：本地隐藏源战场实体（各端各自隐藏；服务端动画完成
     -- KardsReturnToHandDone / 兜底定时移除）——新卡实体已在原位，视觉为原地切换
     if IsValid(unitEnt) then
@@ -411,45 +469,18 @@ net.Receive("KardsReturnToHand", function()
     end
     cardEnt:SetNoDraw(false)
     KARDS.BattleState.realHandCards[slot][cardEnt] = idx
-    -- 手牌按新张数重排（空位动画）：返回手牌总是追加末位（idx=total），其余手牌
-    -- 重排让出末位空位，与飞行动画同时进行（KARDS.RenumberHand 组 "handRepos" 独立并行）
-    KARDS.RenumberHand(slot, cardEnt, total)
-    local handPos, handAng = KARDS.HandFanPos(slot, idx, total)
-    local endYaw = handAng.y
-    local startPos = cardEnt:GetLocalPos()
-    local startYaw = cardEnt:GetLocalAngles().y
-    -- 对方视角：直接移动到手牌空位，同时空位让位 / 卡牌移动 / 卡牌翻面（pitch 0 →
-    -- 180 卡背朝上，同对方手牌常态姿态）同时进行，总时长为本方/观战的一半（用户规格）
-    if not isMine and not obs then
-        local dur = (ReturnAnimOwnerDur1 + ReturnAnimOwnerHold + ReturnAnimOwnerDur2) / 2
-        KARDS.AnimPlayer:Play(cardEnt, {
-            { t = 0, pos = startPos, ang = Angle(0, startYaw, 0) },
-            { t = dur, pos = handPos, ang = Angle(180, endYaw, 0) },
-        }, { group = "deckDraw" })
-        return
-    end
-    -- 本方 / 观战：原位 → 牌桌中心（z 抬升 +3.4，同抽牌桌中高度）→ 手牌末位空位
-    local centerYaw = obs and ((slot == 1) and 0 or 180) or ((slot == 1) and 180 or 0)
-    local centerPos = KARDS.Animation.Board2D:RelPos(3, 0) + Vector(0, 0, 3.4)
-    KARDS.AnimPlayer:Play(cardEnt, {
-        { t = 0, pos = startPos, ang = Angle(0, startYaw, 0) },
-        { t = ReturnAnimOwnerDur1, pos = centerPos, ang = Angle(0, centerYaw, 0) },
-        { t = ReturnAnimOwnerDur1 + ReturnAnimOwnerHold, pos = centerPos, ang = Angle(0, centerYaw, 0) },
-        { t = ReturnAnimOwnerDur1 + ReturnAnimOwnerHold + ReturnAnimOwnerDur2, pos = handPos, ang = Angle(0, endYaw, 0) },
-    }, {
-        group = "deckDraw",
-        onComplete = function()
-            -- 通知服务端移除源战场实体并清理映射（仅所有者；观战/对方不发送，
-            -- 服务端 BroadcastReturnToHand 兜底定时 ReturnAnimServerRemoveDelay 清理）
-            if KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent == ent
-                and KARDS.BattleState.inTable.slot == slot then
-                net.Start("KardsReturnToHandDone")
-                    net.WriteEntity(ent)
-                    net.WriteEntity(cardEnt)
-                net.SendToServer()
-            end
-        end,
-    })
+    -- 飞入手牌末位空位（共用实现 KARDS.PlayHandFlyIn：本方/观战三段，对方直飞减半）
+    KARDS.PlayHandFlyIn(slot, cardEnt, idx, total, function()
+        -- 通知服务端移除源战场实体并清理映射（仅所有者；观战/对方不发送，
+        -- 服务端 BroadcastReturnToHand 兜底定时 ReturnAnimServerRemoveDelay 清理）
+        if KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent == ent
+            and KARDS.BattleState.inTable.slot == slot then
+            net.Start("KardsReturnToHandDone")
+                net.WriteEntity(ent)
+                net.WriteEntity(cardEnt)
+            net.SendToServer()
+        end
+    end)
 end)
 
 -- 手牌槽卡左移动画驱动（每帧）：抽牌动画阶段 3（KardsTableDeckDraw 的
@@ -630,21 +661,12 @@ end)
 -- 选中卡图标材质（materials/kards/cards/choose.png，3D2D 绘制于卡面上方 z+0.1）
 local chooseMat = Material("materials/kards/cards/choose.png", "noclamp smooth")
 
--- 射线到牌桌中间扇形卡的最近距离判定（同卡堆悬停 KARDS.RayPointDistSqr 方法）
+-- 射线到牌桌中间扇形卡的最近距离判定（统一走 KARDS.HitTest 中心距离口径）
 local function HitMulliganCard(mX, mY)
-    local ply = LocalPlayer()
-    if not IsValid(ply) then return nil end
-    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(mX, mY)
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then return nil end
-    local bestEnt, bestD = nil, 100 -- 阈值 10^2（扇形卡间距 4 单位，半对角 ~6.5）
-    for ce in pairs(KARDS.BattleState.mulligan.cards) do
-        if IsValid(ce) then
-            local d = KARDS.RayPointDistSqr(pos, dir, ce:GetPos())
-            if d < bestD then bestEnt, bestD = ce, d end
-        end
-    end
-    return bestEnt
+    local pos, dir = KARDS.HitTest.MouseRay(mX, mY)
+    if not pos then return nil end
+    -- 阈值 10^2（扇形卡间距 4 单位，半对角 ~6.5）
+    return KARDS.HitTest.NearestInRay(pos, dir, KARDS.BattleState.mulligan.cards, KARDS.HitTest.Radii.Candidate)
 end
 
 -- 提交重新调度（点击「确认」）：被选中的卡 = 不想要的牌 → 发送服务端
@@ -677,13 +699,19 @@ hook.Add("Think", "KardsMulliganSelect", function()
         KARDS.BattleState.prevMulliganLeft = false
         return
     end
+    -- 悬停检测（每帧一次，供抬升与点击共用）：鼠标命中扇形卡
+    local hover = HitMulliganCard(gui.MouseX(), gui.MouseY())
     -- 选择卡定格落位（发牌动画结束后；2026-08-13 用户规格：被选中时 z 不再移动，
     -- 选中仅由卡面上方选中图标标示）。
     -- 取消每帧强制正面/朝向（2026-08-10 反馈：改为抽牌动画同款翻面落位，角度由
     -- 发牌动画定格为扇面姿态 Angle(0, endYaw, 0)，此处仅保位置）。
+    -- 悬停抬升（2026-11-01）：与三选一 / 抉择共用 KARDS.HoverLiftPos（沿「卡 → 渲染
+    -- 相机」视线方向抬起，抗视差并带指数缓动上升 / 回落动画），保证中槽各交互手感一致
     for ce, card in pairs(KARDS.BattleState.mulligan.cards) do
         if IsValid(ce) and not KARDS.AnimPlayer:Active(ce, "mulliganDeal") then
-            local pos = KARDS.MulliganFanPos(card.index, KARDS.BattleState.mulligan.total)
+            local base = KARDS.MulliganFanPos(card.index, KARDS.BattleState.mulligan.total)
+            local target = (ce == hover) and KARDS.HoverLiftAmount or 0
+            local pos = KARDS.HoverLiftPos(ce, base, target, card)
             local cur = ce:GetLocalPos()
             if cur.z ~= pos.z or cur.x ~= pos.x or cur.y ~= pos.y then
                 ce:SetLocalPos(pos)
@@ -698,7 +726,7 @@ hook.Add("Think", "KardsMulliganSelect", function()
         if r and mX >= r.x and mX <= r.x + r.w and mY >= r.y and mY <= r.y + r.h then
             SubmitMulligan()
         else
-            local hit = HitMulliganCard(mX, mY)
+            local hit = hover
             if hit and KARDS.BattleState.mulligan.cards[hit] then
                 KARDS.BattleState.mulligan.cards[hit].selected = not KARDS.BattleState.mulligan.cards[hit].selected
                 KARDS.PlayKardsSound("select_card") -- 选中/取消选择音效（选择卡牌）
@@ -712,10 +740,53 @@ end)
 -- 横向线性对称渐变——中心 70% 黑 → 两侧 0% 透明黑，作为重新调度提示文字横幅背景
 -- （放大提示文字「选择要替换的卡牌」）；亦供「友方回合开始」提示横幅使用（线性渐变拉伸无损）
 local textUndergroundMat = Material("materials/kards/ui/textUnderground.png", "noclamp smooth")
+-- 常量提示文本尺寸缓存（2026-10-16 性能优化）：字体与文本固定，宽度只需测一次
+local mulliganTipW, mulliganTipH
+local waitingTipW, waitingTipH
+-- 语言切换：清空按语言测得的宽度缓存（中英文文案宽度不同）
+KARDS.Lang.OnLanguageChanged(function()
+    mulliganTipW, mulliganTipH = nil, nil
+    waitingTipW, waitingTipH = nil, nil
+end)
 
 -- 重新调度 HUD（仅本方选择阶段）：选中卡图标（3D2D）+ 提示 + 准星下方「确认」按钮
 hook.Add("HUDPaint", "KardsMulliganHUD", function()
     if not KARDS.BattleState.mulligan or not KARDS.BattleState.mulligan.active or KARDS.BattleState.mulligan.submitted then return end
+    -- 提示与「确认」按钮：屏幕底部居中（2026-08-11 由准星下方移至底部，原因是牌桌
+    -- 中间扇形卡投影在屏幕中心，提示与按钮不遮挡卡面/牌桌视野；距底边 90px）
+    -- 2026-11-01：本段由「选中图标 3D2D 之后」移到之前，避免 3D2D 段异常时按钮整块缺失
+    local x, y = ScrW() / 2, ScrH() - 90
+    local w, h = 160, 52
+    KARDS.BattleState.mulliganConfirmRect = { x = x - w / 2, y = y - h / 2, w = w, h = h }
+    -- 提示横幅（textUnderground.png 横向渐变背景，2026-08-11）：包裹放大提示文字，
+    -- 置于按钮上方 8px
+    local tipText = T("battle.mulligan.tip")
+    local tipFont = "SourceHan_Heavy_36"
+    if not mulliganTipW then
+        surface.SetFont(tipFont)
+        mulliganTipW, mulliganTipH = surface.GetTextSize(tipText)
+    end
+    local tw, th = mulliganTipW, mulliganTipH
+    local tipPadX, tipPadY = 28, 12 -- 渐变横幅内边距
+    local tipW, tipH = tw + tipPadX * 2, th + tipPadY * 2
+    local tipY = y - h / 2 - 8 - tipH -- 按钮顶 - 8px
+    surface.SetMaterial(textUndergroundMat)
+    surface.SetDrawColor(255, 255, 255, 255)
+    surface.DrawTexturedRect(ScrW() / 2 - tipW / 2, tipY, tipW, tipH)
+    draw.SimpleText(tipText, tipFont, ScrW() / 2, tipY + tipH / 2,
+        Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    -- 确认按钮（2026-09-13 起与不同步弹窗「重启」共用 KARDS.DrawActionButton：
+    -- #BDBCAF 浅灰米色直角矩形，按下 #333229 / 文字 #C78736，见 cl_battle_desync.lua）
+    -- 2026-11-01 兜底：外部绘制函数缺失（模块未就绪 / 被覆盖）时仍就地画出按钮，
+    -- 避免「确认」按钮整块缺失导致无法提交重新调度
+    if KARDS.DrawActionButton then
+        KARDS.DrawActionButton(x, y, w, h, T("common.confirm"))
+    else
+        surface.SetDrawColor(189, 188, 175)
+        surface.DrawRect(x - w / 2, y - h / 2, w, h)
+        draw.SimpleText(T("common.confirm"), "SourceHan_Heavy_32", x, y,
+            Color(16, 16, 16), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
     -- 被选中的卡：在卡面上方（局部 z+0.8）绘制选中图标。
     -- 图标尺寸 1.4 世界单位（卡宽 7.2）。
     -- 2026-08-13：原 z+0.1 低于卡模型顶面被 Z 缓冲遮挡 → 抬高至 0.8 悬浮于卡面上。
@@ -736,28 +807,6 @@ hook.Add("HUDPaint", "KardsMulliganHUD", function()
             cam.End3D2D()
         end
     end
-    -- 按钮：屏幕底部居中（2026-08-11 由准星下方移至底部——牌桌中间扇形卡投影在
-    -- 屏幕中心，提示与按钮不遮挡卡面/牌桌视野；距底边 90px）
-    local x, y = ScrW() / 2, ScrH() - 90
-    local w, h = 160, 52
-    KARDS.BattleState.mulliganConfirmRect = { x = x - w / 2, y = y - h / 2, w = w, h = h }
-    -- 提示横幅（textUnderground.png 横向渐变背景，2026-08-11）：包裹放大提示文字，
-    -- 置于按钮上方 8px
-    local tipText = "选择要替换的卡牌"
-    local tipFont = "SourceHan_Heavy_36"
-    surface.SetFont(tipFont)
-    local tw, th = surface.GetTextSize(tipText)
-    local tipPadX, tipPadY = 28, 12 -- 渐变横幅内边距
-    local tipW, tipH = tw + tipPadX * 2, th + tipPadY * 2
-    local tipY = y - h / 2 - 8 - tipH -- 按钮顶 - 8px
-    surface.SetMaterial(textUndergroundMat)
-    surface.SetDrawColor(255, 255, 255, 255)
-    surface.DrawTexturedRect(ScrW() / 2 - tipW / 2, tipY, tipW, tipH)
-    draw.SimpleText(tipText, tipFont, ScrW() / 2, tipY + tipH / 2,
-        Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    -- 确认按钮（2026-09-13 起与不同步弹窗「重启」共用 KARDS.DrawActionButton：
-    -- #BDBCAF 浅灰米色直角矩形，按下 #333229 / 文字 #C78736，见 cl_battle_desync.lua）
-    KARDS.DrawActionButton(x, y, w, h, "确认")
 end)
 
 -- ====================================================================
@@ -782,10 +831,13 @@ hook.Add("HUDPaint", "KardsWaitingOpponentMulliganHUD", function()
     -- （2026-08-12）不按「对方 mulliganDoneSlot 完成」隐藏：对方提交后补抽 / 落位
     -- 动画仍在播放，提示持续到服务端延迟 StartFirstTurn 广播 battleTurn 才消失
     -- 提示横幅（与重新调度 HUD 同款渐变背景，屏幕居中）
-    local tipText = "敌方正在重新调度手牌"
+    local tipText = T("battle.mulligan.waiting_enemy")
     local tipFont = "SourceHan_Heavy_36"
-    surface.SetFont(tipFont)
-    local tw, th = surface.GetTextSize(tipText)
+    if not waitingTipW then
+        surface.SetFont(tipFont)
+        waitingTipW, waitingTipH = surface.GetTextSize(tipText)
+    end
+    local tw, th = waitingTipW, waitingTipH
     local tipPadX, tipPadY = 28, 12
     local tipW, tipH = tw + tipPadX * 2, th + tipPadY * 2
     local cx, cy = ScrW() / 2, ScrH() / 2
@@ -830,12 +882,12 @@ hook.Add("HUDPaint", "KardsSpectateMulliganHUD", function()
     if d1 and d2 then return end -- 双方均完成 → 不显示
     local text
     if not d1 and not d2 then
-        text = "双方正在重新调度"
+        text = T("battle.mulligan.spectate_both")
     else
         local pendingSlot = d1 and 2 or 1
         local name = ent:GetNWString("Kards_SlotName_" .. pendingSlot, "")
         if name == "" then name = ("P%d"):format(pendingSlot) end -- 虚拟对手/未同步兜底
-        text = ("「%s」正在重新调度"):format(name)
+        text = T("battle.mulligan.spectate_one", name)
     end
     -- ChatFont 悬浮字体（屏幕顶部居中，阴影保证可读性）
     local font = "ChatFont"

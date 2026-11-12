@@ -66,6 +66,7 @@ KARDS.EffectRegistry.EVENTS = {
     UnitAction = "unit_action",   -- 单位攻击冲刺（2026-09-26 缺口 G：效果路径与手动路径共用一个广播函数）
     UnitElevate = "unit_elevate", -- 单位升为老兵（2026-09-26 缺口 I：实体层订阅广播老兵升级动画与白色飘字）
     UnitConvert = "unit_convert", -- 卡牌整体转换（2026-09-26 缺口 J：实体层订阅生成新实体并广播翻面交接动画）
+    Confiscate  = "confiscate",   -- 单位被收缴（SimConfiscate；实体层订阅后在源小模型原位创建完整卡载体并广播收缴动画）
 }
 
 -- 注册表：Instances[tableID][event][id] = entry（按牌桌隔离，与 TickLog / EngineHooks 的 tableID 体系一致）

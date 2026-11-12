@@ -4,8 +4,11 @@
     屏幕中心 toast 提示：以 textUnderground.png 横向渐变图为底（materials/kards/ui/
     textUnderground.png，与 cl_init.lua 重新调度横幅同材质）+ 白色文字。
     动画（用户规格）：淡入 1.5s → 停留 3s → 淡出 1.5s（总时长 6s）。
-    堆叠：最新提示位于屏幕中心（row 0），每新增一条已有提示上移一行（row +1，
-    平滑滑动），早的提示逐行上移、最终移出屏幕上边（y < 0 自然裁剪不绘制）。
+    横幅宽度取整屏宽（背景横向渐变拉伸无损，见 2026-10-15 用户规格）。
+    展示（2026-10-15 用户规格）：同一时间刻（CurTime 相同）连发的提示全部展示并
+    逐级上移叠加，每级上移半个屏幕高度：最新在屏幕中心（row 0），早一步的中心恰在
+    屏幕上边缘（一半在屏幕内），更早的全部在屏幕外；跨刻的新提示即刻销毁旧提示并
+    独占屏幕中心。
 
     观战同步（2026-08-12）：本方对局中 Push 的提示经 KardsHintRelay 中继到服务端，
     服务端仅转发给观战者（非本桌双方牌手，对手不可见），观战端收 KardsHintObserver
@@ -28,18 +31,34 @@ KARDS = KARDS or {}
 
 KARDS.BattleHint = KARDS.BattleHint or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 动画时长（秒）：淡入 / 停留 / 淡出（用户规格）
 local FADE_IN, HOLD, FADE_OUT = 1.5, 3.0, 1.5
 local HINT_LIFE = FADE_IN + HOLD + FADE_OUT
--- 横幅内边距（x/y）/ 行距 / 行位滑动速度（每帧向目标行逼近系数，越大越快）
-local PAD_X, PAD_Y, GAP, SLIDE = 26, 10, 10, 8
+-- 横幅上下内边距 / 行位滑动速度（每帧向目标行逼近系数，越大越快）
+local PAD_Y, SLIDE = 10, 8
+-- 行距系数：每级上移半个屏幕高度（最新居中，早一步的中心恰落在屏幕上边缘）
+local ROW_STEP_RATIO = 0.5
 
 local hintFont = "SourceHan_Heavy_32"
 local hintMat = Material("materials/kards/ui/textUnderground.png", "noclamp smooth")
+-- 常量字高缓存（2026-10-16 性能优化）：两处绘制各用固定字体、单行文字，
+-- 高度与内容无关，故只需首帧测一次，不再逐帧逐条调用 GetTextSize
+local hintTextH, obsTextH
+local hintTextColor = Color(255, 255, 255, 255) -- 文字颜色复用（每帧只改透明度）
+
+-- 语言切换：清空按语言测得的高度缓存（英文与中文行高不同）
+KARDS.Lang.OnLanguageChanged(function()
+    hintTextH, obsTextH = nil, nil
+end)
 
 -- 活跃提示：[1] = 最新（row 0 屏幕中心）… [#] = 最早（行号最大、最靠上）
 -- 每项 { text, start = CurTime, row = 当前行（动画值）, targetRow = 目标行 }
 local hints = {}
+-- 上一次推送的时间刻：同刻连发叠加，跨刻覆盖（用户规格 2026-10-15）
+local lastPushTime = -1
 
 -- 观战端牌桌中心提示（2026-08-12）：非本桌双方牌手收到 KardsHintObserver 后登记，
 -- 在牌桌中心 z+ 上方用 ChatFont（GMod 聊天栏内置字体）以打字机动画逐字显示
@@ -61,7 +80,7 @@ local function HintAlpha(life)
     return math.max(0, 1 - (life - FADE_IN - HOLD) / FADE_OUT)
 end
 
--- 列表 [1] 入队（最新在前，Push / Observer 两套同构列表操作收敛，阶段五 P3）：
+-- 列表 [1] 入队（最新在前，观战端提示列表使用）：
 -- 匹配项（matches 谓词）移除后整体上移一行再置顶；无匹配则全体上移一行后置顶。
 -- @param list table 活跃项列表（[1] = 最新 / row 0）
 -- @param item table 新项 { ..., row = 0, targetRow = 0 }
@@ -82,8 +101,9 @@ local function EnqueueUnique(list, item, matches)
 end
 
 --[[
-    推送一条提示：最新提示显示在屏幕中心（row 0），已存在的提示整体上移一行；
-    相同文字的提示重置计时并回到中心（防连点刷屏堆叠）。
+    推送一条提示：同一时间刻（CurTime 相同）连发的提示全部展示并逐级上移叠加
+    （已在展示的提示目标行 +1，新提示置顶）；跨刻的新提示即刻销毁全部旧提示，
+    自身独占屏幕中心。
 
     @param text string 提示文字（空 / nil 忽略）
     @param noRelay boolean|nil 不中继观战者（2026-08-12：爆牌等由服务端统一给
@@ -102,16 +122,23 @@ function KARDS.BattleHint.Push(text, noRelay)
         net.SendToServer()
     end
     local now = CurTime()
-    -- 同文重置 / 常规入队统一走 EnqueueUnique（相同文字已在显示 → 移除后整体
-    -- 上移一行重新置于中心并重置计时；否则已有提示全部上移一行后置顶）
-    EnqueueUnique(hints, { text = text, start = now, row = 0, targetRow = 0 },
-        function(h) return h.text == text end)
+    -- 跨刻：旧提示即刻销毁，仅保留本条（新横幅整屏宽、与原横幅同矩形，覆盖旧提示）
+    if now ~= lastPushTime then
+        hints = {}
+        lastPushTime = now
+    end
+    -- 同刻：已有提示整体上移一级，新提示置顶（初始 row 0，由 Draw 平滑滑向目标行）
+    for _, h in ipairs(hints) do
+        h.targetRow = h.targetRow + 1
+    end
+    table.insert(hints, 1, { text = text, start = now, row = 0, targetRow = 0 })
 end
 
 -- 清空全部提示（退出牌桌 / 新对局）：同时清空观战端牌桌中心提示
 function KARDS.BattleHint.Clear()
     hints = {}
     obs = {}
+    lastPushTime = -1
 end
 
 -- 过期清理：全部提示同寿命（6s），最早推送的（表尾）最先过期——从尾向前删防索引错乱
@@ -129,31 +156,34 @@ hook.Add("Think", "KardsBattleHintThink", function()
     end
 end)
 
--- 绘制：最新提示在屏幕中心（row 0），旧提示向上逐行滑动（早的移出屏幕上边）
+-- 绘制：最新提示在屏幕中心（row 0），旧提示每级上移半个屏幕高度向屏幕上边滑出
 hook.Add("HUDPaint", "KardsBattleHintDraw", function()
     if #hints == 0 then return end
     local now = CurTime()
     local dt = FrameTime()
-    local cx, cy = ScrW() * 0.5, ScrH() * 0.5
+    local sw, sh = ScrW(), ScrH()
+    local cx = sw * 0.5
+    local rowStep = sh * ROW_STEP_RATIO
     surface.SetFont(hintFont)
+    if not hintTextH then hintTextH = select(2, surface.GetTextSize("提")) end
     for _, h in ipairs(hints) do
-        -- 行位向目标行平滑滑动（新增提示时旧提示整体上移）
+        -- 行位向目标行平滑滑动（同刻连发时旧提示整体上移）
         h.row = h.row + (h.targetRow - h.row) * math.min(1, dt * SLIDE)
         local life = now - h.start
         local alpha = HintAlpha(life)
         if alpha > 0.01 then
-            local tw, th = surface.GetTextSize(h.text)
-            local w, hh = tw + PAD_X * 2, th + PAD_Y * 2
-            local x = cx - w / 2
-            local y = cy - h.row * (hh + GAP) - hh / 2
+            local hh = hintTextH + PAD_Y * 2
+            local y = sh * 0.5 - h.row * rowStep - hh / 2
             -- 已移出屏幕上边的提示不再绘制（虽 alpha 未到 0）
             if y + hh > 0 then
                 local a = math.Round(255 * alpha)
                 surface.SetMaterial(hintMat)
                 surface.SetDrawColor(255, 255, 255, a)
-                surface.DrawTexturedRect(x, y, w, hh)
+                -- 背景横幅宽度取整屏宽（2026-10-15 用户规格），文字水平居中
+                surface.DrawTexturedRect(0, y, sw, hh)
+                hintTextColor.a = a
                 draw.SimpleText(h.text, hintFont, cx, y + hh / 2,
-                    Color(255, 255, 255, a), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                    hintTextColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             end
         end
     end
@@ -166,7 +196,8 @@ net.Receive("KardsHintObserver", function()
     local name = net.ReadString()
     local text = net.ReadString()
     if not IsValid(ent) or text == "" then return end
-    local full = name .. "：" .. text
+    -- 观战提示拼接：中英文冒号/分隔符跟随客户端语言（英文冒号后带空格）
+    local full = T("battle.hint.observer", name, text)
     local now = CurTime()
     -- 同牌桌同文字重置计时并回到首行，其余整体上移一行（同 EnqueueUnique）
     EnqueueUnique(obs, { tableEnt = ent, text = full, start = now, row = 0, targetRow = 0 },
@@ -183,6 +214,7 @@ hook.Add("HUDPaint", "KardsBattleHintObserverDraw", function()
         or (IsValid(LocalPlayer()) and LocalPlayer():EyePos() or Vector())
     local cardZ = KARDS.Animation and KARDS.Animation.Board2D and KARDS.Animation.Board2D.CardZ or 18.43
     surface.SetFont("ChatFont")
+    if not obsTextH then obsTextH = select(2, surface.GetTextSize("A")) end
     for _, o in ipairs(obs) do
         if IsValid(o.tableEnt) then
             o.row = o.row + (o.targetRow - o.row) * math.min(1, dt * SLIDE)
@@ -194,8 +226,7 @@ hook.Add("HUDPaint", "KardsBattleHintObserverDraw", function()
                 local n = math.floor(life * TypewriterCPS(#o.text))
                 local shown = n >= #o.text and o.text or string.sub(o.text, 1, n)
                 -- 3D2D：+x 水平朝向观战者相机、+y 朝下（世界 -Z）→ 文字平躺朝上且正向可读
-                local _, th = surface.GetTextSize(shown)
-                local scale = th > 0 and (OBS_CHAR_H / th) or 0.25
+                local scale = obsTextH > 0 and (OBS_CHAR_H / obsTextH) or 0.25
                 local dx = camPos - pos
                 dx.z = 0
                 if dx:LengthSqr() < 0.001 then dx = Vector(1, 0, 0) else dx:Normalize() end

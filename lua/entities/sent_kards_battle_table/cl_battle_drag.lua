@@ -57,6 +57,42 @@ local function DragNearestCol(x)
     return best
 end
 
+-- 拖拽抬升 z 缓存（2026-10-16 性能优化）：dragZ 只取决于槽位与当前手牌张数，
+-- 指向模式 / 正常拖拽两处以及连续帧反复求同值，按「槽位 + 张数」缓存
+local dragZSlot, dragZCount, dragZValue
+local function DragLiftZ(slot)
+    local n = KARDS.HandCount(slot)
+    if dragZSlot ~= slot or dragZCount ~= n then
+        dragZSlot, dragZCount = slot, n
+        dragZValue = KARDS.HandSlotBase.z + ((n - 1) / 2) * KARDS.HandSlotZStep + 0.1
+    end
+    return dragZValue
+end
+
+-- 腾位预览遍历门控键（2026-10-16 性能优化）：整线遍历的目标位置只随布局表 / 预览
+-- 列 / 行 / 待确认卡变化，键未变时跳过整段遍历；每次拿起时复位以强制首帧执行
+local lastReposLayout, lastReposRow, lastReposCol, lastReposPend
+
+-- 握持微旋转（2026-10-24 用户规格）：鼠标握住卡时，yaw 以外的旋转角（pitch/roll）
+-- 随机微变化——每 WOB_INTERVAL 秒抽一个 [-WOB_AMP, +WOB_AMP] 随机目标角，当前角向
+-- 目标平滑趋近（k 随帧时间，松手后残留角由回手/打出动画自然收敛）。yaw 保持基准
+-- （文字顶朝本方）；拖拽网络同步仍发平躺基准角，观战端不播抖动（20Hz 节流下会离散跳变）。
+local WOB_AMP = 2.2     -- 微旋转幅度（度）
+local WOB_INTERVAL = 0.12 -- 随机目标更新间隔（秒）
+local wob = { next = 0, tp = 0, tr = 0, cp = 0, cr = 0 }
+local function DragWobbleAngles(yaw)
+    local now = CurTime()
+    if now >= wob.next then
+        wob.next = now + WOB_INTERVAL * (0.75 + math.random() * 0.5)
+        wob.tp = (math.random() * 2 - 1) * WOB_AMP
+        wob.tr = (math.random() * 2 - 1) * WOB_AMP
+    end
+    local k = math.min(FrameTime() * 8, 1)
+    wob.cp = wob.cp + (wob.tp - wob.cp) * k
+    wob.cr = wob.cr + (wob.tr - wob.cr) * k
+    return Angle(wob.cp, yaw, wob.cr)
+end
+
 -- 拿起（左键上升沿 + 我方回合 + 视角本方 + 无 GUI + 无进行中的拖拽/待确认 + 非结算中）
 -- 2026-08-15 阶段四 C3：原 Think 钩子内每帧重建闭包（MouseLocalZ / NearestCol）且单函数
 -- 过长——拿起/拖拽/松手提级为文件级函数，Think 仅做状态驱动；上下文（view /
@@ -79,6 +115,7 @@ local function DragTryPickup()
         -- 内联缺 dragReturn 组，统一后返回手牌动画中的卡不再可拿起，与悬停判定一致）
         local hit = KARDS.HandHitTest(pos, dir, view, true)
         if hit then
+            lastReposLayout = nil -- 新一次拖拽：强制腾位遍历首帧执行
             KARDS.BattleState.dragCard = {
                 ent = hit,
                 slot = view,
@@ -117,7 +154,7 @@ local function DragUpdate()
             local vp, bdir = KARDS.MouseRay(ScrW() * 0.5, ScrH() * 0.82)
             local bottomPos = nil
             if bdir and bdir.z ~= 0 then
-                local dragZ = KARDS.HandSlotBase.z + ((KARDS.HandCount(KARDS.BattleState.dragCard.slot) - 1) / 2) * KARDS.HandSlotZStep + 0.1
+                local dragZ = DragLiftZ(KARDS.BattleState.dragCard.slot)
                 local tz = tableEnt:LocalToWorld(Vector(0, 0, dragZ)).z
                 local t = (tz - vp.z) / bdir.z
                 if t > 0 then
@@ -128,22 +165,18 @@ local function DragUpdate()
                 ent:SetLocalPos(bottomPos)
             end
             -- 角度：平躺正面朝上（同正常拖拽：位置基准 + 文字朝向偏移，文字顶朝本方）
+            -- 2026-10-24 握持微旋转：本地渲染叠加 pitch/roll 随机微变化（DragWobbleAngles），
+            -- 网络同步仍发平躺基准角 pang（20Hz 节流下观战端播抖动只会离散跳变）
             local pang = Angle(0, (KARDS.BattleState.dragCard.slot == 1) and KARDS.HandSlotTextYaw or 0, 0)
-            local pcur = ent:GetLocalAngles()
-            if math.abs(pcur.p - pang.p) > 0.01 or math.abs(pcur.y - pang.y) > 0.01
-                or math.abs(pcur.r - pang.r) > 0.01 then
-                ent:SetLocalAngles(pang)
-            end
+            ent:SetLocalAngles(DragWobbleAngles(pang.y))
             -- 目标检测：鼠标射线命中合法战场单位（约束校验在 GetPointingTarget）
             local ppos, pdir = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
             KARDS.BattleState.dragCard.validTarget = KARDS.GetPointingTarget(ent, KARDS.BattleState.dragCard.info, ppos, pdir)
             KARDS.BattleState.dragCard.pointMouse = { x = gui.MouseX(), y = gui.MouseY() }
-            -- 指向提示（2026-08-13 隐蔽）：悬停隐蔽单位 → 始终提示「隐蔽单位不受指令
-            -- 指向」（节流推送见 cl_battle_stealth.lua HintIfPointing；GetPointingTarget
-            -- 已剔除隐蔽候选 → validTarget 为 nil，松手回手牌 + PointingFailReason 同文案）
-            if KARDS.Stealth and KARDS.Stealth.HintIfPointing then
-                KARDS.Stealth.HintIfPointing(ppos, pdir)
-            end
+            -- 指向时目标提示已取消（2026-10-24 用户规格）：原悬停隐蔽单位每帧节流推送
+            -- 「隐蔽单位不受指令指向」（KARDS.Stealth.HintIfPointing），现指向反馈统一
+            -- 由 3D2D 箭头颜色（KardsPointingArrow3D）与目标描圈承担；松手失败原因
+            -- （PointingFailReason）仍照常提示
             -- 拖拽位置同步（同正常拖拽节流：观战者展示玩家握住的牌）
             if bottomPos then
                 local pnow = CurTime()
@@ -180,7 +213,7 @@ local function DragUpdate()
         if lp then
             local tableEnt = KARDS.BattleState.inTable.ent
             local vp, vd = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
-            local dragZ = KARDS.HandSlotBase.z + ((KARDS.HandCount(KARDS.BattleState.dragCard.slot) - 1) / 2) * KARDS.HandSlotZStep + 0.1
+            local dragZ = DragLiftZ(KARDS.BattleState.dragCard.slot)
             local targetZWorld = tableEnt:LocalToWorld(Vector(0, 0, dragZ)).z
             if vd and vd.z ~= 0 then
                 local t = (targetZWorld - vp.z) / vd.z
@@ -207,11 +240,9 @@ local function DragUpdate()
         -- 顶朝本方，避免从扇形角度（P1 ≈180±30）直接归 0 造成卡面 180° 翻转
         --（2026-08-11 用户反馈握住后 yaw 反了）
         local ang = Angle(0, (KARDS.BattleState.dragCard.slot == 1) and KARDS.HandSlotTextYaw or 0, 0)
-        local cur = ent:GetLocalAngles()
-        if math.abs(cur.p - ang.p) > 0.01 or math.abs(cur.y - ang.y) > 0.01
-            or math.abs(cur.r - ang.r) > 0.01 then
-            ent:SetLocalAngles(ang)
-        end
+        -- 2026-10-24 握持微旋转：本地渲染叠加 pitch/roll 随机微变化；ang 保持平躺基准
+        -- （下方拖拽网络同步仍发 ang，观战端不播抖动）
+        ent:SetLocalAngles(DragWobbleAngles(ang.y))
         -- 拖拽位置同步（对方/观战视角展示玩家握住的牌，2026-08-12）：拿起当帧即发
         --（节流表空），拖拽中按「20Hz + 位移 1.5 阈值」节流；服务端中继广播给其他
         -- 客户端（排除发送者），接收端 SetLocalPos/SetLocalAngles 本地覆盖渲染。
@@ -238,24 +269,36 @@ local function DragUpdate()
         local isUnit = (ctype == "unit")
         local row = (KARDS.BattleState.dragCard.slot == 1) and 1 or -1
         local layout = KARDS.BattleState.fieldLayouts[KARDS.BattleState.dragCard.slot]
-        local preview = nil
-        if isUnit and lp and layout then
-            if math.abs(lp.y - KARDS.Animation.Board2D.RowY[row]) <= KARDS.SupportLineHover then
-                preview = KARDS.PreviewFieldPositions(layout, KARDS.BattleState.dragCard.ent, DragNearestCol(lp.x), row)
-            end
+        -- 悬停列（nil = 鼠标不在本方支援阵线行 → 无腾位预览）
+        local previewCol = nil
+        if isUnit and lp and layout
+            and math.abs(lp.y - KARDS.Animation.Board2D.RowY[row]) <= KARDS.SupportLineHover then
+            previewCol = DragNearestCol(lp.x)
         end
-        for e, si in pairs(layout or {}) do
-            if IsValid(e) and e ~= KARDS.BattleState.dragCard.ent and e ~= KARDS.BattleState.pendingPlayEnt and not KARDS.InHQRevealAnim(e) then
-                -- 预览目标优先；未参与预览（待确认/总部动画中）回布局数据槽位
-                local to = (preview and preview[e]) or KARDS.FieldPos(layout, e, si, row)
-                local existing = KARDS.AnimPlayer:Get(e)
-                -- 目标变化或动画缺失时重建（避免每帧重建/中断抖动）
-                if not existing or not existing.toPos
-                    or (existing.toPos - to):LengthSqr() > 0.01 then
-                    KARDS.AnimPlayer:Play(e, {
-                        { t = 0 },
-                        { t = KARDS.HandSlotReposDur, pos = to, easing = "cos" },
-                    }, { group = "fieldRepos", noQueue = true }) -- 拖拽腾位预览：高频交互反馈免排队即时播放（2026-08-12 队列系统）
+        -- 遍历门控（2026-10-16 性能优化）：整线的目标位置只随布局表 / 预览列 / 行 /
+        -- 待确认卡变化；键未变时整段跳过，不再每帧遍历 + 预览计算
+        local pend = KARDS.BattleState.pendingPlayEnt
+        if layout ~= lastReposLayout or row ~= lastReposRow
+            or previewCol ~= lastReposCol or pend ~= lastReposPend then
+            lastReposLayout, lastReposRow = layout, row
+            lastReposCol, lastReposPend = previewCol, pend
+            local preview = nil
+            if previewCol then
+                preview = KARDS.PreviewFieldPositions(layout, KARDS.BattleState.dragCard.ent, previewCol, row)
+            end
+            for e, si in pairs(layout or {}) do
+                if IsValid(e) and e ~= KARDS.BattleState.dragCard.ent and e ~= KARDS.BattleState.pendingPlayEnt and not KARDS.InHQRevealAnim(e) then
+                    -- 预览目标优先；未参与预览（待确认/总部动画中）回布局数据槽位
+                    local to = (preview and preview[e]) or KARDS.FieldPos(layout, e, si, row)
+                    local existing = KARDS.AnimPlayer:Get(e)
+                    -- 目标变化或动画缺失时重建（避免每帧重建/中断抖动）
+                    if not existing or not existing.toPos
+                        or (existing.toPos - to):LengthSqr() > 0.01 then
+                        KARDS.AnimPlayer:Play(e, {
+                            { t = 0 },
+                            { t = KARDS.HandSlotReposDur, pos = to, easing = "cos" },
+                        }, { group = "fieldRepos", noQueue = true }) -- 拖拽腾位预览：高频交互反馈免排队即时播放（2026-08-12 队列系统）
+                    end
                 end
             end
         end

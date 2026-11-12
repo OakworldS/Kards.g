@@ -8,8 +8,9 @@
 
     两段演出：
       第一段（收到 KardsPickOffer）：三张候选卡在卡堆顶坐标重合生成 → 依次落到中左槽 /
-        中槽 / 中右槽（KARDS.PickSlotPos），鼠标悬停的候选卡 z 上升（KARDS.PickHoverLift），
-        第一段动画播完后才允许点击选择。
+        中槽 / 中右槽（KARDS.PickSlotPos），鼠标悬停的候选卡沿「卡 → 渲染相机」方向抬起
+        （KARDS.HoverLiftPos，与重新调度 / 抉择同款抗视差与缓动），第一段动画播完后才允许
+        点击选择。
       第二段（收到 KardsPickResult）：选中卡移到并加入手牌扇形分布（本方视角）；其余卡按
         来源分支出场（开发：xy 平面逆时针旋转 + z 下降 + 向视角左下移出；观星：先移到牌桌
         上方贴桌翻面，再落到卡组底）。进行期间鼠标保持呼出，动画播完后清空状态。
@@ -44,6 +45,7 @@ KARDS.BattlePick = KARDS.BattlePick or {
     ents      = {},    -- 候选实体（按候选序号；本端尚未传播的无效实体写 false 占位，不留空洞）
     count     = 0,     -- 本次候选张数（服务端下发，供按下标遍历到数组末尾）
     prevLeft  = false, -- 左键上一帧状态（上升沿判定）
+    hoverStates = setmetatable({}, { __mode = "k" }), -- 候选卡悬停抬升缓动状态（按实体，弱键）
 }
 
 local BP = KARDS.BattlePick
@@ -61,35 +63,18 @@ function KARDS.BattlePickReset()
     BP.ents = {}
     BP.count = 0
     BP.prevLeft = false
+    BP.hoverStates = setmetatable({}, { __mode = "k" })
 end
 
--- 视角左侧 x 符号（P1 视角左侧为 +x，与爆牌弃牌槽 P1LP2RSlot 判定一致）
-local function LeftSign(viewSlot)
-    return (viewSlot == 2) and -1 or 1
-end
-
--- 发起方所在一侧的 y 符号（P1 槽位在 +y 端，见 shared.lua SlotLocalPos）：即「前线 xy 前方」
-local function SideSign(slot)
-    return (slot == 1) and 1 or -1
-end
+-- 视角左侧 x 符号与发起方一侧 y 符号：统一由 KARDS.HitTest.Signs 提供
+--（P1 视角左侧为 +x，与爆牌弃牌槽 P1LP2RSlot 判定一致；P1 槽位在 +y 端，见 shared.lua SlotLocalPos）
 
 -- 候选卡射线命中判定（同 HitMulliganCard：阈值 10^2）
 local function HitPickCard()
-    local ply = LocalPlayer()
-    if not IsValid(ply) then return nil end
-    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then return nil end
-    local bestEnt, bestD = nil, 100
-    -- 按下标遍历（候选实体可能因尚未传播为 false），跳过无效项
-    for i = 1, BP.count do
-        local e = BP.ents[i]
-        if IsValid(e) then
-            local d = KARDS.RayPointDistSqr(pos, dir, e:GetPos())
-            if d < bestD then bestEnt, bestD = e, d end
-        end
-    end
-    return bestEnt
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then return nil end
+    -- 按下标遍历（候选实体可能因尚未传播为 false），跳过无效项由统一命中模块负责
+    return KARDS.HitTest.NearestInRay(pos, dir, BP.ents, KARDS.HitTest.Radii.Candidate)
 end
 
 -- ====================================================================
@@ -209,8 +194,8 @@ net.Receive("KardsPickResult", function()
     local view = BP.view or "self"
     local kind = BP.kind
     local viewSlot = BP.viewSlot or slot
-    local leftSign = LeftSign(viewSlot)
-    local sideSign = SideSign(slot)
+    local leftSign = KARDS.HitTest.Signs.Left(viewSlot)
+    local sideSign = KARDS.HitTest.Signs.Side(slot)
     BP.finishing = true
     local chosenEnt = BP.ents[chosenIndex]
     -- 本方视角且选中卡确实进了手牌 → 飞入扇形；否则（未入手牌）按出场处理
@@ -299,16 +284,20 @@ hook.Add("Think", "KardsBattlePickSelect", function()
         BP.prevLeft = false
         return
     end
-    -- 悬停：命中候选卡 z 上升（KARDS.PickHoverLift），其余回落槽位 z（每帧纠偏）
+    -- 悬停：命中候选卡沿「卡 → 渲染相机」方向抬起（与重新调度 / 抉择共用
+    -- KARDS.HoverLiftPos，抗视差并带指数缓动上升 / 回落），其余回落槽位（每帧纠偏）
     local hover = HitPickCard()
     for i = 1, BP.count do
         local e = BP.ents[i]
         if IsValid(e) then
             local base = KARDS.PickSlotPos(i, BP.viewSlot)
-            local z = (e == hover) and (base.z + KARDS.PickHoverLift) or base.z
+            local st = BP.hoverStates[e]
+            if not st then st = {} BP.hoverStates[e] = st end
+            local target = (e == hover) and KARDS.HoverLiftAmount or 0
+            local pos = KARDS.HoverLiftPos(e, base, target, st)
             local cur = e:GetLocalPos()
-            if math.abs(cur.x - base.x) > 0.01 or math.abs(cur.y - base.y) > 0.01 or math.abs(cur.z - z) > 0.01 then
-                e:SetLocalPos(Vector(base.x, base.y, z))
+            if math.abs(cur.x - pos.x) > 0.01 or math.abs(cur.y - pos.y) > 0.01 or math.abs(cur.z - pos.z) > 0.01 then
+                e:SetLocalPos(pos)
             end
         end
     end

@@ -62,6 +62,7 @@ KARDS.BattleChoiceState = KARDS.BattleChoiceState or {
     pendingSwap = false,-- 待主体交接（选中复制卡：真实实体需收敛为主体）
     swapAt     = nil,   -- 主体交接时刻（CurTime）
     chosenText = "",    -- 所选 T 文本（交接与结算写卡面文本用）
+    hoverStates = setmetatable({}, { __mode = "k" }), -- 候选卡悬停抬升缓动状态（按实体，弱键）
 }
 
 local BC = KARDS.BattleChoiceState
@@ -72,14 +73,7 @@ local ChoiceSplitDur    = 0.35 -- 中槽 → 中左/中右
 local ChoiceResultDur   = 0.35 -- 选中卡 → 中槽（主体位）
 local ChoiceCopyZ       = 0.3  -- 复制卡相对原卡的 z 下移（「z 微微低于原卡」）
 
--- 视角左侧 x 符号 / 发起方所在一侧 y 符号（与三选一 cl_battle_pick.lua 同式）
-local function LeftSign(viewSlot)
-    return (viewSlot == 2) and -1 or 1
-end
-
-local function SideSign(slot)
-    return (slot == 1) and 1 or -1
-end
+-- 视角左侧 x 符号 / 发起方所在一侧 y 符号：统一由 KARDS.HitTest.Signs 提供
 
 -- 卡面朝向：本方/正常演出 = 卡面朝上正对各自玩家（P1 槽 180 / P2 槽 0）
 local function MainAngle(slot)
@@ -189,6 +183,7 @@ function KARDS.BattleChoiceReset()
     BC.submitted = false
     BC.finishing = false
     BC.prevLeft = false
+    BC.hoverStates = setmetatable({}, { __mode = "k" })
     -- 主体交接未完成（异常路径）：把真实实体显形，避免打出的卡永久不可见
     if BC.pendingSwap and IsValid(BC.orig) then
         BC.orig:SetNoDraw(false)
@@ -218,21 +213,14 @@ end
 
 -- 射线命中两张效果卡之一（同三选一 HitPickCard：阈值 10^2）
 local function HitChoiceCard()
-    local ply = LocalPlayer()
-    if not IsValid(ply) then return nil end
-    local pos = KARDS.BattleCamera and KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then return nil end
-    local bestEnt, bestD = nil, 100
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then return nil end
+    local candidates = {}
     for i = 1, 2 do
         local item = BC.slots[i]
-        local e = item and item.ent
-        if IsValid(e) then
-            local d = KARDS.RayPointDistSqr(pos, dir, e:GetPos())
-            if d < bestD then bestEnt, bestD = e, d end
-        end
+        if item then candidates[i] = item.ent end
     end
-    return bestEnt
+    return KARDS.HitTest.NearestInRay(pos, dir, candidates, KARDS.HitTest.Radii.Candidate)
 end
 
 -- ====================================================================
@@ -369,8 +357,8 @@ net.Receive("KardsChoiceResult", function()
     BC.finishing = true
     BC.selectable = false
     local viewSlot = BC.viewSlot or slot
-    local leftSign = LeftSign(viewSlot)
-    local sideSign = SideSign(slot)
+    local leftSign = KARDS.HitTest.Signs.Left(viewSlot)
+    local sideSign = KARDS.HitTest.Signs.Side(slot)
     local centerPos = KARDS.PickSlotPos(2, viewSlot)
     local exitFly = KARDS.PickExitDist or 0
     local exitDropZ = KARDS.PickSpinDropZ or 0
@@ -504,11 +492,15 @@ hook.Add("Think", "KardsBattleChoiceUpdate", function()
         local item = BC.slots[i]
         local e = item and item.ent
         if IsValid(e) and item.pos then
-            local lift = (e == hover) and (KARDS.PickHoverLift or 0) or 0
+            -- 悬停抬升与重新调度 / 三选一一致：KARDS.HoverLiftPos（沿「卡 → 渲染相机」
+            -- 方向抬起，抗视差并带指数缓动上升 / 回落）
+            local st = BC.hoverStates[e]
+            if not st then st = {} BC.hoverStates[e] = st end
+            local target = (e == hover) and KARDS.HoverLiftAmount or 0
+            local pos = KARDS.HoverLiftPos(e, item.pos, target, st)
             local cur = e:GetLocalPos()
-            local targetZ = item.pos.z + lift
-            if math.abs(cur.z - targetZ) > 0.01 then
-                e:SetLocalPos(Vector(item.pos.x, item.pos.y, targetZ))
+            if math.abs(cur.z - pos.z) > 0.01 or math.abs(cur.x - pos.x) > 0.01 or math.abs(cur.y - pos.y) > 0.01 then
+                e:SetLocalPos(pos)
             end
         end
     end

@@ -19,8 +19,8 @@ UI 组件模块 (UI Components)
   - DropdownStyle（行 3399~3411）
 
 状态数据：
-  - ExpandedDropdown / ExpandedDropdownInfo（行 3413~3414）
-  - ExpandedMultiDropdown / ExpandedMultiDropdownInfo（行 3740~3742）
+  - ExpandedDropdown / ExpandedDropdownInfo（已迁入 editor.session，见 ADR 0003）
+  - ExpandedMultiDropdown / ExpandedMultiDropdownInfo（已迁入 editor.session，见 ADR 0003）
   - LastMouseState（行 4198）
 
 源文件：cl_canvas_editor.lua
@@ -35,6 +35,9 @@ UI 组件模块 (UI Components)
 KARDS = KARDS or {}
 KARDS.CardEditor = KARDS.CardEditor or {}
 KARDS.CardEditor.Canvas = KARDS.CardEditor.Canvas or {}
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
 
 function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId, options, canvasFont)
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
@@ -68,6 +71,8 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
     end
     
     local numberData = node.data.numbers[numberId]
+    -- 浮层状态归属：NodeBase 旧节点没有编辑器会话，此时跳过状态写入（旧渲染路径已弃用）
+    local session = node.editor and node.editor.session
     local currentValue = numberData.value
     local currentTime = SysTime()
     
@@ -170,8 +175,8 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
             -- 取消选中全局变量
             editor._selectedVarItem = nil
             -- 如果变量选择弹窗打开了，关闭它
-            if KARDS.CardEditor.Canvas.NumericVarPopup then
-                KARDS.CardEditor.Canvas.NumericVarPopup = nil
+            if session and session.NumericVarPopup then
+                session.NumericVarPopup = nil
             end
         end
         if not overlayClicked then
@@ -237,14 +242,14 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
                     if currentValue < 99 then
                         numberData.value = currentValue + 1
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("99 已经为 kards 的最大值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_max_notice"), Color(50, 50, 50), false)
                     end
                     arrowClicked = true
                 elseif isDownHovered then
                     if currentValue > 0 then
                         numberData.value = currentValue - 1
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("0 已经为 kards 的最小值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_min_notice"), Color(50, 50, 50), false)
                     end
                     arrowClicked = true
                 end
@@ -263,14 +268,14 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
                     if currentValue < 99 then
                         numberData.value = math.min(99, currentValue + 5)
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("99 已经为 kards 的最大值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_max_notice"), Color(50, 50, 50), false)
                     end
                     arrowClicked = true
                 elseif isDownHovered then
                     if currentValue > 0 then
                         numberData.value = math.max(0, currentValue - 5)
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("0 已经为 kards 的最小值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_min_notice"), Color(50, 50, 50), false)
                     end
                     arrowClicked = true
                 end
@@ -350,8 +355,10 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
                 numberData.mode = "slot"
                 numberData.slotToggleTime = currentTime
                 -- 关闭可能展开的下拉框
-                KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                if session then
+                    session.ExpandedDropdown = nil
+                    session.ExpandedDropdownInfo = nil
+                end
                 return numberData.value
             end
         end
@@ -390,8 +397,10 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
             local mouseActive = input.IsMouseDown(MOUSE_LEFT) or input.WasMousePressed(MOUSE_LEFT)
             if mouseActive and isDropdownHovered and currentTime - numberData.dropdownExpandTime > 0.3 then
                 -- 关闭可能已展开的普通下拉框
-                KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                if session then
+                    session.ExpandedDropdown = nil
+                    session.ExpandedDropdownInfo = nil
+                end
                 -- 打开变量选择弹窗
                 surface.SetFont(optFont)
                 local popupCharW = surface.GetTextSize("字")
@@ -401,24 +410,26 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
                 if popupX + popupW > ScrW() then
                     popupX = ScrW() - popupW - 10
                 end
-                KARDS.CardEditor.Canvas.NumericVarPopup = {
-                    nodeId = node.id,
-                    numberId = numberId,
-                    nodeRef = node,  -- 直接存储节点引用，避免后续遍历查找
-                    x = popupX,
-                    y = popupY,
-                    searchText = "",
-                    page = 1,
-                    searchActive = false,  -- 搜索框是否激活
-                    slotOptions = options,  -- 槽的选项列表
-                    -- 筛选面板状态
-                    filterExpanded = false,
-                    filterFaction = nil,
-                    filterLocation = nil,
-                    filterType = nil,
-                    filterKeyword = nil,
-                    filterKwScroll = nil,
-                }
+                if session then
+                    session.NumericVarPopup = {
+                        nodeId = node.id,
+                        numberId = numberId,
+                        nodeRef = node,  -- 直接存储节点引用，避免后续遍历查找
+                        x = popupX,
+                        y = popupY,
+                        searchText = "",
+                        page = 1,
+                        searchActive = false,  -- 搜索框是否激活
+                        slotOptions = options,  -- 槽的选项列表
+                        -- 筛选面板状态
+                        filterExpanded = false,
+                        filterFaction = nil,
+                        filterLocation = nil,
+                        filterType = nil,
+                        filterKeyword = nil,
+                        filterKwScroll = nil,
+                    }
+                end
                 numberData.dropdownExpandTime = currentTime
             end
         end
@@ -505,14 +516,14 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
                     if currentValue < 99 then
                         numberData.value = currentValue + 1
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("99 已经为 kards 的最大值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_max_notice"), Color(50, 50, 50), false)
                     end
                     arrowClicked = true
                 elseif isDownHovered then
                     if currentValue > 0 then
                         numberData.value = currentValue - 1
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("0 已经为 kards 的最小值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_min_notice"), Color(50, 50, 50), false)
                     end
                     arrowClicked = true
                 end
@@ -530,13 +541,13 @@ function KARDS.CardEditor.Canvas.DrawNumberBox(x, y, size, value, node, numberId
                     if currentValue < 99 then
                         numberData.value = math.min(99, currentValue + 5)
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("99 已经为 kards 的最大值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_max_notice"), Color(50, 50, 50), false)
                     end
                 elseif isDownHovered then
                     if currentValue > 0 then
                         numberData.value = math.max(0, currentValue - 5)
                     else
-                        KARDS.CardEditor.Canvas.AddNotification("0 已经为 kards 的最小值（kards 数字范围为 0~99）", Color(50, 50, 50), false)
+                        KARDS.CardEditor.Canvas.AddNotification(T("editor.ui.number_min_notice"), Color(50, 50, 50), false)
                     end
                 end
             end
@@ -643,8 +654,8 @@ KARDS.CardEditor.Canvas.DropdownStyle = {
     arrowSize = 6
 }
 
-KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+-- 展开下拉框状态已迁入编辑器会话（editor.session.ExpandedDropdown / ExpandedDropdownInfo）
+-- 见 docs/adr/0003-节点图值与编辑器会话分离.md
 
 function KARDS.CardEditor.Canvas.DrawDropdown(x, y, width, height, options, selectedIndex, node, dropdownId, isUnitType, tooltipMap, canvasFont, canvasScale)
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
@@ -663,8 +674,10 @@ function KARDS.CardEditor.Canvas.DrawDropdown(x, y, width, height, options, sele
 
     local dropdownData = node.data.dropdowns[dropdownId]
     dropdownData.options = options
+    -- 浮层状态归属：NodeBase 旧节点没有编辑器会话，此时跳过状态写入（旧渲染路径已弃用）
+    local session = node.editor and node.editor.session
     local currentIndex = dropdownData.selectedIndex
-    local isExpanded = KARDS.CardEditor.Canvas.ExpandedDropdown == (node.id .. "_" .. dropdownId)
+    local isExpanded = session and session.ExpandedDropdown == (node.id .. "_" .. dropdownId)
     local currentTime = SysTime()
 
     local mainButtonX = x
@@ -713,14 +726,21 @@ function KARDS.CardEditor.Canvas.DrawDropdown(x, y, width, height, options, sele
     surface.DrawLine(arrowX - arrowSize / 2, arrowY - arrowSize / 2, arrowX, arrowY + arrowSize / 2)
     surface.DrawLine(arrowX + arrowSize / 2, arrowY - arrowSize / 2, arrowX, arrowY + arrowSize / 2)
 
-    if input.IsMouseDown(MOUSE_LEFT) and not KARDS.CardEditor.Canvas.DraggingNode then
+    -- 拖拽临时连线、数据点、节点或框选期间不展开下拉框（2026-11-08，INE 编辑器）
+    local ineModule = KARDS.CardEditor.IndependentNodeEditor
+    local pointerBusy = node.editor and ineModule and ineModule.IsPointerBusy
+        and ineModule:IsPointerBusy(node.editor)
+    if input.IsMouseDown(MOUSE_LEFT) and not KARDS.CardEditor.Canvas.DraggingNode and not pointerBusy then
         if isMainHovered then
             if currentTime - dropdownData.lastClickTime > 0.3 then
                 if isExpanded then
-                    KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                    if session then
+                        session.ExpandedDropdown = nil
+                        session.ExpandedDropdownInfo = nil
+                    end
                 else
-                    KARDS.CardEditor.Canvas.ExpandedDropdown = node.id .. "_" .. dropdownId
+                    if not session then return currentIndex end
+                    session.ExpandedDropdown = node.id .. "_" .. dropdownId
                     -- 计算多列信息
                 local style = KARDS.CardEditor.Canvas.DropdownStyle
                 local screenH = ScrH()
@@ -760,7 +780,7 @@ function KARDS.CardEditor.Canvas.DrawDropdown(x, y, width, height, options, sele
                     if dropdownX < 0 then dropdownX = 0 end
                 end
                 
-                KARDS.CardEditor.Canvas.ExpandedDropdownInfo = {
+                session.ExpandedDropdownInfo = {
                     x = x,
                     y = y,
                     width = width,
@@ -795,13 +815,14 @@ function KARDS.CardEditor.Canvas.DrawDropdown(x, y, width, height, options, sele
     return currentIndex
 end
 
-function KARDS.CardEditor.Canvas.CloseAllDropdowns()
-    KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-    KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+function KARDS.CardEditor.Canvas.CloseAllDropdowns(session)
+    if not session then return end
+    session.ExpandedDropdown = nil
+    session.ExpandedDropdownInfo = nil
 end
 
-function KARDS.CardEditor.Canvas.HandleDropdownClickOutside(mouseX, mouseY)
-    local info = KARDS.CardEditor.Canvas.ExpandedDropdownInfo
+function KARDS.CardEditor.Canvas.HandleDropdownClickOutside(mouseX, mouseY, session)
+    local info = session and session.ExpandedDropdownInfo
     if not info then return false end
 
     local style = KARDS.CardEditor.Canvas.DropdownStyle
@@ -823,17 +844,17 @@ function KARDS.CardEditor.Canvas.HandleDropdownClickOutside(mouseX, mouseY)
     end
 
     if not inMainButton and not inDropdown then
-        KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-        KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+        session.ExpandedDropdown = nil
+        session.ExpandedDropdownInfo = nil
         return true
     end
 
     return false
 end
 
-function KARDS.CardEditor.Canvas.DrawExpandedDropdowns()
-    local info = KARDS.CardEditor.Canvas.ExpandedDropdownInfo
+function KARDS.CardEditor.Canvas.DrawExpandedDropdowns(info, editor)
     if not info then return end
+    local session = editor and editor.session
 
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
     local style = KARDS.CardEditor.Canvas.DropdownStyle
@@ -969,8 +990,10 @@ function KARDS.CardEditor.Canvas.DrawExpandedDropdowns()
                     dropdownData.selectedIndex = i
                     dropdownData.lastClickTime = currentTime
                 end
-                KARDS.CardEditor.Canvas.ExpandedDropdown = nil
-                KARDS.CardEditor.Canvas.ExpandedDropdownInfo = nil
+                if session then
+                    session.ExpandedDropdown = nil
+                    session.ExpandedDropdownInfo = nil
+                end
                 optionClicked = true
             end
         end
@@ -987,9 +1010,8 @@ function KARDS.CardEditor.Canvas.DrawExpandedDropdowns()
     end
 end
 
--- 多选下拉框相关
-KARDS.CardEditor.Canvas.ExpandedMultiDropdown = nil
-KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = nil
+-- 多选下拉框状态已迁入编辑器会话（editor.session.ExpandedMultiDropdown 与 ExpandedMultiDropdownInfo）
+-- 见 docs/adr/0003-节点图值与编辑器会话分离.md
 
 -- 绘制多选下拉框主按钮
 function KARDS.CardEditor.Canvas.DrawMultiDropdown(x, y, width, height, dataTypes, selectedTypes, node, dropdownId)
@@ -1009,7 +1031,9 @@ function KARDS.CardEditor.Canvas.DrawMultiDropdown(x, y, width, height, dataType
 
     local dropdownData = node.data.multiDropdowns[dropdownId]
     dropdownData.dataTypes = dataTypes
-    local isExpanded = KARDS.CardEditor.Canvas.ExpandedMultiDropdown == (node.id .. "_" .. dropdownId)
+    -- 浮层状态归属：NodeBase 旧节点没有编辑器会话，此时跳过状态写入（旧渲染路径已弃用）
+    local session = node.editor and node.editor.session
+    local isExpanded = session and session.ExpandedMultiDropdown == (node.id .. "_" .. dropdownId)
     local currentTime = SysTime()
 
     local mainButtonX = x
@@ -1025,7 +1049,7 @@ function KARDS.CardEditor.Canvas.DrawMultiDropdown(x, y, width, height, dataType
 
     -- 显示已选择的数量
     local selectedCount = #dropdownData.selectedTypes
-    local displayText = selectedCount > 0 and ("已选择 " .. selectedCount .. " 项") or "请选择..."
+    local displayText = selectedCount > 0 and T("editor.ui.selected_count", selectedCount) or T("editor.ui.please_select")
     draw.SimpleText(displayText, "SourceHan_Heavy_14", mainButtonX + 8, mainButtonY + mainButtonH / 2,
         style.textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
@@ -1037,13 +1061,13 @@ function KARDS.CardEditor.Canvas.DrawMultiDropdown(x, y, width, height, dataType
     surface.DrawLine(arrowX + style.arrowSize / 2, arrowY - style.arrowSize / 2, arrowX, arrowY + style.arrowSize / 2)
 
     if input.IsMouseDown(MOUSE_LEFT) and not KARDS.CardEditor.Canvas.DraggingNode then
-        if isMainHovered then
+        if isMainHovered and session then
             if currentTime - dropdownData.lastClickTime > 0.3 then
                 if isExpanded then
-                    KARDS.CardEditor.Canvas.ExpandedMultiDropdown = nil
-                    KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = nil
+                    session.ExpandedMultiDropdown = nil
+                    session.ExpandedMultiDropdownInfo = nil
                 else
-                    KARDS.CardEditor.Canvas.ExpandedMultiDropdown = node.id .. "_" .. dropdownId
+                    session.ExpandedMultiDropdown = node.id .. "_" .. dropdownId
                     -- 计算多列信息
                     local style = KARDS.CardEditor.Canvas.DropdownStyle
                     local screenH = ScrH()
@@ -1067,7 +1091,7 @@ function KARDS.CardEditor.Canvas.DrawMultiDropdown(x, y, width, height, dataType
                         if dropdownX < 0 then dropdownX = 0 end
                     end
                     
-                    KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = {
+                    session.ExpandedMultiDropdownInfo = {
                         x = x,
                         y = y,
                         width = width,
@@ -1092,9 +1116,8 @@ function KARDS.CardEditor.Canvas.DrawMultiDropdown(x, y, width, height, dataType
     return dropdownData.selectedTypes
 end
 
--- 绘制展开的多选下拉框
-function KARDS.CardEditor.Canvas.DrawExpandedMultiDropdowns()
-    local info = KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo
+-- 绘制展开的多选下拉框。状态由 INE 会话持有，本函数只负责绘制与交互
+function KARDS.CardEditor.Canvas.DrawExpandedMultiDropdowns(info, editor)
     if not info then return end
 
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
@@ -1223,14 +1246,15 @@ function KARDS.CardEditor.Canvas.DrawExpandedMultiDropdowns()
 end
 
 -- 关闭所有多选下拉框
-function KARDS.CardEditor.Canvas.CloseAllMultiDropdowns()
-    KARDS.CardEditor.Canvas.ExpandedMultiDropdown = nil
-    KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = nil
+function KARDS.CardEditor.Canvas.CloseAllMultiDropdowns(session)
+    if not session then return end
+    session.ExpandedMultiDropdown = nil
+    session.ExpandedMultiDropdownInfo = nil
 end
 
 -- 处理多选下拉框的外部点击
-function KARDS.CardEditor.Canvas.HandleMultiDropdownClickOutside(mouseX, mouseY)
-    local info = KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo
+function KARDS.CardEditor.Canvas.HandleMultiDropdownClickOutside(mouseX, mouseY, session)
+    local info = session and session.ExpandedMultiDropdownInfo
     if not info then return false end
 
     local style = KARDS.CardEditor.Canvas.DropdownStyle
@@ -1245,8 +1269,8 @@ function KARDS.CardEditor.Canvas.HandleMultiDropdownClickOutside(mouseX, mouseY)
     end
 
     if not inMainButton and not inDropdown then
-        KARDS.CardEditor.Canvas.ExpandedMultiDropdown = nil
-        KARDS.CardEditor.Canvas.ExpandedMultiDropdownInfo = nil
+        session.ExpandedMultiDropdown = nil
+        session.ExpandedMultiDropdownInfo = nil
         return true
     end
 
@@ -1276,16 +1300,9 @@ function KARDS.CardEditor.Canvas.DrawConnections()
     end
 end
 
+-- 采样实现已迁至共享几何模块（ADR 0006），此处保留签名供既有调用方使用
 function KARDS.CardEditor.Canvas.BezierCurve(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y, steps)
-    steps = steps or 20
-    local points = {}
-    for i = 0, steps do
-        local t = i / steps
-        local x = math.pow(1 - t, 3) * p1x + 3 * math.pow(1 - t, 2) * t * p2x + 3 * (1 - t) * math.pow(t, 2) * p3x + math.pow(t, 3) * p4x
-        local y = math.pow(1 - t, 3) * p1y + 3 * math.pow(1 - t, 2) * t * p2y + 3 * (1 - t) * math.pow(t, 2) * p3y + math.pow(t, 3) * p4y
-        table.insert(points, {x = x, y = y})
-    end
-    return points
+    return KARDS.CardEditor.Geometry.SampleCubic(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y, steps or 20)
 end
 
 function KARDS.CardEditor.Canvas.GetCurveNormals(points, thickness)
@@ -1446,3 +1463,13 @@ function KARDS.CardEditor.Canvas.DrawTempConnection()
 end
 
 KARDS.CardEditor.Canvas.LastMouseState = KARDS.CardEditor.Canvas.LastMouseState or false
+
+-- ================================================================
+-- 弹窗渲染注册（ADR 0003 决策 3）
+-- 展开下拉框与多选下拉框状态在编辑器会话，绘制仍由 Canvas 提供
+-- ================================================================
+local INE_PopupReg = KARDS.CardEditor.IndependentNodeEditor
+if INE_PopupReg and INE_PopupReg.RegisterPopupRenderer then
+    INE_PopupReg:RegisterPopupRenderer("ExpandedDropdownInfo", KARDS.CardEditor.Canvas.DrawExpandedDropdowns)
+    INE_PopupReg:RegisterPopupRenderer("ExpandedMultiDropdownInfo", KARDS.CardEditor.Canvas.DrawExpandedMultiDropdowns)
+end

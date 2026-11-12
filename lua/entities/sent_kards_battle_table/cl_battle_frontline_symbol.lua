@@ -15,7 +15,8 @@
         image_path + ClearCache（纹理链路顺序敏感，见 cl_init.lua 头注释；子网格名为
         平面/平面.063 非 front/back，用 KARDS.CardManifest.RewriteAllImagePaths 全子网格改写）。
       - 显示时机：除组卡模式（牌桌 Kards_Mode == "deck"）始终显示；状态切换时位置用
-        KARDS.AnimPlayer 线性滑动（与手牌重排 0.15s 一致），动画组名 "frontlineMove"
+        KARDS.AnimPlayer 线性滑动（2026-10-27：时长随移动 / 撤退位移动画一并 ×1.5，
+        与单位位移的基准时长 0.225s 一致），动画组名 "frontlineMove"
         与单位移动至前线同组（2026-08-12：单位与前线标识同时移动，见 cl_init.lua
         KardsFieldLayout slot=0 变体）。
 
@@ -29,18 +30,24 @@ KARDS = KARDS or {}
 local BS = KARDS.BattleState
 
 -- 4 个前线符号模型（后缀 pi=P1 视角 / pii=P2 视角；前缀 nottaken=未占领 / takend=已占领），
--- 子网格均为单网格（名 平面 / 平面.063），统一纯色纹理：未占领黑 / 已占领深红
+-- 子网格均为单网格（名 平面 / 平面.063），统一纯色纹理：未占领黑 / 已占领深红。
+-- 模型 ID 提为常量（2026-10-16 性能优化）：选取时直接返回，不再每帧拼接字符串
+local MODEL_NOTTAKEN_PI  = "frontline_nottaken_pi"
+local MODEL_NOTTAKEN_PII = "frontline_nottaken_pii"
+local MODEL_TAKEND_PI    = "frontline_takend_pi"
+local MODEL_TAKEND_PII   = "frontline_takend_pii"
 local SOLID_COLOR = {
-    ["frontline_nottaken_pi"]  = { 0, 0, 0 },
-    ["frontline_nottaken_pii"] = { 0, 0, 0 },
-    ["frontline_takend_pi"]    = { 139, 0, 0 },
-    ["frontline_takend_pii"]   = { 139, 0, 0 },
+    [MODEL_NOTTAKEN_PI]  = { 0, 0, 0 },
+    [MODEL_NOTTAKEN_PII] = { 0, 0, 0 },
+    [MODEL_TAKEND_PI]    = { 139, 0, 0 },
+    [MODEL_TAKEND_PII]   = { 139, 0, 0 },
 }
 
 local FRONTLINE_SCALE = 0.0745 * 1.5 -- 前线行全宽 32.8 / 模型 bounds 宽 440 ×1.5（2026-08-11 放大）
 local GAP_OFFSET_Y = 6.40        -- 行间距 12.80 的一半（支援阵线与前线间隔中点）
-local FL_SYMBOL_MOVE_DUR = 0.15  -- 占领状态切换滑动时长（与手牌重排 HandSlotReposDur 一致）
+local FL_SYMBOL_MOVE_DUR = 0.15 * 1.5 -- 占领状态切换滑动时长（2026-10-27：随移动 / 撤退位移动画一并延长 1.5 倍，与单位位移的基准时长一致）
 local SYMBOL_Z_OFFSET = 0.02     -- 略低于卡面 CardZ，避免与前线单位 z-fighting（卡覆盖其上）
+local FL_SYMBOL_ANG = Angle(0, 0, 0) -- 符号平放朝向（常量，免每帧构造 Angle）
 
 -- 符号实体当前状态（模块级 local）：
 local symbolEnt = nil    -- 前线符号客户端实体
@@ -100,23 +107,25 @@ end
 local function PickModelID()
     local view = KARDS.Perspective and KARDS.Perspective.LocalView
     local owner = BS.frontlineOwnerSlot or 0
-    local prefix = (owner ~= 0) and "takend" or "nottaken"
-    local suffix
     if owner ~= 0 then
-        suffix = (owner == 1) and "pii" or "pi"
-    else
-        suffix = (view == 2) and "pi" or "pii"
+        return (owner == 1) and MODEL_TAKEND_PII or MODEL_TAKEND_PI
     end
-    return "frontline_" .. prefix .. "_" .. suffix
+    return (view == 2) and MODEL_NOTTAKEN_PI or MODEL_NOTTAKEN_PII
 end
 
--- 目标相对坐标（牌桌局部）：未占领居中；P1 占领向对边（P2 侧 -y）/ P2 占领向 P1 侧 +y
+-- 目标相对坐标（牌桌局部）：未占领居中；P1 占领向对边（P2 侧 -y）/ P2 占领向 P1 侧 +y。
+-- 三种坐标预置为共享向量（2026-10-16 性能优化），每帧只就地更新 z（Board2D 可能尚未就绪）。
+-- 共享是安全的：调用方只把返回值与上一帧返回值比较或读取坐标，从不改写 xy
+local REL_CENTER = Vector(0, 0, 0)
+local REL_P1_OWNED = Vector(0, -GAP_OFFSET_Y, 0)
+local REL_P2_OWNED = Vector(0, GAP_OFFSET_Y, 0)
 local function PickRelPos()
-    local z = SymbolZ()
     local owner = BS.frontlineOwnerSlot or 0
-    if owner == 1 then return Vector(0, -GAP_OFFSET_Y, z) end
-    if owner == 2 then return Vector(0, GAP_OFFSET_Y, z) end
-    return Vector(0, 0, z)
+    local rel = (owner == 1) and REL_P1_OWNED
+        or (owner == 2) and REL_P2_OWNED
+        or REL_CENTER
+    rel.z = SymbolZ()
+    return rel
 end
 
 -- 创建前线符号实体（客户端本地实体；失败返回 nil）。位置由 Think 每帧跟随牌桌落位
@@ -198,7 +207,7 @@ hook.Add("Think", "KardsFrontlineSymbolThink", function()
         curRel = targetRel
     else
         symbolEnt:SetPos(tableEnt:LocalToWorld(targetRel))
-        symbolEnt:SetAngles(tableEnt:LocalToWorldAngles(Angle(0, 0, 0)))
+        symbolEnt:SetAngles(tableEnt:LocalToWorldAngles(FL_SYMBOL_ANG))
         curRel = curRel or targetRel
     end
 end)

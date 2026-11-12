@@ -95,7 +95,13 @@ if SERVER then
     end)
 
     -- 控制台命令：关闭编辑器但保持动画（用于测试）
+    -- 上面两个启停命令由编辑器打开/关闭时自动调用（cl_canvas_editor.lua），属正常玩法流程，
+    -- 故不加权限判定；本命令仅测试用，玩家执行需 operator 及以上，服务器控制台放行
     concommand.Add("kards_close_editor_keep_anim", function(ply)
+        if not KARDS.CanUseDevCommand(ply) then
+            print("[Kards] kards_close_editor_keep_anim：需要 operator 及以上权限")
+            return
+        end
         if IsValid(ply) and ply:IsPlayer() then
             KARDS.CardEditor.Animation.Server.KeepAnimation[ply] = true
             -- 发送消息给客户端关闭编辑器界面

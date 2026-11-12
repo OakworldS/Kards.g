@@ -25,6 +25,9 @@ KARDS = KARDS or {}
 KARDS.CardEditor = KARDS.CardEditor or {}
 KARDS.CardEditor.Canvas = KARDS.CardEditor.Canvas or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- ===== 音效伪命名系统（F2 重命名显示名，不改磁盘文件） =====
 -- 维护"音频完整路径 → 自定义显示名"映射，存 garrysmod/data/kards_sound_aliases.json；
 -- 文件选择器展示条目时优先显示 json 内的名称（见 BuildSoundFileTree 的 display 应用）。
@@ -170,7 +173,7 @@ local function BuildSoundFileTree()
         -- Kards 模组专属音效（sound/kards：牌桌对战音效，与编辑器音效 sound/editor 区分）
         {
             name = "kards",
-            display = "Kards模组音效",
+            display = T("editor.file.folder_kards_sounds"),
             type = "folder",
             fullPath = "sound/kards",
             children = scan("sound/kards", "GAME", "sound/kards"),
@@ -179,14 +182,14 @@ local function BuildSoundFileTree()
             name = "sound",
             -- GAME 文件系统 sound/ 为全部来源合并视图（GMod 自带 + 全部模组 + 挂载的
             -- 起源引擎游戏音频），故命名为"全部音效"而非"游戏内置音效"
-            display = "全部音效",
+            display = T("editor.file.folder_all_sounds"),
             type = "folder",
             fullPath = "sound",
             children = scan("sound", "GAME", "sound"),
         },
         {
             name = "kards_sounds",
-            display = "玩家自定义音效",
+            display = T("editor.file.folder_custom_sounds"),
             type = "folder",
             fullPath = "kards_sounds",
             children = scan("kards_sounds", "DATA", "data/kards_sounds"),
@@ -271,7 +274,7 @@ local function DrawFileManagerInternal(fmX, fmY, fmW, fmH, mx, my, isLeftPressed
     -- 构建显示列表
     local items = {}
     if #state.navStack > 0 then
-        table.insert(items, { name = ".. 返回上一级", type = "back" })
+        table.insert(items, { name = T("editor.file.back"), type = "back" })
     end
     for i, child in ipairs(currentFolder.children or {}) do
         table.insert(items, { entry = child, name = child.name, type = child.type, idx = i })
@@ -400,7 +403,7 @@ local function DrawFileManagerInternal(fmX, fmY, fmW, fmH, mx, my, isLeftPressed
         draw.RoundedBox(4, fmX + 4, confirmY, fmW - 8, 48, Color(20, 20, 25, 230))
 
         local fileName = state.selectedEntry.display or state.selectedEntry.name
-        draw.SimpleText("选择 '" .. fileName .. "'？", "SourceHan_Heavy_12", fmX + fmW / 2, confirmY + 8, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        draw.SimpleText(T("editor.file.confirm_select", fileName), "SourceHan_Heavy_12", fmX + fmW / 2, confirmY + 8, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
 
         local btnW = 55
         local btnH = 20
@@ -411,11 +414,11 @@ local function DrawFileManagerInternal(fmX, fmY, fmW, fmH, mx, my, isLeftPressed
 
         local selBtnX = btnStartX
         local selHov = IsMouseIn(mx, my, selBtnX, btnY2, btnW, btnH)
-        KARDS.CardEditor.Canvas.DrawHoverButton(selBtnX, btnY2, btnW, btnH, "选择", selHov, { hoverBg = Color(80, 170, 80), normalBg = Color(60, 130, 60), font = "SourceHan_Heavy_12" })
+        KARDS.CardEditor.Canvas.DrawHoverButton(selBtnX, btnY2, btnW, btnH, T("editor.file.select"), selHov, { hoverBg = Color(80, 170, 80), normalBg = Color(60, 130, 60), font = "SourceHan_Heavy_12" })
 
         local noBtnX = btnStartX + btnW + btnGap
         local noHov = IsMouseIn(mx, my, noBtnX, btnY2, btnW, btnH)
-        KARDS.CardEditor.Canvas.DrawHoverButton(noBtnX, btnY2, btnW, btnH, "不选", noHov, { hoverBg = Color(170, 80, 80), normalBg = Color(130, 60, 60), font = "SourceHan_Heavy_12" })
+        KARDS.CardEditor.Canvas.DrawHoverButton(noBtnX, btnY2, btnW, btnH, T("editor.file.dont_select"), noHov, { hoverBg = Color(170, 80, 80), normalBg = Color(130, 60, 60), font = "SourceHan_Heavy_12" })
 
         if isLeftPressed then
             if selHov then
@@ -477,7 +480,7 @@ local function DrawFileManagerInternal(fmX, fmY, fmW, fmH, mx, my, isLeftPressed
 
         -- 下方文字
         local fileName = state.selectedEntry.display or state.selectedEntry.name
-        draw.SimpleText("已选择", "SourceHan_Heavy_16", starCX, starCY + starOuterR + 12, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        draw.SimpleText(T("editor.file.selected"), "SourceHan_Heavy_16", starCX, starCY + starOuterR + 12, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
         draw.SimpleText(fileName, "SourceHan_Heavy_14", starCX, starCY + starOuterR + 34, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
 
         if isLeftPressed and isStarHov then
@@ -500,12 +503,12 @@ end
 
 -- 事件槽位中文显示名
 local SoundEventDisplay = {
-    deploy = "部署",
-    attack = "攻击",
-    death = "阵亡",
-    play = "打出",
-    activate = "激活时",
-    trigger = "触发",
+    deploy = T("editor.file.event_deploy"),
+    attack = T("editor.file.event_attack"),
+    death = T("editor.file.event_death"),
+    play = T("editor.file.event_play"),
+    activate = T("editor.file.event_activate"),
+    trigger = T("editor.file.event_trigger"),
 }
 
 -- 试听图标材质（GMod 内置 icon16 图标集；本环境 surface.DrawPoly 绘制不可靠，
@@ -538,7 +541,7 @@ local function DrawRenameInputBox(mx, my, isLeftPressed)
     local txt = rs.text or ""
     surface.SetFont("SourceHan_Heavy_12")
     if txt == "" then
-        draw.SimpleText("输入新名称…", "SourceHan_Heavy_12", rs.x + 6, rs.y + rs.h / 2, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.file.rename_placeholder"), "SourceHan_Heavy_12", rs.x + 6, rs.y + rs.h / 2, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     else
         draw.SimpleText(txt, "SourceHan_Heavy_12", rs.x + 6, rs.y + rs.h / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     end
@@ -709,7 +712,7 @@ local function DrawSoundFileManager(fmX, fmY, fmW, fmH, mx, my, isLeftPressed, d
     end
     -- 悬停禁用条目：工具提示（绘制在盒子外，不受裁剪影响）
     if hoveredDisabled then
-        local tipText = "Gmod播放文件只支持ASCII字符（就是纯英文字母）"
+        local tipText = T("editor.file.ascii_only_tooltip")
         surface.SetFont("SourceHan_Heavy_12")
         local tw = surface.GetTextSize(tipText)
         local tipW, tipH = tw + 16, 26
@@ -777,7 +780,7 @@ local function DrawSubtypeSelector(fmX, fmY, fmW, fmH, mx, my, isLeftPressed, dt
             end
         end
 
-        draw.SimpleText("已选择", "SourceHan_Heavy_16", starCX, starCY + starOuterR + 12, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        draw.SimpleText(T("editor.file.selected"), "SourceHan_Heavy_16", starCX, starCY + starOuterR + 12, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
         draw.SimpleText(state.selectedSubtype, "SourceHan_Heavy_14", starCX, starCY + starOuterR + 34, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
 
         if isLeftPressed and isStarHov then
@@ -800,7 +803,7 @@ local function DrawSubtypeSelector(fmX, fmY, fmW, fmH, mx, my, isLeftPressed, dt
         local backY = listStartY
         local backHov = IsMouseIn(mx, my, fmX + 4, backY, fmW - 8, itemH)
         draw.RoundedBox(3, fmX + 4, backY, fmW - 8, itemH - 2, backHov and Color(50, 50, 55) or Color(0, 0, 0, 0))
-        draw.SimpleText("< 返回文件选择", "SourceHan_Heavy_12", fmX + 10, backY + itemH / 2, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.file.back_to_file_selection"), "SourceHan_Heavy_12", fmX + 10, backY + itemH / 2, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
         if isLeftPressed and backHov then
             state.isSelectingSubtype = false
@@ -839,7 +842,7 @@ local function DrawSubtypeSelector(fmX, fmY, fmW, fmH, mx, my, isLeftPressed, dt
     -- 构建显示列表
     local items = {}
     if #state.navStack > 0 then
-        table.insert(items, { name = ".. 返回上一级", type = "back" })
+        table.insert(items, { name = T("editor.file.back"), type = "back" })
     end
     for i, child in ipairs(currentFolder.children or {}) do
         table.insert(items, { entry = child, name = child.name, type = child.type, idx = i })
@@ -914,7 +917,7 @@ local function DrawSubtypeSelector(fmX, fmY, fmW, fmH, mx, my, isLeftPressed, dt
         draw.RoundedBox(4, fmX + 2, btnY, fmW - 4, 42, Color(20, 20, 25, 200))
 
         local fileName = state.selectedEntry.display or state.selectedEntry.name
-        draw.SimpleText("选择 '" .. fileName .. "'？", "SourceHan_Heavy_12", fmX + fmW / 2, btnY + 6, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
+        draw.SimpleText(T("editor.file.confirm_select", fileName), "SourceHan_Heavy_12", fmX + fmW / 2, btnY + 6, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP)
 
         local btnW = 50
         local btnH = 20
@@ -924,12 +927,12 @@ local function DrawSubtypeSelector(fmX, fmY, fmW, fmH, mx, my, isLeftPressed, dt
 
         -- "选择" 按钮：读取 lua 文件并进入子类型选择模式
         local selHov = IsMouseIn(mx, my, btnStartX, btnY2, btnW, btnH)
-        KARDS.CardEditor.Canvas.DrawHoverButton(btnStartX, btnY2, btnW, btnH, "选择", selHov, { hoverBg = Color(60, 160, 60), normalBg = Color(50, 110, 50), font = "SourceHan_Heavy_12" })
+        KARDS.CardEditor.Canvas.DrawHoverButton(btnStartX, btnY2, btnW, btnH, T("editor.file.select"), selHov, { hoverBg = Color(60, 160, 60), normalBg = Color(50, 110, 50), font = "SourceHan_Heavy_12" })
 
         -- "不选" 按钮：取消
         local noBtnX = btnStartX + btnW + btnGap
         local noHov = IsMouseIn(mx, my, noBtnX, btnY2, btnW, btnH)
-        KARDS.CardEditor.Canvas.DrawHoverButton(noBtnX, btnY2, btnW, btnH, "不选", noHov, { hoverBg = Color(170, 80, 80), normalBg = Color(130, 60, 60), font = "SourceHan_Heavy_12" })
+        KARDS.CardEditor.Canvas.DrawHoverButton(noBtnX, btnY2, btnW, btnH, T("editor.file.dont_select"), noHov, { hoverBg = Color(170, 80, 80), normalBg = Color(130, 60, 60), font = "SourceHan_Heavy_12" })
 
         if isLeftPressed then
             if selHov then

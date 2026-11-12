@@ -40,6 +40,21 @@ local KEYWORD_CN = {
     Inhibited = "被抑制",
 }
 
+-- 关键词英文名映射（用于 Variables 英文显示名生成；与 keyword.<id>.name 的英文口径一致）
+local KEYWORD_EN = {
+    Deploy = "Deploy", Guard = "Guard", Smoke = "Smoke Screen", Blitz = "Blitz",
+    Ambush = "Ambush", DeathPlan = "Last Strike",
+    HeavyArmor1 = "Heavy Armor 1", HeavyArmor2 = "Heavy Armor 2", HeavyArmor3 = "Heavy Armor 3",
+    ActiveEffect = "Active Effect", PassiveEffect = "Passive Effect",
+    Veteran = "Veteran", Cooperation = "Cooperate", Intel = "Intelligence",
+    Impact = "Impact", FightHard = "Fight", Mountain = "Mountain",
+    Confiscate = "Confiscate", Confiscated = "Confiscated", Suppressed = "Suppressed",
+    Pincer = "Pincer", Unit = "Unit", Command = "Order", Counter = "Counter",
+    Infantry = "Infantry", Artillery = "Artillery", Tank = "Tank",
+    Fighter = "Fighter", Bomber = "Bomber",
+    Inhibited = "Neutralized",
+}
+
 -- 不需要"卡牌"相关变量的关键词（被压制、被收缴、被抑制）
 -- 这些关键词只保留单位/场上相关变量，跳过手牌/牌库/卡牌相关变量
 local SKIP_CARD_VARS = {
@@ -614,8 +629,10 @@ end
 -- 变量名翻译系统
 -- ====================================================================
 
--- 当前语言（默认中文）
-KARDS.VarLib.CurrentLanguage = KARDS.VarLib.CurrentLanguage or "zh-CN"
+-- 当前语言（默认跟随 Kards 界面语言）
+KARDS.VarLib.CurrentLanguage = KARDS.VarLib.CurrentLanguage
+    or (KARDS.Lang and KARDS.Lang.GetLanguage())
+    or "zh-CN"
 
 -- 翻译表：变量路径 -> 显示名称
 -- 支持多语言：KARDS.VarLib.Translations["zh-CN"]["Battle.Turn"] = "回合数"
@@ -746,8 +763,141 @@ local function InitChineseTranslations()
     end
 end
 
+-- 初始化英文翻译表（与中文表同构，变量路径一一对应）
+local function InitEnglishTranslations()
+    local t = {}
+    KARDS.VarLib.Translations["en"] = t
+
+    -- Battle base variables
+    t["Battle.Turn"] = "Turn"
+    t["Battle.IsFriendlyTurn"] = "Is Friendly Turn"
+    t["Battle.FieldUnitCount"] = "Units on Field"
+    t["Battle.FriendlyUnitCount"] = "Friendly Units"
+    t["Battle.TotalDeployedThisGame"] = "Units Deployed This Game"
+    t["Battle.GameDuration"] = "Game Duration (s)"
+    t["Battle.FrontlineUnitCount"] = "Frontline Units"
+    t["Battle.FriendlyHandCount"] = "Friendly Hand Size"
+    t["Battle.EnemyHandCount"] = "Enemy Hand Size"
+    t["Battle.FriendlyDeckCount"] = "Friendly Deck Size"
+    t["Battle.EnemyDeckCount"] = "Enemy Deck Size"
+    t["Battle.FriendlyTotalHP"] = "Friendly Total HP"
+    t["Battle.EnemyTotalHP"] = "Enemy Total HP"
+    t["Battle.FriendlyCommandUsed"] = "Friendly Orders This Turn"
+    t["Battle.EnemyCommandUsed"] = "Enemy Orders This Turn"
+    t["Battle.FriendlyDeployCount"] = "Friendly Deploys This Turn"
+    t["Battle.EnemyDeployCount"] = "Enemy Deploys This Turn"
+    t["Battle.FriendlyDeployTotal"] = "Friendly Total Deploys"
+    t["Battle.EnemyDeployTotal"] = "Enemy Total Deploys"
+    t["Battle.FriendlySupportCount"] = "Friendly Support Units"
+    t["Battle.EnemySupportCount"] = "Enemy Support Units"
+    t["Battle.FriendlyDrawCount"] = "Friendly Cards Drawn This Turn"
+    t["Battle.EnemyDrawCount"] = "Enemy Cards Drawn This Turn"
+    t["Battle.FriendlyDiscardCount"] = "Friendly Cards Discarded This Turn"
+    t["Battle.EnemyDiscardCount"] = "Enemy Cards Discarded This Turn"
+    t["Battle.FriendlyBurnCount"] = "Friendly Cards Burned This Turn"
+    t["Battle.EnemyBurnCount"] = "Enemy Cards Burned This Turn"
+    t["Battle.FriendlyMoraleDamage"] = "Friendly Morale Damage"
+    t["Battle.EnemyMoraleDamage"] = "Enemy Morale Damage"
+    t["Battle.FriendlyReshuffled"] = "Friendly Mulligan"
+    t["Battle.EnemyReshuffled"] = "Enemy Mulligan"
+    t["Battle.FriendlyHQLastTurnDamage"] = "Friendly HQ Damage Last Turn"
+    t["Battle.EnemyHQLastTurnDamage"] = "Enemy HQ Damage Last Turn"
+    t["Battle.FriendlyCommandPoints"] = "Friendly Command Points"
+    t["Battle.EnemyCommandPoints"] = "Enemy Command Points"
+
+    -- Battle object group variables
+    t["Battle.FriendlyUnits"] = "Friendly Units on Field"
+    t["Battle.EnemyUnits"] = "Enemy Units on Field"
+    t["Battle.FriendlySupportUnits"] = "Friendly Support Units"
+    t["Battle.EnemySupportUnits"] = "Enemy Support Units"
+    t["Battle.FriendlyFrontlineUnits"] = "Friendly Frontline Units"
+    t["Battle.EnemyFrontlineUnits"] = "Enemy Frontline Units"
+
+    -- Macro object / object group variables
+    t["Battle.FriendlyTarget"] = "Friendly Valid Targets"
+    t["Battle.EnemyTarget"] = "Enemy Valid Targets"
+    t["Battle.FriendlyHeadquarter"] = "Friendly HQ"
+    t["Battle.EnemyHeadquarter"] = "Enemy HQ"
+    t["Battle.FriendlyGroundUnits"] = "Friendly Ground Units"
+    t["Battle.EnemyGroundUnits"] = "Enemy Ground Units"
+    t["Battle.FriendlyAirUnits"] = "Friendly Air Units"
+    t["Battle.EnemyAirUnits"] = "Enemy Air Units"
+    t["Battle.FriendlyInfantry"] = "Friendly Infantry"
+    t["Battle.EnemyInfantry"] = "Enemy Infantry"
+    t["Battle.FriendlyTank"] = "Friendly Tank"
+    t["Battle.EnemyTank"] = "Enemy Tank"
+    t["Battle.FriendlyArtillery"] = "Friendly Artillery"
+    t["Battle.EnemyArtillery"] = "Enemy Artillery"
+    t["Battle.FriendlyFighter"] = "Friendly Fighter"
+    t["Battle.EnemyFighter"] = "Enemy Fighter"
+    t["Battle.FriendlyBomber"] = "Friendly Bomber"
+    t["Battle.EnemyBomber"] = "Enemy Bomber"
+    t["Battle.FriendlyUnitCards"] = "Friendly Unit Cards"
+    t["Battle.EnemyUnitCards"] = "Enemy Unit Cards"
+    t["Battle.FriendlyCommandCards"] = "Friendly Order Cards"
+    t["Battle.EnemyCommandCards"] = "Enemy Order Cards"
+    t["Battle.FriendlyCounterCards"] = "Friendly Counter Cards"
+    t["Battle.EnemyCounterCards"] = "Enemy Counter Cards"
+
+    -- Battle text variables (strings)
+    t["Battle.FriendlyMainCountry"] = "Friendly Main Nation"
+    t["Battle.EnemyMainCountry"] = "Enemy Main Nation"
+    t["Battle.FriendlyAllyCountry"] = "Friendly Ally Nation"
+    t["Battle.EnemyAllyCountry"] = "Enemy Ally Nation"
+
+    -- OffTable variables
+    t["OffTable.ServerPlayerCount"] = "Server Player Count"
+    t["OffTable.ServerName"] = "Server Name"
+    t["OffTable.Players"] = "Player List"
+    t["OffTable.Year"] = "Current Year"
+    t["OffTable.Month"] = "Current Month"
+    t["OffTable.Day"] = "Current Day"
+    t["OffTable.Hour"] = "Current Hour"
+    t["OffTable.Minute"] = "Current Minute"
+    t["OffTable.Second"] = "Current Second"
+    t["OffTable.NearbyPlayerCount"] = "Nearby Player Count"
+
+    -- Special keyword variables (generated per keyword)
+    for _, kw in ipairs(KEYWORDS) do
+        local name = KEYWORD_EN[kw] or kw
+        local skipCard = SKIP_CARD_VARS[kw]
+
+        if not skipCard then
+            t["Special." .. kw .. ".FriendlyHandCount"] = "Friendly " .. name .. " Cards in Hand"
+            t["Special." .. kw .. ".FriendlyDeckCount"] = "Friendly " .. name .. " Cards in Deck"
+            t["Special." .. kw .. ".EnemyHandCount"] = "Enemy " .. name .. " Cards in Hand"
+            t["Special." .. kw .. ".EnemyDeckCount"] = "Enemy " .. name .. " Cards in Deck"
+            t["Special." .. kw .. ".HasDeploy"] = "Deck Has " .. name
+            t["Special." .. kw .. ".DeployCount"] = "Number of " .. name .. " in Deck"
+            t["Special." .. kw .. ".EnemyHasDeploy"] = "Enemy Deck Has " .. name
+            t["Special." .. kw .. ".EnemyDeployCount"] = "Number of " .. name .. " in Enemy Deck"
+            t["Special." .. kw .. ".FieldHasDeploy"] = name .. " on Field"
+            -- Special object group variables
+            t["Special." .. kw .. ".HandCards"] = name .. " Cards in Hand"
+            t["Special." .. kw .. ".EnemyHandCards"] = "Enemy " .. name .. " Cards in Hand"
+            t["Special." .. kw .. ".FieldCards"] = name .. " Cards on Field"
+            t["Special." .. kw .. ".FriendlyFieldCards"] = "Friendly " .. name .. " Cards on Field"
+            t["Special." .. kw .. ".EnemyFieldCards"] = "Enemy " .. name .. " Cards on Field"
+        end
+
+        t["Special." .. kw .. ".FieldUnitCount"] = name .. " Units on Field"
+        t["Special." .. kw .. ".HasFriendlyUnit"] = "Friendly " .. name .. " Unit Present"
+        t["Special." .. kw .. ".FriendlyUnitCount"] = "Friendly " .. name .. " Unit Count"
+        t["Special." .. kw .. ".HasEnemyUnit"] = "Enemy " .. name .. " Unit Present"
+        t["Special." .. kw .. ".EnemyUnitCount"] = "Enemy " .. name .. " Unit Count"
+    end
+end
+
 -- 初始化翻译表
 InitChineseTranslations()
+InitEnglishTranslations()
+
+-- 界面语言变化时同步变量显示名语言
+if KARDS.Lang and KARDS.Lang.OnLanguageChanged then
+    KARDS.Lang.OnLanguageChanged(function()
+        KARDS.VarLib.CurrentLanguage = KARDS.Lang.GetLanguage()
+    end)
+end
 
 -- 获取变量的显示名称
 -- @param varPath string 变量路径，如 "Battle.Turn"
@@ -943,43 +1093,80 @@ local DEVELOP_UNIT_TYPES = {
     infantry = "步兵", tank = "坦克", artillery = "火炮", fighter = "战斗机", bomber = "轰炸机", any = "任意",
 }
 
+-- 开发池英文维度名（与上方中文表同构；unit 维度留空以拼出
+-- 「Deck German Infantry」而非「Deck German Unit Infantry」）
+local DEVELOP_POSITIONS_EN = {
+    deck = "Deck",
+    top = "Top of Deck",
+    bottom = "Bottom of Deck",
+}
+local DEVELOP_OWN_EN = {
+    own_command       = "Own Order",
+    own_elite_command = "Own Elite Order",
+    own_elite_unit    = "Own Elite Unit",
+}
+local DEVELOP_COUNTRIES_EN = {
+    usa = "American", germany = "German", soviet = "Soviet", uk = "British", japan = "Japanese",
+    italy = "Italian", france = "French", poland = "Polish", any = "Any",
+}
+local DEVELOP_TYPES_EN = {
+    unit = "", command = "Order", any = "Any",
+}
+local DEVELOP_UNIT_TYPES_EN = {
+    infantry = "Infantry", tank = "Tank", artillery = "Artillery", fighter = "Fighter", bomber = "Bomber", any = "Any",
+}
+
 -- 开发池显示名拼接（2026-10-02 用户规格）：去掉「·」分隔与「任意」维度，只保留位置与具体维度
 -- 直接相连，如「卡组中德国单位步兵」「卡组中」。「任意国籍」与「任意」两档不写入名称。
+-- 英文维度以空格连接（如「Deck German Infantry」），故 sep 由调用方指定。
+-- @param sep string 维度连接符（中文为空串，英文为空格）
 -- @param ... string 各维度显示名（依次为位置、国籍、卡牌类型、单位类型）
 -- @return string 拼接后的显示名
-local function PoolDisplayName(...)
+local function PoolDisplayName(sep, ...)
     local parts = {}
     for i = 1, select("#", ...) do
         local seg = select(i, ...)
-        if type(seg) == "string" and seg ~= "" and not seg:find("任意") then
+        if type(seg) == "string" and seg ~= "" and seg ~= "Any" and not seg:find("任意") then
             parts[#parts + 1] = seg
         end
     end
-    return table.concat(parts)
+    return table.concat(parts, sep)
 end
 
 -- 枚举全部开发池组合路径（含显示名）
+-- @param positions table|nil 位置维度名表（省略用中文表）
+-- @param countries table|nil 国籍维度名表（省略用中文表）
+-- @param types table|nil 卡牌类型维度名表（省略用中文表）
+-- @param unitTypes table|nil 单位类型维度名表（省略用中文表）
+-- @param own table|nil 本国三档维度名表（省略用中文表）
+-- @param sep string|nil 维度连接符（省略为空串）
 -- @return table { [path] = displayName, ... }（路径为 Battle.DevelopPool.xxx）
-local function BuildDevelopPoolPaths()
+local function BuildDevelopPoolPaths(positions, countries, types, unitTypes, own, sep)
+    positions = positions or DEVELOP_POSITIONS
+    countries = countries or DEVELOP_COUNTRIES
+    types = types or DEVELOP_TYPES
+    unitTypes = unitTypes or DEVELOP_UNIT_TYPES
+    own = own or DEVELOP_OWN
+    sep = sep or ""
     local paths = {}
     -- 卡组中/卡组顶/卡组底 × 国籍 × 卡牌类型 × 单位类型（仅单位维度有单位类型）
-    for posKey, posCN in pairs(DEVELOP_POSITIONS) do
-        for countryKey, countryCN in pairs(DEVELOP_COUNTRIES) do
-            for typeKey, typeCN in pairs(DEVELOP_TYPES) do
+    for posKey, posCN in pairs(positions) do
+        for countryKey, countryCN in pairs(countries) do
+            for typeKey, typeCN in pairs(types) do
                 if typeKey == "unit" then
-                    for utKey, utCN in pairs(DEVELOP_UNIT_TYPES) do
+                    for utKey, utCN in pairs(unitTypes) do
                         paths["Battle.DevelopPool." .. posKey .. "." .. countryKey .. ".unit." .. utKey]
-                            = PoolDisplayName(posCN, countryCN, "单位", utCN)
+                            = PoolDisplayName(sep, posCN, countryCN, typeCN, utCN)
                     end
                 else
                     paths["Battle.DevelopPool." .. posKey .. "." .. countryKey .. "." .. typeKey]
-                        = PoolDisplayName(posCN, countryCN, typeCN)
+                        = PoolDisplayName(sep, posCN, countryCN, typeCN)
                 end
             end
         end
     end
     -- 本国指令 / 本国精英指令 / 本国精英单位（本国 = 该方玩家主国国籍）
-    for ownKey, ownCN in pairs(DEVELOP_OWN) do
+    for ownKey, ownCN in pairs(own) do
         paths["Battle.DevelopPool." .. ownKey] = ownCN
     end
     return paths
@@ -1064,6 +1251,12 @@ end
 -- 供 {$} 卡牌对象选择器列出与运行时 BuildDisplayIndex 反查路径。
 for path, display in pairs(BuildDevelopPoolPaths()) do
     KARDS.VarLib.Translations["zh-CN"][path] = display
+end
+-- 开发池对象组变量英文显示名（路径与中文表一一对应，维度以空格连接）
+for path, display in pairs(BuildDevelopPoolPaths(
+    DEVELOP_POSITIONS_EN, DEVELOP_COUNTRIES_EN, DEVELOP_TYPES_EN,
+    DEVELOP_UNIT_TYPES_EN, DEVELOP_OWN_EN, " ")) do
+    KARDS.VarLib.Translations["en"][path] = display
 end
 
 -- 对象/对象组变量收集结果存储（按牌桌隔离）

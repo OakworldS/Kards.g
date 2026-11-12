@@ -57,7 +57,7 @@ local function ForEachPair(listA, listB, fn)
 end
 
 -- 前线占领被拒（2026-09-26 缺口 F）：效果拉入前线软失败时广播提示事件，
--- 实体层订阅 FrontlineDenied 后向发起方下发「前线已被敌方占领」提示。
+-- 实体层订阅 FrontlineDenied 后向发起方下发「前线已被敌方占领」提示（reason.frontline_occupied）。
 -- @param ctx  table 执行上下文
 -- @param card table 效果发起卡牌句柄（发起方槽位取其 GetOwner）
 local function FireFrontlineDenied(ctx, card)
@@ -191,7 +191,7 @@ local ActionActs = {
                         { player = owner })
                 end
                 FireJoinField(ctx, t)
-            elseif reason == "前线已被敌方占领" then
+            elseif reason == "frontline_occupied" then
                 FireFrontlineDenied(ctx, card)
             end
         end
@@ -236,6 +236,20 @@ local ActionActs = {
         local ok = false
         for _, t in ipairs(targets) do
             if KARDS.Battle:SimControl(t, card:GetOwner()) then ok = true end
+        end
+        return ok
+    end,
+    -- 收缴（readme 7.2.2 + 2026-10-15 用户规格）：目标单位阵亡并收缴进发起方手牌
+    -- @param ctx     table 执行上下文（本执行器未使用）
+    -- @param card    table 效果发起卡牌句柄（收缴方 = 其归属）
+    -- @param targets table 目标单位列表（逐个调用 KARDS.Battle:SimConfiscate）
+    -- @return boolean 是否至少成功收缴一个目标
+    confiscate = function(ctx, card, targets)
+        local newOwner = (card and card.GetOwner and card:GetOwner()) or nil
+        if not newOwner then return false end
+        local ok = false
+        for _, t in ipairs(targets) do
+            if KARDS.Battle:SimConfiscate(t, newOwner) then ok = true end
         end
         return ok
     end,
@@ -294,7 +308,7 @@ local ActionActs = {
             if okOne then
                 ok = true
                 FireJoinField(ctx, u) -- 召唤入场走加入动画（2026-09-26 缺口 F）
-            elseif reason == "前线已被敌方占领" then
+            elseif reason == "frontline_occupied" then
                 -- 前线被敌方占领：软失败并向发起方提示（2026-09-26 缺口 F）
                 FireFrontlineDenied(ctx, card)
             end

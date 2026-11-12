@@ -18,6 +18,10 @@
 --   行 3407~3542（OpenFunctionSubEditor）
 --   行 4072~4315（GenerateFunctionDescription）
 local INE = KARDS.CardEditor.IndependentNodeEditor
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 --[[
     打开或激活函数变量的子编辑器。
     当用户新增函数变量或点击已有函数变量时调用。
@@ -97,7 +101,7 @@ function INE:OpenFunctionSubEditor(editor, varName, arrayItem)
     -- 设置标题为函数名称
     local subEditor = INE.Editors[subID]
     if subEditor then
-        subEditor.customTitle = "函数: " .. varName
+        subEditor.customTitle = T("editor.nodesub.function_title", varName)
         -- 所有函数子编辑器不可被关闭按钮关闭（由父编辑器管理）
         subEditor._isFunctionSubEditor = true
         -- 保存父编辑器和函数变量名引用，便于"编辑基础函数"等功能使用

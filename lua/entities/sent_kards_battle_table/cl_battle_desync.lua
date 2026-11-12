@@ -23,6 +23,9 @@ if not CLIENT then return end
 
 KARDS = KARDS or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 弹窗状态（非 nil 即显示中）：{ ent = 牌桌实体, rect = 按钮矩形 }
 KARDS.Desync = nil
 
@@ -152,15 +155,15 @@ hook.Add("HUDPaint", "KardsDesyncHUD", function()
     surface.SetDrawColor(199, 135, 54, 255)
     surface.DrawOutlinedRect(px, py, pw, ph, 2)
     -- 标题
-    draw.SimpleText("错误", "SourceHan_Heavy_40", cx, py + 58,
+    draw.SimpleText(T("battle.desync.title"), "SourceHan_Heavy_40", cx, py + 58,
         Color(235, 110, 110), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     -- 正文
-    draw.SimpleText("服务端与客户端不同步，需要重启客户端", "SourceHan_Heavy_28", cx, py + 128,
+    draw.SimpleText(T("battle.desync.body"), "SourceHan_Heavy_28", cx, py + 128,
         Color(235, 233, 225), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     -- 重启按钮（与重新调度「确认」同款，160×52）
     local bw, bh = 160, 52
     local bx, by = cx, py + ph - 58
-    KARDS.DrawActionButton(bx, by, bw, bh, "重启")
+    KARDS.DrawActionButton(bx, by, bw, bh, T("battle.desync.restart"))
     ds.rect = { x = bx - bw / 2, y = by - bh / 2, w = bw, h = bh }
 end)
 

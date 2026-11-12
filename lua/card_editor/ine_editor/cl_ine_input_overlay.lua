@@ -15,6 +15,9 @@
 ]]
 local INE = KARDS.CardEditor.IndependentNodeEditor
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 处理叠加窗口交互：窗口拖拽、按钮点击、对话框输入等
 -- 提取为大函数以减轻 HandleInput 的 GLua 局部变量限制压力
 function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
@@ -42,22 +45,22 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
             if input.IsMouseDown(MOUSE_LEFT) and not editor._overlayCloseClicked then
                 editor._overlayCloseClicked = true
                 -- 处理嵌套对话框的关闭（等同于取消）
-                if INE.ArrayVarNestedCtx then
-                    if INE.ArrayVarNestedCtx.tempType == "f" and hoveredWindow.id == "ine_funcvar_dialog" then
+                if INE:ArrayVarCtx(editor).nestedCtx then
+                    if INE:ArrayVarCtx(editor).nestedCtx.tempType == "f" and hoveredWindow.id == "ine_funcvar_dialog" then
                         -- 清理临时函数变量
-                        local ctx = INE.ArrayVarNestedCtx
+                        local ctx = INE:ArrayVarCtx(editor).nestedCtx
                         local funcVars = editor.variables["f"] or {}
                         if funcVars[editor._numVarDialogIdx] then
                             table.remove(funcVars, editor._numVarDialogIdx)
                         end
                         editor._numVarDialogIdx = ctx.savedDialogIdx
                         editor._numVarDialogIsNew = ctx.savedIsNew
-                        INE.ArrayVarNestedCtx = nil
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
-                    elseif INE.ArrayVarNestedCtx.tempType == "g" and hoveredWindow.id == "ine_arrayvar_dialog" then
+                        INE:ArrayVarCtx(editor).nestedCtx = nil
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
+                    elseif INE:ArrayVarCtx(editor).nestedCtx.tempType == "g" and hoveredWindow.id == "ine_arrayvar_dialog" then
                         -- 清理临时数组变量
-                        local ctx = INE.ArrayVarNestedCtx
+                        local ctx = INE:ArrayVarCtx(editor).nestedCtx
                         local gVars = editor.variables["g"] or {}
                         if gVars[editor._numVarDialogIdx] then
                             table.remove(gVars, editor._numVarDialogIdx)
@@ -65,9 +68,9 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         local parentEditor = ctx.parentEditor
                         parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                         parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                        INE.ArrayVarNestedCtx = nil
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
+                        INE:ArrayVarCtx(editor).nestedCtx = nil
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
                         -- 重新打开父数组对话框
                         INE:ShowArrayVarDialog(parentEditor, ctx.savedDialogIdx)
                     end
@@ -194,9 +197,9 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         if data and data.nodes then
                             -- 反序列化并替换编辑器内容（复用 ImportEffectData，与卡牌加载联动同一套逻辑）
                             INE:ImportEffectData(editor, data)
-                            INE:AddNotification(editor, "导入成功！", Color(100, 255, 100), 3, true)
+                            INE:AddNotification(editor, T("editor.nodeoverlay.import_success"), Color(100, 255, 100), 3, true)
                         else
-                            INE:AddNotification(editor, "效果文件读取失败：" .. fileName, Color(255, 100, 100), 3)
+                            INE:AddNotification(editor, T("editor.nodeoverlay.import_failed", fileName), Color(255, 100, 100), 3)
                         end
                     end
                 end
@@ -213,40 +216,40 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vars = editor.variables["n"] or {}
                     local vd = vars[editor._numVarDialogIdx]
                     if vd then
-                        INE.NumVarFieldState.active = true
-                        INE.NumVarFieldState.field = "name"
-                        INE.NumVarFieldState.editorID = editor.panelID or editor.id
-                        INE.NumVarFieldState.varIdx = editor._numVarDialogIdx
-                        INE.NumVarFieldState.x = editor._numVarField_name.x
-                        INE.NumVarFieldState.y = editor._numVarField_name.y
-                        INE.NumVarFieldState.w = editor._numVarField_name.w
-                        INE.NumVarFieldState.h = editor._numVarField_name.h
+                        INE:Field(editor, "NumVar").active = true
+                        INE:Field(editor, "NumVar").field = "name"
+                        INE:Field(editor, "NumVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "NumVar").varIdx = editor._numVarDialogIdx
+                        INE:Field(editor, "NumVar").x = editor._numVarField_name.x
+                        INE:Field(editor, "NumVar").y = editor._numVarField_name.y
+                        INE:Field(editor, "NumVar").w = editor._numVarField_name.w
+                        INE:Field(editor, "NumVar").h = editor._numVarField_name.h
                     end
                 elseif editor._numVarField_iname and INE:IsPointInRect(mouseX, mouseY, editor._numVarField_iname) then
                     local vars = editor.variables["n"] or {}
                     local vd = vars[editor._numVarDialogIdx]
                     if vd then
-                        INE.NumVarFieldState.active = true
-                        INE.NumVarFieldState.field = "iname"
-                        INE.NumVarFieldState.editorID = editor.panelID or editor.id
-                        INE.NumVarFieldState.varIdx = editor._numVarDialogIdx
-                        INE.NumVarFieldState.x = editor._numVarField_iname.x
-                        INE.NumVarFieldState.y = editor._numVarField_iname.y
-                        INE.NumVarFieldState.w = editor._numVarField_iname.w
-                        INE.NumVarFieldState.h = editor._numVarField_iname.h
+                        INE:Field(editor, "NumVar").active = true
+                        INE:Field(editor, "NumVar").field = "iname"
+                        INE:Field(editor, "NumVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "NumVar").varIdx = editor._numVarDialogIdx
+                        INE:Field(editor, "NumVar").x = editor._numVarField_iname.x
+                        INE:Field(editor, "NumVar").y = editor._numVarField_iname.y
+                        INE:Field(editor, "NumVar").w = editor._numVarField_iname.w
+                        INE:Field(editor, "NumVar").h = editor._numVarField_iname.h
                     end
                 elseif editor._numVarField_val and INE:IsPointInRect(mouseX, mouseY, editor._numVarField_val) then
                     local vars = editor.variables["n"] or {}
                     local vd = vars[editor._numVarDialogIdx]
                     if vd then
-                        INE.NumVarFieldState.active = true
-                        INE.NumVarFieldState.field = "val"
-                        INE.NumVarFieldState.editorID = editor.panelID or editor.id
-                        INE.NumVarFieldState.varIdx = editor._numVarDialogIdx
-                        INE.NumVarFieldState.x = editor._numVarField_val.x
-                        INE.NumVarFieldState.y = editor._numVarField_val.y
-                        INE.NumVarFieldState.w = editor._numVarField_val.w
-                        INE.NumVarFieldState.h = editor._numVarField_val.h
+                        INE:Field(editor, "NumVar").active = true
+                        INE:Field(editor, "NumVar").field = "val"
+                        INE:Field(editor, "NumVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "NumVar").varIdx = editor._numVarDialogIdx
+                        INE:Field(editor, "NumVar").x = editor._numVarField_val.x
+                        INE:Field(editor, "NumVar").y = editor._numVarField_val.y
+                        INE:Field(editor, "NumVar").w = editor._numVarField_val.w
+                        INE:Field(editor, "NumVar").h = editor._numVarField_val.h
                     end
                 elseif editor._numVarConfirmRect and INE:IsPointInRect(mouseX, mouseY, editor._numVarConfirmRect) then
                     -- 确定前验证初始值是否为有效数字
@@ -255,35 +258,35 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     if vd then
                         local num = tonumber(vd.initialValue)
                         if num == nil then
-                            INE:AddNotification(editor, "初始值必须是有效数字", Color(255, 100, 100), 2)
+                            INE:AddNotification(editor, T("editor.nodeoverlay.initial_value_invalid"), Color(255, 100, 100), 2)
                             -- 激活初始值字段让用户修改
-                            INE.NumVarFieldState.active = true
-                            INE.NumVarFieldState.field = "val"
-                            INE.NumVarFieldState.editorID = editor.panelID or editor.id
-                            INE.NumVarFieldState.varIdx = editor._numVarDialogIdx
-                            INE.NumVarFieldState.x = editor._numVarField_val.x
-                            INE.NumVarFieldState.y = editor._numVarField_val.y
-                            INE.NumVarFieldState.w = editor._numVarField_val.w
-                            INE.NumVarFieldState.h = editor._numVarField_val.h
+                            INE:Field(editor, "NumVar").active = true
+                            INE:Field(editor, "NumVar").field = "val"
+                            INE:Field(editor, "NumVar").editorID = editor.panelID or editor.id
+                            INE:Field(editor, "NumVar").varIdx = editor._numVarDialogIdx
+                            INE:Field(editor, "NumVar").x = editor._numVarField_val.x
+                            INE:Field(editor, "NumVar").y = editor._numVarField_val.y
+                            INE:Field(editor, "NumVar").w = editor._numVarField_val.w
+                            INE:Field(editor, "NumVar").h = editor._numVarField_val.h
                         else
                             -- 确保存储为数字类型
                             vd.initialValue = num
                             -- 关闭前清理 DTextEntry
-                            local entry = INE.NumVarTextEntry
+                            local entry = INE:Entry(editor, "NumVar")
                             if entry and IsValid(entry) then entry:Remove() end
-                            INE.NumVarTextEntry = nil
-                            INE.NumVarFieldState.active = false
-                            INE.NumVarFieldState.editorID = nil
+                            INE:ClearEntry(editor, "NumVar")
+                            INE:Field(editor, "NumVar").active = false
+                            INE:Field(editor, "NumVar").editorID = nil
                             INE:CloseOverlayWindow(editor, "ine_numvar_dialog")
                         end
                     end
                 elseif editor._numVarCancelRect and INE:IsPointInRect(mouseX, mouseY, editor._numVarCancelRect) then
                     -- 取消时清理 DTextEntry
-                    local entry = INE.NumVarTextEntry
+                    local entry = INE:Entry(editor, "NumVar")
                     if entry and IsValid(entry) then entry:Remove() end
-                    INE.NumVarTextEntry = nil
-                    INE.NumVarFieldState.active = false
-                    INE.NumVarFieldState.editorID = nil
+                    INE:ClearEntry(editor, "NumVar")
+                    INE:Field(editor, "NumVar").active = false
+                    INE:Field(editor, "NumVar").editorID = nil
                     -- 取消时删除变量（若为新创建的，用 _numVarDialogIsNew 判别）
                     local vars = editor.variables["n"] or {}
                     if editor._numVarDialogIsNew and vars[editor._numVarDialogIdx] then
@@ -305,16 +308,16 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vd = vars[dataEditor._numVarDialogIdx]
                     if vd then
                         -- 停用参数输入框，确保只有一个 DTextEntry 激活
-                        INE.FuncParamFieldState.active = false
-                        INE.FuncVarFieldState.active = true
-                        INE.FuncVarFieldState.text = vd.name or ""
+                        INE:Field(dataEditor, "FuncParam").active = false
+                        INE:Field(dataEditor, "FuncVar").active = true
+                        INE:Field(dataEditor, "FuncVar").text = vd.name or ""
                         -- 使用 dataEditor ID 确保 Think 生命周期能正确找到变量数据
-                        INE.FuncVarFieldState.editorID = dataEditor.panelID or dataEditor.id
-                        INE.FuncVarFieldState.varIdx = dataEditor._numVarDialogIdx
-                        INE.FuncVarFieldState.x = editor._funcVarField_name.x
-                        INE.FuncVarFieldState.y = editor._funcVarField_name.y
-                        INE.FuncVarFieldState.w = editor._funcVarField_name.w
-                        INE.FuncVarFieldState.h = editor._funcVarField_name.h
+                        INE:Field(dataEditor, "FuncVar").editorID = dataEditor.panelID or dataEditor.id
+                        INE:Field(dataEditor, "FuncVar").varIdx = dataEditor._numVarDialogIdx
+                        INE:Field(dataEditor, "FuncVar").x = editor._funcVarField_name.x
+                        INE:Field(dataEditor, "FuncVar").y = editor._funcVarField_name.y
+                        INE:Field(dataEditor, "FuncVar").w = editor._funcVarField_name.w
+                        INE:Field(dataEditor, "FuncVar").h = editor._funcVarField_name.h
                         handled = true
                     end
                 end
@@ -337,8 +340,8 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                             editor._funcVarPendingParam = nil
                             editor._funcDialogSelectedType = nil
                             -- 清除参数输入框文本
-                            INE.FuncParamFieldState.text = ""
-                            local entry = INE.FuncParamTextEntry
+                            INE:Field(dataEditor, "FuncParam").text = ""
+                            local entry = INE:Entry(dataEditor, "FuncParam")
                             if entry and IsValid(entry) then
                                 entry:SetText("")
                             end
@@ -353,16 +356,16 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vd = vars[dataEditor._numVarDialogIdx]
                     if vd then
                         -- 停用函数名称输入框，确保只有一个 DTextEntry 激活
-                        INE.FuncVarFieldState.active = false
-                        INE.FuncParamFieldState.active = true
-                        INE.FuncParamFieldState.text = ""
+                        INE:Field(dataEditor, "FuncVar").active = false
+                        INE:Field(dataEditor, "FuncParam").active = true
+                        INE:Field(dataEditor, "FuncParam").text = ""
                         -- 使用 dataEditor ID 确保 Think 生命周期能正确找到变量数据
-                        INE.FuncParamFieldState.editorID = dataEditor.panelID or dataEditor.id
-                        INE.FuncParamFieldState.varIdx = dataEditor._numVarDialogIdx
-                        INE.FuncParamFieldState.x = editor._funcVarField_param.x
-                        INE.FuncParamFieldState.y = editor._funcVarField_param.y
-                        INE.FuncParamFieldState.w = editor._funcVarField_param.w
-                        INE.FuncParamFieldState.h = editor._funcVarField_param.h
+                        INE:Field(dataEditor, "FuncParam").editorID = dataEditor.panelID or dataEditor.id
+                        INE:Field(dataEditor, "FuncParam").varIdx = dataEditor._numVarDialogIdx
+                        INE:Field(dataEditor, "FuncParam").x = editor._funcVarField_param.x
+                        INE:Field(dataEditor, "FuncParam").y = editor._funcVarField_param.y
+                        INE:Field(dataEditor, "FuncParam").w = editor._funcVarField_param.w
+                        INE:Field(dataEditor, "FuncParam").h = editor._funcVarField_param.h
                         handled = true
                     end
                 end
@@ -372,13 +375,13 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vars = dataEditor.variables["f"] or {}
                     local vd = vars[dataEditor._numVarDialogIdx]
                     if vd then
-                        local paramText = INE.FuncParamFieldState and INE.FuncParamFieldState.text or ""
+                        local paramText = INE:Field(dataEditor, "FuncParam") and INE:Field(dataEditor, "FuncParam").text or ""
                         if paramText ~= "" then
                             -- 设置待确认参数名称，显示类型选择器
                             editor._funcVarPendingParam = paramText
                             editor._funcDialogSelectedType = "n"
-                            INE.FuncParamFieldState.text = ""
-                            local entry = INE.FuncParamTextEntry
+                            INE:Field(dataEditor, "FuncParam").text = ""
+                            local entry = INE:Entry(dataEditor, "FuncParam")
                             if entry and IsValid(entry) then
                                 entry:SetText("")
                             end
@@ -409,24 +412,24 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vd = vars[dataEditor._numVarDialogIdx]
                     if vd then
                         -- 清理 DTextEntry
-                        local entry1 = INE.FuncVarTextEntry
+                        local entry1 = INE:Entry(dataEditor, "FuncVar")
                         if entry1 and IsValid(entry1) then entry1:Remove() end
-                        INE.FuncVarTextEntry = nil
-                        INE.FuncVarFieldState.active = false
-                        INE.FuncVarFieldState.editorID = nil
-                        local entry2 = INE.FuncParamTextEntry
+                        INE:ClearEntry(dataEditor, "FuncVar")
+                        INE:Field(dataEditor, "FuncVar").active = false
+                        INE:Field(dataEditor, "FuncVar").editorID = nil
+                        local entry2 = INE:Entry(dataEditor, "FuncParam")
                         if entry2 and IsValid(entry2) then entry2:Remove() end
-                        INE.FuncParamTextEntry = nil
-                        INE.FuncParamFieldState.active = false
-                        INE.FuncParamFieldState.editorID = nil
+                        INE:ClearEntry(dataEditor, "FuncParam")
+                        INE:Field(dataEditor, "FuncParam").active = false
+                        INE:Field(dataEditor, "FuncParam").editorID = nil
                         -- 清除待确认参数状态
                         editor._funcVarPendingParam = nil
                         -- 清除数据编辑器引用
                         editor._funcDialogDataEditor = nil
 
                         -- 检测是否在数组变量嵌套创建上下文中
-                        if INE.ArrayVarNestedCtx and INE.ArrayVarNestedCtx.tempType == "f" then
-                            local ctx = INE.ArrayVarNestedCtx
+                        if INE:ArrayVarCtx(editor).nestedCtx and INE:ArrayVarCtx(editor).nestedCtx.tempType == "f" then
+                            local ctx = INE:ArrayVarCtx(editor).nestedCtx
                             local parentEditor = ctx.parentEditor
                             local parentVars = parentEditor.variables["g"] or {}
                             local parentVd = parentVars[ctx.parentVarIdx]
@@ -446,13 +449,13 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                                 table.remove(fVars, editor._numVarDialogIdx)
                             end
                             -- 清除父数组对话框的添加状态
-                            INE.ArrayVarPendingType = nil
-                            INE.ArrayVarItemValue = nil
+                            INE:ArrayVarCtx(editor).pendingType = nil
+                            INE:ArrayVarCtx(editor).itemValue = nil
                             -- 恢复父编辑器状态
                             local funcName = vd.name or "func"
                             parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                             parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                            INE.ArrayVarNestedCtx = nil
+                            INE:ArrayVarCtx(editor).nestedCtx = nil
                             -- 关闭函数对话框
                             INE:CloseOverlayWindow(editor, "ine_funcvar_dialog")
                             -- 使用数组项引用打开函数子编辑器，让用户编辑函数内部逻辑
@@ -477,37 +480,37 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 取消按钮
                 if not handled and editor._funcVarCancelRect and INE:IsPointInRect(mouseX, mouseY, editor._funcVarCancelRect) then
                     -- 清理 DTextEntry
-                    local entry1 = INE.FuncVarTextEntry
+                    local entry1 = INE:Entry(dataEditor, "FuncVar")
                     if entry1 and IsValid(entry1) then entry1:Remove() end
-                    INE.FuncVarTextEntry = nil
-                    INE.FuncVarFieldState.active = false
-                    INE.FuncVarFieldState.editorID = nil
-                    local entry2 = INE.FuncParamTextEntry
+                    INE:ClearEntry(dataEditor, "FuncVar")
+                    INE:Field(dataEditor, "FuncVar").active = false
+                    INE:Field(dataEditor, "FuncVar").editorID = nil
+                    local entry2 = INE:Entry(dataEditor, "FuncParam")
                     if entry2 and IsValid(entry2) then entry2:Remove() end
-                    INE.FuncParamTextEntry = nil
-                    INE.FuncParamFieldState.active = false
-                    INE.FuncParamFieldState.editorID = nil
+                    INE:ClearEntry(dataEditor, "FuncParam")
+                    INE:Field(dataEditor, "FuncParam").active = false
+                    INE:Field(dataEditor, "FuncParam").editorID = nil
                     -- 清除待确认参数状态
                     editor._funcVarPendingParam = nil
                     -- 清除数据编辑器引用
                     editor._funcDialogDataEditor = nil
 
                     -- 检测是否在数组变量嵌套创建上下文中
-                    if INE.ArrayVarNestedCtx and INE.ArrayVarNestedCtx.tempType == "f" then
-                        local ctx = INE.ArrayVarNestedCtx
+                    if INE:ArrayVarCtx(editor).nestedCtx and INE:ArrayVarCtx(editor).nestedCtx.tempType == "f" then
+                        local ctx = INE:ArrayVarCtx(editor).nestedCtx
                         -- 移除临时函数变量
                         local funcVars = dataEditor.variables["f"] or {}
                         if funcVars[dataEditor._numVarDialogIdx] then
                             table.remove(funcVars, dataEditor._numVarDialogIdx)
                         end
                         -- 清除父数组对话框的添加状态
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
                         -- 恢复父编辑器状态
                         local parentEditor = ctx.parentEditor
                         parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                         parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                        INE.ArrayVarNestedCtx = nil
+                        INE:ArrayVarCtx(editor).nestedCtx = nil
                         -- 关闭函数对话框
                         INE:CloseOverlayWindow(editor, "ine_funcvar_dialog")
                         handled = true
@@ -532,14 +535,14 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 名称字段点击
                 if not handled and editor._arrayVarField_name and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarField_name) then
                     if vd then
-                        INE.ArrayVarFieldState.active = true
-                        INE.ArrayVarFieldState.field = "name"
-                        INE.ArrayVarFieldState.editorID = editor.panelID or editor.id
-                        INE.ArrayVarFieldState.varIdx = editor._numVarDialogIdx
-                        INE.ArrayVarFieldState.x = editor._arrayVarField_name.x
-                        INE.ArrayVarFieldState.y = editor._arrayVarField_name.y
-                        INE.ArrayVarFieldState.w = editor._arrayVarField_name.w
-                        INE.ArrayVarFieldState.h = editor._arrayVarField_name.h
+                        INE:Field(editor, "ArrayVar").active = true
+                        INE:Field(editor, "ArrayVar").field = "name"
+                        INE:Field(editor, "ArrayVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "ArrayVar").varIdx = editor._numVarDialogIdx
+                        INE:Field(editor, "ArrayVar").x = editor._arrayVarField_name.x
+                        INE:Field(editor, "ArrayVar").y = editor._arrayVarField_name.y
+                        INE:Field(editor, "ArrayVar").w = editor._arrayVarField_name.w
+                        INE:Field(editor, "ArrayVar").h = editor._arrayVarField_name.h
                         handled = true
                     end
                 end
@@ -547,14 +550,14 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 内部名称字段点击
                 if not handled and editor._arrayVarField_iname and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarField_iname) then
                     if vd then
-                        INE.ArrayVarFieldState.active = true
-                        INE.ArrayVarFieldState.field = "iname"
-                        INE.ArrayVarFieldState.editorID = editor.panelID or editor.id
-                        INE.ArrayVarFieldState.varIdx = editor._numVarDialogIdx
-                        INE.ArrayVarFieldState.x = editor._arrayVarField_iname.x
-                        INE.ArrayVarFieldState.y = editor._arrayVarField_iname.y
-                        INE.ArrayVarFieldState.w = editor._arrayVarField_iname.w
-                        INE.ArrayVarFieldState.h = editor._arrayVarField_iname.h
+                        INE:Field(editor, "ArrayVar").active = true
+                        INE:Field(editor, "ArrayVar").field = "iname"
+                        INE:Field(editor, "ArrayVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "ArrayVar").varIdx = editor._numVarDialogIdx
+                        INE:Field(editor, "ArrayVar").x = editor._arrayVarField_iname.x
+                        INE:Field(editor, "ArrayVar").y = editor._arrayVarField_iname.y
+                        INE:Field(editor, "ArrayVar").w = editor._arrayVarField_iname.w
+                        INE:Field(editor, "ArrayVar").h = editor._arrayVarField_iname.h
                         handled = true
                     end
                 end
@@ -575,15 +578,15 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- "添加项"按钮点击
                 if not handled and editor._arrayVarAddBtn and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarAddBtn) then
                     if vd then
-                        INE.ArrayVarPendingType = "n"
-                        INE.ArrayVarItemValue = nil
-                        INE.ArrayVarFieldState.active = false
+                        INE:ArrayVarCtx(editor).pendingType = "n"
+                        INE:ArrayVarCtx(editor).itemValue = nil
+                        INE:Field(editor, "ArrayVar").active = false
                         handled = true
                     end
                 end
 
                 -- 类型按钮点击
-                if not handled and INE.ArrayVarPendingType and editor._arrayVarTypeBtns then
+                if not handled and INE:ArrayVarCtx(editor).pendingType and editor._arrayVarTypeBtns then
                     if vd then
                         local clickedType = nil
                         for typeId, btnRect in pairs(editor._arrayVarTypeBtns) do
@@ -595,22 +598,22 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         if clickedType then
                             if clickedType == "f" or clickedType == "g" or clickedType == "e" then
                                 -- 复杂类型：呼出该类型变量的创建窗口
-                                INE.ArrayVarFieldState.active = false
-                                -- 复杂类型不需要设置 ArrayVarPendingType，否则嵌套对话框会错误显示类型选择器
-                                -- 嵌套对话框应由 ArrayVarNestedCtx 管理状态
+                                INE:Field(editor, "ArrayVar").active = false
+                                -- 复杂类型不需要设置数组变量上下文的待选类型，否则嵌套对话框会错误显示类型选择器
+                                -- 嵌套对话框应由数组变量上下文的 nestedCtx 管理状态
                                 -- 保存当前数组对话框状态
                                 local savedDialogIdx = editor._numVarDialogIdx
                                 local savedIsNew = editor._numVarDialogIsNew
                                 if clickedType == "f" then
                                     -- 创建临时函数变量并打开函数创建对话框
-                                    INE.ArrayVarPendingType = nil
-                                    INE.ArrayVarItemValue = nil
+                                    INE:ArrayVarCtx(editor).pendingType = nil
+                                    INE:ArrayVarCtx(editor).itemValue = nil
                                     local funcVars = editor.variables["f"] or {}
                                     local tempFunc = {name = "", params = {}}
                                     table.insert(funcVars, tempFunc)
                                     editor.variables["f"] = funcVars
                                     local tempIdx = #funcVars
-                                    INE.ArrayVarNestedCtx = {
+                                    INE:ArrayVarCtx(editor).nestedCtx = {
                                         parentEditor = editor,
                                         parentVarIdx = savedDialogIdx,
                                         tempType = "f",
@@ -623,14 +626,14 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                                     INE:ShowFuncVarDialog(editor, tempIdx)
                                 elseif clickedType == "e" then
                                     -- 创建临时卡牌对象变量并打开卡牌对象创建对话框
-                                    INE.ArrayVarPendingType = nil
-                                    INE.ArrayVarItemValue = nil
+                                    INE:ArrayVarCtx(editor).pendingType = nil
+                                    INE:ArrayVarCtx(editor).itemValue = nil
                                     local cardVars = editor.variables["e"] or {}
                                     local tempCard = {name = "", internalName = "", _mode = "empty"}
                                     table.insert(cardVars, tempCard)
                                     editor.variables["e"] = cardVars
                                     local tempIdx = #cardVars
-                                    INE.ArrayVarNestedCtx = {
+                                    INE:ArrayVarCtx(editor).nestedCtx = {
                                         parentEditor = editor,
                                         parentVarIdx = savedDialogIdx,
                                         tempType = "e",
@@ -643,14 +646,14 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                                     INE:ShowCardVarDialog(editor, tempIdx)
                                 else -- clickedType == "g"
                                     -- 创建临时数组变量并打开数组创建对话框（递归）
-                                    INE.ArrayVarPendingType = nil
-                                    INE.ArrayVarItemValue = nil
+                                    INE:ArrayVarCtx(editor).pendingType = nil
+                                    INE:ArrayVarCtx(editor).itemValue = nil
                                     local arrayVars = editor.variables["g"] or {}
                                     local tempArr = {name = "", internalName = "", items = {}}
                                     table.insert(arrayVars, tempArr)
                                     editor.variables["g"] = arrayVars
                                     local tempIdx = #arrayVars
-                                    INE.ArrayVarNestedCtx = {
+                                    INE:ArrayVarCtx(editor).nestedCtx = {
                                         parentEditor = editor,
                                         parentVarIdx = savedDialogIdx,
                                         tempType = "g",
@@ -664,8 +667,8 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                                 end
                             else
                                 -- 简单类型：当前内联输入行为
-                                INE.ArrayVarPendingType = clickedType
-                                INE.ArrayVarItemValue = ""
+                                INE:ArrayVarCtx(editor).pendingType = clickedType
+                                INE:ArrayVarCtx(editor).itemValue = ""
                             end
                             handled = true
                         end
@@ -673,50 +676,50 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 end
 
                 -- 布尔值按钮点击
-                if not handled and INE.ArrayVarPendingType == "p" then
+                if not handled and INE:ArrayVarCtx(editor).pendingType == "p" then
                     if editor._arrayVarField_boolTrue and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarField_boolTrue) then
-                        INE.ArrayVarItemValue = true
+                        INE:ArrayVarCtx(editor).itemValue = true
                         handled = true
                     elseif editor._arrayVarField_boolFalse and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarField_boolFalse) then
-                        INE.ArrayVarItemValue = false
+                        INE:ArrayVarCtx(editor).itemValue = false
                         handled = true
                     end
                 end
 
                 -- 值输入框点击（val_n/val_t）
-                if not handled and INE.ArrayVarPendingType and editor._arrayVarField_val and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarField_val) then
+                if not handled and INE:ArrayVarCtx(editor).pendingType and editor._arrayVarField_val and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarField_val) then
                     if vd then
-                        local fieldType = (INE.ArrayVarPendingType == "n") and "val_n" or "val_t"
-                        INE.ArrayVarFieldState.active = true
-                        INE.ArrayVarFieldState.field = fieldType
-                        INE.ArrayVarFieldState.editorID = editor.panelID or editor.id
-                        INE.ArrayVarFieldState.varIdx = editor._numVarDialogIdx
-                        INE.ArrayVarFieldState.x = editor._arrayVarField_val.x
-                        INE.ArrayVarFieldState.y = editor._arrayVarField_val.y
-                        INE.ArrayVarFieldState.w = editor._arrayVarField_val.w
-                        INE.ArrayVarFieldState.h = editor._arrayVarField_val.h
+                        local fieldType = (INE:ArrayVarCtx(editor).pendingType == "n") and "val_n" or "val_t"
+                        INE:Field(editor, "ArrayVar").active = true
+                        INE:Field(editor, "ArrayVar").field = fieldType
+                        INE:Field(editor, "ArrayVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "ArrayVar").varIdx = editor._numVarDialogIdx
+                        INE:Field(editor, "ArrayVar").x = editor._arrayVarField_val.x
+                        INE:Field(editor, "ArrayVar").y = editor._arrayVarField_val.y
+                        INE:Field(editor, "ArrayVar").w = editor._arrayVarField_val.w
+                        INE:Field(editor, "ArrayVar").h = editor._arrayVarField_val.h
                         handled = true
                     end
                 end
 
                 -- "确认添加"按钮（仅对简单类型 n/p/t/e 生效）
-                if not handled and INE.ArrayVarPendingType and editor._arrayVarAddConfirmRect and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarAddConfirmRect) then
+                if not handled and INE:ArrayVarCtx(editor).pendingType and editor._arrayVarAddConfirmRect and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarAddConfirmRect) then
                     if vd then
-                        local itemType = INE.ArrayVarPendingType
+                        local itemType = INE:ArrayVarCtx(editor).pendingType
                         local itemValue = nil
                         if itemType == "n" then
-                            itemValue = tonumber(INE.ArrayVarItemValue) or 0
+                            itemValue = tonumber(INE:ArrayVarCtx(editor).itemValue) or 0
                         elseif itemType == "t" then
-                            itemValue = tostring(INE.ArrayVarItemValue or "")
+                            itemValue = tostring(INE:ArrayVarCtx(editor).itemValue or "")
                         elseif itemType == "p" then
-                            itemValue = (INE.ArrayVarItemValue == true)
+                            itemValue = (INE:ArrayVarCtx(editor).itemValue == true)
                         end
                         local newItem = {type = itemType, value = itemValue}
                         vd.items = vd.items or {}
                         table.insert(vd.items, newItem)
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
-                        INE.ArrayVarFieldState.active = false
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
+                        INE:Field(editor, "ArrayVar").active = false
                         handled = true
                     end
                 end
@@ -724,8 +727,8 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 确定按钮
                 if not handled and editor._arrayVarConfirmRect and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarConfirmRect) then
                     -- 检测是否在数组变量嵌套创建上下文中
-                    if INE.ArrayVarNestedCtx and INE.ArrayVarNestedCtx.tempType == "g" then
-                        local ctx = INE.ArrayVarNestedCtx
+                    if INE:ArrayVarCtx(editor).nestedCtx and INE:ArrayVarCtx(editor).nestedCtx.tempType == "g" then
+                        local ctx = INE:ArrayVarCtx(editor).nestedCtx
                         local parentEditor = ctx.parentEditor
                         local parentVars = parentEditor.variables["g"] or {}
                         local parentVd = parentVars[ctx.parentVarIdx]
@@ -737,14 +740,14 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                             table.insert(parentVd.items, newItem)
                         end
                         -- 清理当前对话框的 DTextEntry
-                        local entry = INE.ArrayVarTextEntry
+                        local entry = INE:Entry(editor, "ArrayVar")
                         if entry and IsValid(entry) then entry:Remove() end
-                        INE.ArrayVarTextEntry = nil
-                        INE.ArrayVarFieldState.active = false
-                        INE.ArrayVarFieldState.editorID = nil
+                        INE:ClearEntry(editor, "ArrayVar")
+                        INE:Field(editor, "ArrayVar").active = false
+                        INE:Field(editor, "ArrayVar").editorID = nil
                         -- 清除父数组对话框的添加状态
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
                         -- 移除临时数组变量
                         local gVars = editor.variables["g"] or {}
                         if gVars[editor._numVarDialogIdx] then
@@ -753,7 +756,7 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         -- 恢复父编辑器状态
                         parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                         parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                        INE.ArrayVarNestedCtx = nil
+                        INE:ArrayVarCtx(editor).nestedCtx = nil
                         -- 关闭当前（嵌套）数组对话框
                         INE:CloseOverlayWindow(editor, "ine_arrayvar_dialog")
                         -- 重新打开父数组对话框（被嵌套对话框覆盖了）
@@ -763,13 +766,13 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     end
 
                     if vd then
-                        local entry = INE.ArrayVarTextEntry
+                        local entry = INE:Entry(editor, "ArrayVar")
                         if entry and IsValid(entry) then entry:Remove() end
-                        INE.ArrayVarTextEntry = nil
-                        INE.ArrayVarFieldState.active = false
-                        INE.ArrayVarFieldState.editorID = nil
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
+                        INE:ClearEntry(editor, "ArrayVar")
+                        INE:Field(editor, "ArrayVar").active = false
+                        INE:Field(editor, "ArrayVar").editorID = nil
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
                         vd.items = vd.items or {}
                         if #vd.items == 0 then
                             table.insert(vd.items, {type = "n", value = 0})
@@ -783,14 +786,14 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 取消按钮
                 if not handled and editor._arrayVarCancelRect and INE:IsPointInRect(mouseX, mouseY, editor._arrayVarCancelRect) then
                     -- 检测是否在数组变量嵌套创建上下文中
-                    if INE.ArrayVarNestedCtx and INE.ArrayVarNestedCtx.tempType == "g" then
-                        local ctx = INE.ArrayVarNestedCtx
+                    if INE:ArrayVarCtx(editor).nestedCtx and INE:ArrayVarCtx(editor).nestedCtx.tempType == "g" then
+                        local ctx = INE:ArrayVarCtx(editor).nestedCtx
                         -- 清理当前对话框的 DTextEntry
-                        local entry = INE.ArrayVarTextEntry
+                        local entry = INE:Entry(editor, "ArrayVar")
                         if entry and IsValid(entry) then entry:Remove() end
-                        INE.ArrayVarTextEntry = nil
-                        INE.ArrayVarFieldState.active = false
-                        INE.ArrayVarFieldState.editorID = nil
+                        INE:ClearEntry(editor, "ArrayVar")
+                        INE:Field(editor, "ArrayVar").active = false
+                        INE:Field(editor, "ArrayVar").editorID = nil
                         -- 移除临时数组变量
                         local gVars = editor.variables["g"] or {}
                         if gVars[editor._numVarDialogIdx] then
@@ -800,7 +803,7 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         local parentEditor = ctx.parentEditor
                         parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                         parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                        INE.ArrayVarNestedCtx = nil
+                        INE:ArrayVarCtx(editor).nestedCtx = nil
                         -- 关闭当前（嵌套）数组对话框
                         INE:CloseOverlayWindow(editor, "ine_arrayvar_dialog")
                         -- 重新打开父数组对话框（被嵌套对话框覆盖了）
@@ -809,13 +812,13 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         return
                     end
 
-                    local entry = INE.ArrayVarTextEntry
+                    local entry = INE:Entry(editor, "ArrayVar")
                     if entry and IsValid(entry) then entry:Remove() end
-                    INE.ArrayVarTextEntry = nil
-                    INE.ArrayVarFieldState.active = false
-                    INE.ArrayVarFieldState.editorID = nil
-                    INE.ArrayVarPendingType = nil
-                    INE.ArrayVarItemValue = nil
+                    INE:ClearEntry(editor, "ArrayVar")
+                    INE:Field(editor, "ArrayVar").active = false
+                    INE:Field(editor, "ArrayVar").editorID = nil
+                    INE:ArrayVarCtx(editor).pendingType = nil
+                    INE:ArrayVarCtx(editor).itemValue = nil
                     local gVars = editor.variables["g"] or {}
                     if editor._numVarDialogIsNew and gVars[editor._numVarDialogIdx] then
                         table.remove(gVars, editor._numVarDialogIdx)
@@ -828,25 +831,25 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 卡牌对象对话框交互
                 -- 变量名编辑
                 if editor._cardVarField_name and INE:IsPointInRect(mouseX, mouseY, editor._cardVarField_name) then
-                    INE.CardVarFieldState.active = true
-                    INE.CardVarFieldState.field = "name"
-                    INE.CardVarFieldState.editorID = editor.panelID or editor.id
-                    INE.CardVarFieldState.varIdx = editor._numVarDialogIdx
-                    INE.CardVarFieldState.x = editor._cardVarField_name.x
-                    INE.CardVarFieldState.y = editor._cardVarField_name.y
-                    INE.CardVarFieldState.w = editor._cardVarField_name.w
-                    INE.CardVarFieldState.h = editor._cardVarField_name.h
+                    INE:Field(editor, "CardVar").active = true
+                    INE:Field(editor, "CardVar").field = "name"
+                    INE:Field(editor, "CardVar").editorID = editor.panelID or editor.id
+                    INE:Field(editor, "CardVar").varIdx = editor._numVarDialogIdx
+                    INE:Field(editor, "CardVar").x = editor._cardVarField_name.x
+                    INE:Field(editor, "CardVar").y = editor._cardVarField_name.y
+                    INE:Field(editor, "CardVar").w = editor._cardVarField_name.w
+                    INE:Field(editor, "CardVar").h = editor._cardVarField_name.h
                     handled = true
                 -- 内部变量名编辑
                 elseif editor._cardVarField_internalName and INE:IsPointInRect(mouseX, mouseY, editor._cardVarField_internalName) then
-                    INE.CardVarFieldState.active = true
-                    INE.CardVarFieldState.field = "iname"
-                    INE.CardVarFieldState.editorID = editor.panelID or editor.id
-                    INE.CardVarFieldState.varIdx = editor._numVarDialogIdx
-                    INE.CardVarFieldState.x = editor._cardVarField_internalName.x
-                    INE.CardVarFieldState.y = editor._cardVarField_internalName.y
-                    INE.CardVarFieldState.w = editor._cardVarField_internalName.w
-                    INE.CardVarFieldState.h = editor._cardVarField_internalName.h
+                    INE:Field(editor, "CardVar").active = true
+                    INE:Field(editor, "CardVar").field = "iname"
+                    INE:Field(editor, "CardVar").editorID = editor.panelID or editor.id
+                    INE:Field(editor, "CardVar").varIdx = editor._numVarDialogIdx
+                    INE:Field(editor, "CardVar").x = editor._cardVarField_internalName.x
+                    INE:Field(editor, "CardVar").y = editor._cardVarField_internalName.y
+                    INE:Field(editor, "CardVar").w = editor._cardVarField_internalName.w
+                    INE:Field(editor, "CardVar").h = editor._cardVarField_internalName.h
                     handled = true
                 -- 空对象单选按钮
                 elseif editor._cardVarEmptyRadio and INE:IsPointInRect(mouseX, mouseY, editor._cardVarEmptyRadio) then
@@ -905,8 +908,8 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                         end
 
                         -- 检测是否在数组变量嵌套创建上下文中
-                        if INE.ArrayVarNestedCtx and INE.ArrayVarNestedCtx.tempType == "e" then
-                            local ctx = INE.ArrayVarNestedCtx
+                        if INE:ArrayVarCtx(editor).nestedCtx and INE:ArrayVarCtx(editor).nestedCtx.tempType == "e" then
+                            local ctx = INE:ArrayVarCtx(editor).nestedCtx
                             local parentEditor = ctx.parentEditor
                             local parentVars = parentEditor.variables["g"] or {}
                             local parentVd = parentVars[ctx.parentVarIdx]
@@ -931,29 +934,29 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                                 table.remove(cardVars, editor._numVarDialogIdx)
                             end
                             -- 清除父数组对话框的添加状态
-                            INE.ArrayVarPendingType = nil
-                            INE.ArrayVarItemValue = nil
+                            INE:ArrayVarCtx(editor).pendingType = nil
+                            INE:ArrayVarCtx(editor).itemValue = nil
                             -- 恢复父编辑器状态
                             parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                             parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                            INE.ArrayVarNestedCtx = nil
+                            INE:ArrayVarCtx(editor).nestedCtx = nil
                             -- 关闭卡牌对话框
-                            local cardEntry = INE.CardVarTextEntry
+                            local cardEntry = INE:Entry(editor, "CardVar")
                             if cardEntry and IsValid(cardEntry) then cardEntry:Remove() end
-                            INE.CardVarTextEntry = nil
-                            INE.CardVarFieldState.active = false
-                            INE.CardVarFieldState.editorID = nil
+                            INE:ClearEntry(editor, "CardVar")
+                            INE:Field(editor, "CardVar").active = false
+                            INE:Field(editor, "CardVar").editorID = nil
                             INE:CloseOverlayWindow(editor, "ine_cardvar_dialog")
                             handled = true
                             return
                         end
 
                         -- 清理 DTextEntry 状态
-                        local cardEntry = INE.CardVarTextEntry
+                        local cardEntry = INE:Entry(editor, "CardVar")
                         if cardEntry and IsValid(cardEntry) then cardEntry:Remove() end
-                        INE.CardVarTextEntry = nil
-                        INE.CardVarFieldState.active = false
-                        INE.CardVarFieldState.editorID = nil
+                        INE:ClearEntry(editor, "CardVar")
+                        INE:Field(editor, "CardVar").active = false
+                        INE:Field(editor, "CardVar").editorID = nil
 
                         -- 清理状态
                         editor._cardVarCardInfos = nil
@@ -966,37 +969,37 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                 -- 取消按钮
                 elseif editor._cardVarCancelRect and INE:IsPointInRect(mouseX, mouseY, editor._cardVarCancelRect) then
                     -- 检测是否在数组变量嵌套创建上下文中
-                    if INE.ArrayVarNestedCtx and INE.ArrayVarNestedCtx.tempType == "e" then
-                        local ctx = INE.ArrayVarNestedCtx
+                    if INE:ArrayVarCtx(editor).nestedCtx and INE:ArrayVarCtx(editor).nestedCtx.tempType == "e" then
+                        local ctx = INE:ArrayVarCtx(editor).nestedCtx
                         -- 移除临时卡牌对象变量
                         local cardVars = editor.variables["e"] or {}
                         if cardVars[editor._numVarDialogIdx] then
                             table.remove(cardVars, editor._numVarDialogIdx)
                         end
                         -- 清除父数组对话框的添加状态
-                        INE.ArrayVarPendingType = nil
-                        INE.ArrayVarItemValue = nil
+                        INE:ArrayVarCtx(editor).pendingType = nil
+                        INE:ArrayVarCtx(editor).itemValue = nil
                         -- 恢复父编辑器状态
                         local parentEditor = ctx.parentEditor
                         parentEditor._numVarDialogIdx = ctx.savedDialogIdx
                         parentEditor._numVarDialogIsNew = ctx.savedIsNew
-                        INE.ArrayVarNestedCtx = nil
+                        INE:ArrayVarCtx(editor).nestedCtx = nil
                         -- 关闭卡牌对话框
-                        local cardEntry = INE.CardVarTextEntry
+                        local cardEntry = INE:Entry(editor, "CardVar")
                         if cardEntry and IsValid(cardEntry) then cardEntry:Remove() end
-                        INE.CardVarTextEntry = nil
-                        INE.CardVarFieldState.active = false
-                        INE.CardVarFieldState.editorID = nil
+                        INE:ClearEntry(editor, "CardVar")
+                        INE:Field(editor, "CardVar").active = false
+                        INE:Field(editor, "CardVar").editorID = nil
                         INE:CloseOverlayWindow(editor, "ine_cardvar_dialog")
                         handled = true
                         return
                     end
                     -- 清理 DTextEntry 状态
-                    local cardEntry = INE.CardVarTextEntry
+                    local cardEntry = INE:Entry(editor, "CardVar")
                     if cardEntry and IsValid(cardEntry) then cardEntry:Remove() end
-                    INE.CardVarTextEntry = nil
-                    INE.CardVarFieldState.active = false
-                    INE.CardVarFieldState.editorID = nil
+                    INE:ClearEntry(editor, "CardVar")
+                    INE:Field(editor, "CardVar").active = false
+                    INE:Field(editor, "CardVar").editorID = nil
                     -- 取消时删除变量（若为新创建的）
                     local vars = editor.variables["e"] or {}
                     if editor._numVarDialogIsNew and vars[editor._numVarDialogIdx] then
@@ -1015,56 +1018,56 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vars = editor.variables["t"] or {}
                     local vd = vars[editor._stringVarDialogIdx]
                     if vd then
-                        INE.StringVarFieldState.active = true
-                        INE.StringVarFieldState.field = "name"
-                        INE.StringVarFieldState.editorID = editor.panelID or editor.id
-                        INE.StringVarFieldState.varIdx = editor._stringVarDialogIdx
-                        INE.StringVarFieldState.x = editor._stringVarField_name.x
-                        INE.StringVarFieldState.y = editor._stringVarField_name.y
-                        INE.StringVarFieldState.w = editor._stringVarField_name.w
-                        INE.StringVarFieldState.h = editor._stringVarField_name.h
+                        INE:Field(editor, "StringVar").active = true
+                        INE:Field(editor, "StringVar").field = "name"
+                        INE:Field(editor, "StringVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "StringVar").varIdx = editor._stringVarDialogIdx
+                        INE:Field(editor, "StringVar").x = editor._stringVarField_name.x
+                        INE:Field(editor, "StringVar").y = editor._stringVarField_name.y
+                        INE:Field(editor, "StringVar").w = editor._stringVarField_name.w
+                        INE:Field(editor, "StringVar").h = editor._stringVarField_name.h
                     end
                 elseif editor._stringVarField_iname and INE:IsPointInRect(mouseX, mouseY, editor._stringVarField_iname) then
                     local vars = editor.variables["t"] or {}
                     local vd = vars[editor._stringVarDialogIdx]
                     if vd then
-                        INE.StringVarFieldState.active = true
-                        INE.StringVarFieldState.field = "iname"
-                        INE.StringVarFieldState.editorID = editor.panelID or editor.id
-                        INE.StringVarFieldState.varIdx = editor._stringVarDialogIdx
-                        INE.StringVarFieldState.x = editor._stringVarField_iname.x
-                        INE.StringVarFieldState.y = editor._stringVarField_iname.y
-                        INE.StringVarFieldState.w = editor._stringVarField_iname.w
-                        INE.StringVarFieldState.h = editor._stringVarField_iname.h
+                        INE:Field(editor, "StringVar").active = true
+                        INE:Field(editor, "StringVar").field = "iname"
+                        INE:Field(editor, "StringVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "StringVar").varIdx = editor._stringVarDialogIdx
+                        INE:Field(editor, "StringVar").x = editor._stringVarField_iname.x
+                        INE:Field(editor, "StringVar").y = editor._stringVarField_iname.y
+                        INE:Field(editor, "StringVar").w = editor._stringVarField_iname.w
+                        INE:Field(editor, "StringVar").h = editor._stringVarField_iname.h
                     end
                 elseif editor._stringVarField_text and INE:IsPointInRect(mouseX, mouseY, editor._stringVarField_text) then
                     local vars = editor.variables["t"] or {}
                     local vd = vars[editor._stringVarDialogIdx]
                     if vd then
-                        INE.StringVarFieldState.active = true
-                        INE.StringVarFieldState.field = "text"
-                        INE.StringVarFieldState.editorID = editor.panelID or editor.id
-                        INE.StringVarFieldState.varIdx = editor._stringVarDialogIdx
-                        INE.StringVarFieldState.x = editor._stringVarField_text.x
-                        INE.StringVarFieldState.y = editor._stringVarField_text.y
-                        INE.StringVarFieldState.w = editor._stringVarField_text.w
-                        INE.StringVarFieldState.h = editor._stringVarField_text.h
+                        INE:Field(editor, "StringVar").active = true
+                        INE:Field(editor, "StringVar").field = "text"
+                        INE:Field(editor, "StringVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "StringVar").varIdx = editor._stringVarDialogIdx
+                        INE:Field(editor, "StringVar").x = editor._stringVarField_text.x
+                        INE:Field(editor, "StringVar").y = editor._stringVarField_text.y
+                        INE:Field(editor, "StringVar").w = editor._stringVarField_text.w
+                        INE:Field(editor, "StringVar").h = editor._stringVarField_text.h
                     end
                 elseif editor._stringVarConfirmRect and INE:IsPointInRect(mouseX, mouseY, editor._stringVarConfirmRect) then
                     -- 确定：关闭前清理 DTextEntry
-                    local entry = INE.StringVarTextEntry
+                    local entry = INE:Entry(editor, "StringVar")
                     if entry and IsValid(entry) then entry:Remove() end
-                    INE.StringVarTextEntry = nil
-                    INE.StringVarFieldState.active = false
-                    INE.StringVarFieldState.editorID = nil
+                    INE:ClearEntry(editor, "StringVar")
+                    INE:Field(editor, "StringVar").active = false
+                    INE:Field(editor, "StringVar").editorID = nil
                     INE:CloseOverlayWindow(editor, "ine_stringvar_dialog")
                 elseif editor._stringVarCancelRect and INE:IsPointInRect(mouseX, mouseY, editor._stringVarCancelRect) then
                     -- 取消时清理 DTextEntry
-                    local entry = INE.StringVarTextEntry
+                    local entry = INE:Entry(editor, "StringVar")
                     if entry and IsValid(entry) then entry:Remove() end
-                    INE.StringVarTextEntry = nil
-                    INE.StringVarFieldState.active = false
-                    INE.StringVarFieldState.editorID = nil
+                    INE:ClearEntry(editor, "StringVar")
+                    INE:Field(editor, "StringVar").active = false
+                    INE:Field(editor, "StringVar").editorID = nil
                     -- 取消时删除变量（若为新创建的）
                     local vars = editor.variables["t"] or {}
                     if editor._stringVarDialogIsNew and vars[editor._stringVarDialogIdx] then
@@ -1079,27 +1082,27 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     local vars = editor.variables["p"] or {}
                     local vd = vars[editor._boolVarDialogIdx]
                     if vd then
-                        INE.BoolVarFieldState.active = true
-                        INE.BoolVarFieldState.field = "name"
-                        INE.BoolVarFieldState.editorID = editor.panelID or editor.id
-                        INE.BoolVarFieldState.varIdx = editor._boolVarDialogIdx
-                        INE.BoolVarFieldState.x = editor._boolVarField_name.x
-                        INE.BoolVarFieldState.y = editor._boolVarField_name.y
-                        INE.BoolVarFieldState.w = editor._boolVarField_name.w
-                        INE.BoolVarFieldState.h = editor._boolVarField_name.h
+                        INE:Field(editor, "BoolVar").active = true
+                        INE:Field(editor, "BoolVar").field = "name"
+                        INE:Field(editor, "BoolVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "BoolVar").varIdx = editor._boolVarDialogIdx
+                        INE:Field(editor, "BoolVar").x = editor._boolVarField_name.x
+                        INE:Field(editor, "BoolVar").y = editor._boolVarField_name.y
+                        INE:Field(editor, "BoolVar").w = editor._boolVarField_name.w
+                        INE:Field(editor, "BoolVar").h = editor._boolVarField_name.h
                     end
                 elseif editor._boolVarField_iname and INE:IsPointInRect(mouseX, mouseY, editor._boolVarField_iname) then
                     local vars = editor.variables["p"] or {}
                     local vd = vars[editor._boolVarDialogIdx]
                     if vd then
-                        INE.BoolVarFieldState.active = true
-                        INE.BoolVarFieldState.field = "iname"
-                        INE.BoolVarFieldState.editorID = editor.panelID or editor.id
-                        INE.BoolVarFieldState.varIdx = editor._boolVarDialogIdx
-                        INE.BoolVarFieldState.x = editor._boolVarField_iname.x
-                        INE.BoolVarFieldState.y = editor._boolVarField_iname.y
-                        INE.BoolVarFieldState.w = editor._boolVarField_iname.w
-                        INE.BoolVarFieldState.h = editor._boolVarField_iname.h
+                        INE:Field(editor, "BoolVar").active = true
+                        INE:Field(editor, "BoolVar").field = "iname"
+                        INE:Field(editor, "BoolVar").editorID = editor.panelID or editor.id
+                        INE:Field(editor, "BoolVar").varIdx = editor._boolVarDialogIdx
+                        INE:Field(editor, "BoolVar").x = editor._boolVarField_iname.x
+                        INE:Field(editor, "BoolVar").y = editor._boolVarField_iname.y
+                        INE:Field(editor, "BoolVar").w = editor._boolVarField_iname.w
+                        INE:Field(editor, "BoolVar").h = editor._boolVarField_iname.h
                     end
                 elseif editor._boolVarField_true and INE:IsPointInRect(mouseX, mouseY, editor._boolVarField_true) then
                     local vars = editor.variables["p"] or {}
@@ -1115,19 +1118,19 @@ function INE:HandleOverlayInteraction(editor, mouseX, mouseY)
                     end
                 elseif editor._boolVarConfirmRect and INE:IsPointInRect(mouseX, mouseY, editor._boolVarConfirmRect) then
                     -- 确定：关闭前清理 DTextEntry
-                    local entry = INE.BoolVarTextEntry
+                    local entry = INE:Entry(editor, "BoolVar")
                     if entry and IsValid(entry) then entry:Remove() end
-                    INE.BoolVarTextEntry = nil
-                    INE.BoolVarFieldState.active = false
-                    INE.BoolVarFieldState.editorID = nil
+                    INE:ClearEntry(editor, "BoolVar")
+                    INE:Field(editor, "BoolVar").active = false
+                    INE:Field(editor, "BoolVar").editorID = nil
                     INE:CloseOverlayWindow(editor, "ine_boolvar_dialog")
                 elseif editor._boolVarCancelRect and INE:IsPointInRect(mouseX, mouseY, editor._boolVarCancelRect) then
                     -- 取消时清理 DTextEntry
-                    local entry = INE.BoolVarTextEntry
+                    local entry = INE:Entry(editor, "BoolVar")
                     if entry and IsValid(entry) then entry:Remove() end
-                    INE.BoolVarTextEntry = nil
-                    INE.BoolVarFieldState.active = false
-                    INE.BoolVarFieldState.editorID = nil
+                    INE:ClearEntry(editor, "BoolVar")
+                    INE:Field(editor, "BoolVar").active = false
+                    INE:Field(editor, "BoolVar").editorID = nil
                     -- 取消时删除变量（若为新创建的）
                     local vars = editor.variables["p"] or {}
                     if editor._boolVarDialogIsNew and vars[editor._boolVarDialogIdx] then

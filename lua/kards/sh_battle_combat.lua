@@ -307,7 +307,7 @@ function KARDS.Battle:RunChecks(mode, attacker, defender)
     for name, c in pairs(self.CheckRegistry[mode] or {}) do
         local ok, reason = c.check(self, attacker, defender)
         if not ok then
-            return false, reason or c.failMsg or ("检查未通过: " .. tostring(name))
+            return false, reason or c.failMsg or "check_failed"
         end
     end
     return true
@@ -321,75 +321,75 @@ KARDS.Battle:RegisterCheck("attack", "enemy_only",
     function(_, attacker, defender)
         if not attacker or not defender then return true end
         if attacker:GetOwner() == defender:GetOwner() then
-            return false, "不能攻击己方目标（友军归属校验）"
+            return false, "friendly_target"
         end
         return true
-    end, "不能攻击己方目标")
+    end, "friendly_target")
 KARDS.Battle:RegisterCheck("engage", "enemy_only",
     function(_, attacker, defender)
         if not attacker or not defender then return true end
         if attacker:GetOwner() == defender:GetOwner() then
-            return false, "不能与己方单位交战（友军归属校验）"
+            return false, "friendly_engage"
         end
         return true
-    end, "不能与己方单位交战")
+    end, "friendly_engage")
 -- 1) 单位本回合能否行动（被压制 / 刚部署且无闪击，readme 7.2.1 / 7.2.2）
 --    原因由 CanUnitAct 区分返回（2026-08-12）；failMsg 仅作兜底
 KARDS.Battle:RegisterCheck("attack", "can_act",
     function(b, attacker) return b:CanUnitAct(b.TableID, attacker) end,
-    "单位本回合不能行动")
+    "cannot_act")
 KARDS.Battle:RegisterCheck("engage", "can_act",
     function(b, attacker) return b:CanUnitAct(b.TableID, attacker) end,
-    "单位本回合不能行动")
+    "cannot_act")
 -- 2) 轰炸机拦截判定（敌阵线有战斗机 → 只能攻击战斗机；被守护战斗机 → 完全封锁，readme 7.3）
 KARDS.Battle:RegisterCheck("attack", "bomber_intercept",
     function(b, attacker, defender) return b:CanBomberAttackTarget(attacker, defender) end,
-    "轰炸机被拦截（敌方阵线战斗机，readme 7.3）")
+    "bomber_intercepted")
 KARDS.Battle:RegisterCheck("engage", "bomber_intercept",
     function(b, attacker, defender) return b:CanBomberAttackTarget(attacker, defender) end,
-    "轰炸机被拦截（敌方阵线战斗机，readme 7.3）")
+    "bomber_intercepted")
 -- 3) 词条目标限制（被守护 / 守护 / 烟幕，readme 7.2.1 / 7.2.2）
 KARDS.Battle:RegisterCheck("attack", "target_limit",
     function(b, attacker, defender) return b:CanAttackTarget(attacker, defender) end,
-    "目标受词条限制（被守护/守护/烟幕，readme 7.2.1/7.2.2）")
+    "target_limited")
 KARDS.Battle:RegisterCheck("engage", "target_limit",
     function(b, attacker, defender) return b:CanAttackTarget(attacker, defender) end,
-    "目标受词条限制（被守护/守护/烟幕，readme 7.2.1/7.2.2）")
+    "target_limited")
 -- 4) 攻击次数（奋战单位一回合可攻击两次，其余一次，readme 7.2.2）
 KARDS.Battle:RegisterCheck("attack", "attack_count",
     function(b, attacker) return b:CanUnitAttackNow(attacker) end,
-    "本回合攻击次数已用尽（奋战单位可攻击两次，readme 7.2.2）")
+    "attack_count_used")
 KARDS.Battle:RegisterCheck("engage", "attack_count",
     function(b, attacker) return b:CanUnitAttackNow(attacker) end,
-    "本回合攻击次数已用尽（奋战单位可攻击两次，readme 7.2.2）")
+    "attack_count_used")
 -- 5) 攻击消耗行动花费（隐蔽未揭示 → 行动花费为 1，readme 7.2.2）；不足拒绝
 KARDS.Battle:RegisterCheck("attack", "action_cost",
     function(b, attacker)
         local cost = b:GetActionCost(b.TableID, attacker)
         if not KARDS.CommandPoints:CanPay(b.TableID, attacker:GetOwner(), cost) then
-            return false, ("指挥点不足（需要行动花费 %s）"):format(tostring(cost))
+            return false, "not_enough_action_points|" .. tostring(cost)
         end
         return true
-    end, "指挥点不足（行动花费）")
+    end, "action_cost")
 KARDS.Battle:RegisterCheck("engage", "action_cost",
     function(b, attacker)
         local cost = b:GetActionCost(b.TableID, attacker)
         if not KARDS.CommandPoints:CanPay(b.TableID, attacker:GetOwner(), cost) then
-            return false, ("指挥点不足（需要行动花费 %s）"):format(tostring(cost))
+            return false, "not_enough_action_points|" .. tostring(cost)
         end
         return true
-    end, "指挥点不足（行动花费）")
+    end, "action_cost")
 -- 6) 交战专属：攻击方/防御方必须是单位卡（攻击总部不算交战，readme 7.1）
 KARDS.Battle:RegisterCheck("engage", "unit_types",
     function(_, attacker, defender)
         if not attacker or attacker:GetType() ~= "unit" then
-            return false, "攻击方必须是单位卡"
+            return false, "unit_types"
         end
         if not defender or defender:GetType() ~= "unit" then
-            return false, "攻击总部不算交战（readme 7.1）；防御方必须是单位卡"
+            return false, "unit_types"
         end
         return true
-    end, "攻击方/防御方必须是单位卡")
+    end, "unit_types")
 -- 7) 攻击距离（readme 7.3 单位类型规则：坦克/步兵只能攻击相邻战线的敌人）：
 --    仅坦克/步兵受阵线距离限制：友方支援阵线只能攻击前线单位（支援 → 支援拒绝）；
 --    前线只能攻击对方支援阵线单位（前线 → 前线拒绝，前线为共用单阵营阵线）。
@@ -404,13 +404,13 @@ KARDS.Battle:RegisterCheck("attack", "attack_range",
         local dzone = KARDS.Battlefield:FindCardZone(b.TableID, defender)
         if not dzone then return true end
         if azone == "support" and dzone == "support" then
-            return false, "攻击距离不够（支援阵线单位不能攻击敌方支援阵线目标）"
+            return false, "attack_range_support"
         end
         if azone == "frontline" and dzone == "frontline" then
-            return false, "攻击距离不够（前线单位只能攻击对方支援阵线单位）"
+            return false, "attack_range_frontline"
         end
         return true
-    end, "攻击距离不够（步兵/坦克只能攻击相邻战线的目标）")
+    end, "attack_range_generic")
 KARDS.Battle:RegisterCheck("engage", "attack_range",
     function(b, attacker, defender)
         local unitType = attacker.GetUnitType and attacker:GetUnitType() or nil
@@ -420,13 +420,13 @@ KARDS.Battle:RegisterCheck("engage", "attack_range",
         local dzone = KARDS.Battlefield:FindCardZone(b.TableID, defender)
         if not dzone then return true end
         if azone == "support" and dzone == "support" then
-            return false, "攻击距离不够（支援阵线单位不能攻击敌方支援阵线目标）"
+            return false, "attack_range_support"
         end
         if azone == "frontline" and dzone == "frontline" then
-            return false, "攻击距离不够（前线单位只能攻击对方支援阵线单位）"
+            return false, "attack_range_frontline"
         end
         return true
-    end, "攻击距离不够（步兵/坦克只能攻击相邻战线的目标）")
+    end, "attack_range_generic")
 -- 8) 本回合行动记录（readme 7.1：一个单位只能操作一次）：
 --    已移动的单位本回合不能攻击（移动/攻击互斥）；坦克移动至前线后可继续攻击（例外）。
 KARDS.Battle:RegisterCheck("attack", "turn_action",
@@ -434,19 +434,19 @@ KARDS.Battle:RegisterCheck("attack", "turn_action",
         local st = b.KeywordStates[b.TableID]
         if st and KARDS.KeywordStates.TurnAction.HasMoved(st, attacker)
             and not (attacker.GetUnitType and attacker:GetUnitType() == "tank") then
-            return false, "单位本回合已移动过（移动后不能攻击，坦克除外）"
+            return false, "move_after_attack"
         end
         return true
-    end, "单位本回合已移动过（移动后不能攻击，坦克除外）")
+    end, "move_after_attack")
 KARDS.Battle:RegisterCheck("engage", "turn_action",
     function(b, attacker)
         local st = b.KeywordStates[b.TableID]
         if st and KARDS.KeywordStates.TurnAction.HasMoved(st, attacker)
             and not (attacker.GetUnitType and attacker:GetUnitType() == "tank") then
-            return false, "单位本回合已移动过（移动后不能攻击，坦克除外）"
+            return false, "move_after_attack"
         end
         return true
-    end, "单位本回合已移动过（移动后不能攻击，坦克除外）")
+    end, "move_after_attack")
 
 -- ====================================================================
 -- 伤害结算（re.md B-H1：攻击/交战/伤害共用结算统一收口）
@@ -616,10 +616,26 @@ end
 local function AutoRemoveDead(self, ...)
     for i = 1, select("#", ...) do
         local card = select(i, ...)
-        if card and card:GetType() == "unit" and not card:IsAlive() then
+        -- 幂等守卫：已被其他路径（如收缴）移出战场的目标不再二次移除
+        if card and card:GetType() == "unit" and not card:IsAlive()
+            and KARDS.Battlefield:FindCardZone(self.TableID, card) then
             self:SimRemoveFromField(card, "death")
         end
     end
+end
+
+-- 收缴（readme 7.2.2 + 2026-10-15 用户规格）：攻击方带「收缴」词条且目标单位将被消灭时，
+-- 收缴目标（目标由 SimConfiscate 内部走阵亡流程，不再由此处 AutoRemoveDead 移除）。
+-- @param self     KARDS.Battle 骨架实例
+-- @param attacker table 攻击方卡牌句柄
+-- @param defender table 被攻击方卡牌句柄
+-- @return boolean 是否已收缴（true 时调用方无需再 AutoRemoveDead 该目标）
+local function TryConfiscateOnKill(self, attacker, defender)
+    if not attacker or not defender then return false end
+    if defender:GetType() ~= "unit" or defender:IsAlive() then return false end
+    if not self:HasActiveKeyword(self.TableID, attacker, "confiscate") then return false end
+    if not KARDS.Battlefield:FindCardZone(self.TableID, defender) then return false end
+    return self:SimConfiscate(defender, attacker:GetOwner())
 end
 
 --[[
@@ -633,12 +649,16 @@ end
     @return boolean 是否造成伤害（finalDmg > 0）
 ]]
 function KARDS.Battle:SimAttack(attacker, defender)
+    -- 本次攻击伤害（属性变更反制可改写 args.amount，见 sh_node_hooks.lua RegisterIntercept）
+    local dmg = attacker:GetStat("attack")
     -- 统一操作钩子（M1）：攻击可被反制拦截（主动卡 = 攻击方）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "attack", {
-        player = attacker and attacker:GetOwner(), card = attacker, targets = { defender },
-    }).intercepted then
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "attack", {
+        player = attacker and attacker:GetOwner(), card = attacker, targets = { defender }, amount = dmg,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("attack", attacker)
     end
+    dmg = math.max(0, math.floor(tonumber(opArgs.amount) or dmg))
     -- 前置检查流水线（re.md B-H1：检查器注册制，检查项可注册、可组合）
     local ok, reason = self:RunChecks("attack", attacker, defender)
     if not ok then
@@ -647,7 +667,6 @@ function KARDS.Battle:SimAttack(attacker, defender)
     end
     local actionCost = self:GetActionCost(self.TableID, attacker)
     local st = self.KeywordStates[self.TableID]
-    local dmg = attacker:GetStat("attack")
     local attackerChange = nil -- 发起者自身经受的数值变更（伏击反击）
 
     -- 隐蔽（readme 7.2.2 + 2026-08-13 用户规格）：发起攻击时先触发揭示事件（揭示
@@ -693,6 +712,8 @@ function KARDS.Battle:SimAttack(attacker, defender)
     -- 「钳击对象」数据点 = 攻击者（RunCardEffect 注入）。置于 AutoRemoveDead 之前：
     -- 钳击效果中消灭的单位由 AutoRemoveDead 统一收口离场。
     self:MaybeTriggerPincer(attacker)
+    -- 收缴（readme 7.2.2）：攻击方带「收缴」词条且目标将被消灭 → 收缴目标（先于 AutoRemoveDead）
+    TryConfiscateOnKill(self, attacker, defender)
     AutoRemoveDead(self, attacker, defender) -- 防御力 ≤0 的单位自动离场（readme 7.1 溢出伤害）
     -- 总部被摧毁判定（readme 7.1）：单位攻击总部（SimAttack）不经属性变更通知，
     -- 此处显式收口（CheckHQDestructionIn 幂等：非总部跳过 / 已判定无操作）
@@ -718,12 +739,18 @@ end
     @return boolean 是否造成伤害（finalDmg > 0；false 亦可能因参数非法）
 ]]
 function KARDS.Battle:SimEngage(attacker, defender)
+    -- 主伤害与反击伤害（属性变更反制只改写 args.amount，counterAmount 仅携带）
+    local mainDmg = attacker:GetStat("attack")
+    local counterDmg = defender:GetStat("attack")
     -- 统一操作钩子（M1）：交战可被反制拦截（主动卡 = 攻击方）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "engage", {
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "engage", {
         player = attacker and attacker:GetOwner(), card = attacker, targets = { defender },
-    }).intercepted then
+        amount = mainDmg, counterAmount = counterDmg,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("engage", attacker)
     end
+    mainDmg = math.max(0, math.floor(tonumber(opArgs.amount) or mainDmg))
     -- 前置检查流水线（含单位类型校验；re.md B-H1 检查器注册制）
     local ok, reason = self:RunChecks("engage", attacker, defender)
     if not ok then
@@ -747,7 +774,7 @@ function KARDS.Battle:SimEngage(attacker, defender)
     -- 主伤害结算（伤害修饰钩子 / 重甲 / 免疫 / 动员失去统一收口，re.md B-H1 resolveDamage）
     local finalDmg = 0
     if not ambushBlocked then
-        finalDmg = self:ResolveDamage(attacker, defender, attacker:GetStat("attack"),
+        finalDmg = self:ResolveDamage(attacker, defender, mainDmg,
             { applyArmor = true, applyMobilize = true })
     end
 
@@ -794,6 +821,8 @@ function KARDS.Battle:SimEngage(attacker, defender)
     -- 「钳击对象」数据点 = 攻击者（RunCardEffect 注入）。置于 AutoRemoveDead 之前：
     -- 钳击效果中消灭的单位由 AutoRemoveDead 统一收口离场。
     self:MaybeTriggerPincer(attacker)
+    -- 收缴（readme 7.2.2）：攻击方带「收缴」词条且目标将被消灭 → 收缴目标（先于 AutoRemoveDead）
+    TryConfiscateOnKill(self, attacker, defender)
     AutoRemoveDead(self, attacker, defender) -- 防御力 ≤0 的单位自动离场（readme 7.1 溢出伤害）
     -- 总部被摧毁判定（readme 7.1）：交战波及总部（防御方 / 被反击的进攻方）
     -- 不经属性变更通知，此处显式收口（CheckHQDestructionIn 幂等：非总部跳过）
@@ -824,17 +853,20 @@ function KARDS.Battle:SimFight(unitA, unitB)
         print("[Battle] SimFight 失败: 战斗双方必须是单位卡")
         return false
     end
-    -- 统一操作钩子（M1）：战斗可被反制拦截（主动卡 = 第一个参战单位）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "fight", {
-        player = unitA:GetOwner(), card = unitA, targets = { unitB },
-    }).intercepted then
-        return self:InterceptOperation("fight", unitA)
-    end
-
     -- 双方互扣等同对方攻击的防御（无视单位类型规则：炮兵/轰炸机也受战斗伤害）；
     -- 免疫（readme 7.2.1）：免疫单位不会受到伤害
+    -- 属性变更反制只改写对 B 的伤害 args.amount，对 A 的伤害 counterAmount 仅携带
     local dmgToB = self:HasActiveKeyword(self.TableID, unitB, "immune") and 0 or unitA:GetStat("attack")
     local dmgToA = self:HasActiveKeyword(self.TableID, unitA, "immune") and 0 or unitB:GetStat("attack")
+    -- 统一操作钩子（M1）：战斗可被反制拦截（主动卡 = 第一个参战单位）
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "fight", {
+        player = unitA:GetOwner(), card = unitA, targets = { unitB },
+        amount = dmgToB, counterAmount = dmgToA,
+    })
+    if opArgs.intercepted then
+        return self:InterceptOperation("fight", unitA)
+    end
+    dmgToB = math.max(0, math.floor(tonumber(opArgs.amount) or dmgToB))
     if dmgToB > 0 then
         unitB:ApplyChange("defense", "decrease", dmgToB)
         -- 飘字（2026-08-14）：战斗互扣伤害 → 双方防御减少红色飘字
@@ -867,11 +899,13 @@ end
 -- @param amount number 伤害量
 function KARDS.Battle:SimDealDamage(source, target, amount)
     -- 统一操作钩子（M1）：造成伤害可被反制拦截（主动卡 = 伤害来源，无来源时取目标）
-    if KARDS.EngineHooks.TriggerOperation(self.TableID, "deal_damage", {
-        card = source or target, targets = { target },
-    }).intercepted then
+    local opArgs = KARDS.EngineHooks.TriggerOperation(self.TableID, "deal_damage", {
+        card = source or target, targets = { target }, amount = amount,
+    })
+    if opArgs.intercepted then
         return self:InterceptOperation("deal_damage", source or target)
     end
+    amount = math.max(0, math.floor(tonumber(opArgs.amount) or amount))
     amount = self:ResolveDamage(source, target, amount)
     local affected = {}
     if amount > 0 then

@@ -27,6 +27,9 @@ KARDS = KARDS or {}
 KARDS.CardEditor = KARDS.CardEditor or {}
 KARDS.CardEditor.Canvas = KARDS.CardEditor.Canvas or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 动态材质缓存
 KARDS.CardEditor.Canvas.DynamicMaterials = KARDS.CardEditor.Canvas.DynamicMaterials or {}
 
@@ -188,9 +191,9 @@ function KARDS.CardEditor.Canvas.RenderAndSaveCard(appearance)
         
         -- 在聊天框显示
         if IsValid(LocalPlayer()) then
-            LocalPlayer():ChatPrint("卡牌渲染完成！")
-            LocalPlayer():ChatPrint("文件保存在 garrysmod/data/kards/cards/")
-            LocalPlayer():ChatPrint("动态材质已创建，可在游戏中使用")
+            LocalPlayer():ChatPrint(T("editor.render.card_rendered"))
+            LocalPlayer():ChatPrint(T("editor.render.files_saved"))
+            LocalPlayer():ChatPrint(T("editor.render.material_created"))
         end
         
         -- 记录本次渲染落盘路径（保存卡牌时"仅指向"复用，不再重复渲染；组卡/生成直接应用文件路径）。

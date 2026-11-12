@@ -19,6 +19,7 @@
 -- 此文件内容将剪切自 cl_ine_node_editor.lua 行 3546~4062
 -- 包含：DrawGlobalVarPage
 local INE = KARDS.CardEditor.IndependentNodeEditor
+local T = KARDS.Lang.T
 
 -- 编辑期当前卡牌是否为单位（固定变量 unitOnly 项展示判断；缺省视为单位）
 -- 依据 Canvas.EditorMode（unit/command/counter_command/headquarter/function）
@@ -228,7 +229,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                     if searchText ~= "" then
                         draw.SimpleText(searchText, font, searchBX + 8, y + searchH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     else
-                        draw.SimpleText("搜索变量...", font, searchBX + 8, y + searchH / 2,
+                        draw.SimpleText(T("editor.globalvar.search_placeholder"), font, searchBX + 8, y + searchH / 2,
                             isActiveSearch and Color(180, 180, 180) or Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     end
 
@@ -251,18 +252,18 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                          if inRect then
                              -- 激活此搜索框
                              editor._varSearchActiveType = typeId
-                             INE.VarSearchState.active = true
-                             INE.VarSearchState.text = searchText
-                             INE.VarSearchState.editorID = editor.panelID or editor.id
-                             INE.VarSearchState.typeId = typeId
-                             INE.VarSearchState.x = searchBX
-                             INE.VarSearchState.y = y
-                             INE.VarSearchState.w = searchBW
-                             INE.VarSearchState.h = searchH
+                             INE:Field(editor, "VarSearch").active = true
+                             INE:Field(editor, "VarSearch").text = searchText
+                             INE:Field(editor, "VarSearch").editorID = editor.panelID or editor.id
+                             INE:Field(editor, "VarSearch").typeId = typeId
+                             INE:Field(editor, "VarSearch").x = searchBX
+                             INE:Field(editor, "VarSearch").y = y
+                             INE:Field(editor, "VarSearch").w = searchBW
+                             INE:Field(editor, "VarSearch").h = searchH
                          elseif isActiveSearch then
                              -- 点击当前激活搜索框外部 → 取消激活
                              editor._varSearchActiveType = nil
-                             INE.VarSearchState.active = false
+                             INE:Field(editor, "VarSearch").active = false
                          end
                     end
                 end
@@ -287,7 +288,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                     end
                     -- 参数标题
                     if y >= sY and y <= sY + listClipH then
-                        draw.SimpleText("─ 参数:", "SourceHan_Heavy_10", sX + padL + 16, y + 4, Color(140, 140, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                        draw.SimpleText(T("editor.globalvar.param_section"), "SourceHan_Heavy_10", sX + padL + 16, y + 4, Color(140, 140, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
                     end
                     y = y + 6
                     for pi, param in ipairs(typeParams) do
@@ -307,7 +308,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                             INE.DrawDataTypeIcon(dt, sX + padL + 20, y + paramH / 2, 10)
                             -- 参数名
                             draw.SimpleText(param.name or "", "SourceHan_Heavy_12", sX + padL + 34, y + paramH / 2, Color(160, 160, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-                            draw.SimpleText("(参数)", "SourceHan_Heavy_10", sX + padL + 34 + 130, y + paramH / 2, Color(100, 100, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                            draw.SimpleText(T("editor.globalvar.param_tag"), "SourceHan_Heavy_10", sX + padL + 34 + 130, y + paramH / 2, Color(100, 100, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                         end
                         -- 注册交互区域（支持点击选中）
                         editor._interactiveRects[itemKey] = {x = sX + 4, y = y, w = sW - 8, h = paramH, paramIndex = pi, paramType = typeId, paramName = param.name}
@@ -320,7 +321,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
             -- 用户自定义变量（支持搜索过滤）
             if #vars == 0 then
                 if y >= sY and y <= sY + listClipH then
-                    draw.SimpleText("暂无变量", "SourceHan_Heavy_12", sX + sW / 2, y + 10, Color(120, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                    draw.SimpleText(T("editor.globalvar.no_variables"), "SourceHan_Heavy_12", sX + sW / 2, y + 10, Color(120, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 end
                 y = y + 20
             else
@@ -378,7 +379,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                                 local cardPreview = ""
                                 local mode = var._mode or "empty"
                                 if mode == "empty" then
-                                    cardPreview = " [空对象]"
+                                    cardPreview = T("editor.globalvar.empty_object_bracketed")
                                 elseif mode == "saved" and var.cardName and var.cardName ~= "" then
                                     cardPreview = " [" .. var.cardName .. "]"
                                 elseif mode == "saved" and var.cardFile then
@@ -403,7 +404,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
             local fixedVars = GetEditingFixedVars(typeId)
             if #fixedVars > 0 then
                 if y >= sY and y <= sY + listClipH then
-                    draw.SimpleText("─ 卡牌专属:", "SourceHan_Heavy_10", sX + padL + 16, y + 4, Color(140, 140, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                    draw.SimpleText(T("editor.globalvar.card_specific_section"), "SourceHan_Heavy_10", sX + padL + 16, y + 4, Color(140, 140, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
                 end
                 y = y + 6
                 for fi, fv in ipairs(fixedVars) do
@@ -426,7 +427,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                                 scope = "global",
                                 -- e 类型（自身）：预览显示当前卡牌
                                 cardMode = (typeId == "e") and "saved" or nil,
-                                cardName = (typeId == "e") and "当前卡牌" or nil,
+                                cardName = (typeId == "e") and T("editor.globalvar.current_card") or nil,
                                 cardAppearance = (typeId == "e") and KARDS.CardEditor.Canvas.CardAppearance or nil,
                             }
                         end
@@ -439,7 +440,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
 
                         INE.DrawDataTypeIcon(dataType, sX + padL + 16, y + varH / 2, 8)
                         draw.SimpleText(fv.name, "SourceHan_Heavy_12", sX + padL + 30, y + varH / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-                        draw.SimpleText("卡牌专属", "SourceHan_Heavy_10", sX + padL + 30 + 100, y + varH / 2, Color(120, 160, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                        draw.SimpleText(T("editor.globalvar.card_specific"), "SourceHan_Heavy_10", sX + padL + 30 + 100, y + varH / 2, Color(120, 160, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     end
 
                     editor._interactiveRects[itemKey] = {x = sX + 4, y = y, w = sW - 8, h = varH, varType = typeId, varName = fv.name, isFixed = true}
@@ -563,7 +564,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
     -- ============================================================
     do
         local varH = 20
-        local currentCardName = (KARDS.CardEditor.Canvas.CardAppearance and KARDS.CardEditor.Canvas.CardAppearance.name) or "新卡牌"
+        local currentCardName = (KARDS.CardEditor.Canvas.CardAppearance and KARDS.CardEditor.Canvas.CardAppearance.name) or T("editor.globalvar.new_card")
         local itemKey = "var_item_e_currentCard"
         local isSelected = (editor._selectedVarItem == itemKey)
 
@@ -577,7 +578,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                     y = y,
                     h = varH,
                     typeId = "e",
-                    name = "当前卡牌",
+                    name = T("editor.globalvar.current_card"),
                     internalName = currentCardName,
                     initialValue = nil,
                     cardMode = "saved",
@@ -598,7 +599,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                 INE.DrawDataTypeIcon(eDataType, sX + padL + 16, y + varH / 2, 8)
             end
 
-            draw.SimpleText("当前卡牌", "SourceHan_Heavy_12", sX + padL + 30, y + varH / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.globalvar.current_card"), "SourceHan_Heavy_12", sX + padL + 30, y + varH / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             draw.SimpleText("[" .. currentCardName .. "]", "SourceHan_Heavy_10", sX + padL + 30 + 100, y + varH / 2, Color(130, 130, 130), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
             editor._interactiveRects[itemKey] = {x = sX + 4, y = y, w = sW - 8, h = varH, varType = "e", varName = currentCardName, isCurrentCard = true}
@@ -615,9 +616,9 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
         local defaultHov = mx >= sX + 6 and mx <= sX + 6 + btnW and my >= btnY and my <= btnY + 28
         local undefaultHov = mx >= sX + sW - 6 - btnW and mx <= sX + sW - 6 and my >= btnY and my <= btnY + 28
         draw.RoundedBox(6, sX + 6, btnY, btnW, 28, defaultHov and Color(70, 100, 70) or Color(55, 65, 55))
-        draw.SimpleText("设为默认", "SourceHan_Heavy_12", sX + 6 + btnW/2, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.globalvar.set_default"), "SourceHan_Heavy_12", sX + 6 + btnW/2, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         draw.RoundedBox(6, sX + sW - 6 - btnW, btnY, btnW, 28, undefaultHov and Color(100, 60, 60) or Color(65, 55, 55))
-        draw.SimpleText("解除默认", "SourceHan_Heavy_12", sX + sW - 6 - btnW/2, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.globalvar.unset_default"), "SourceHan_Heavy_12", sX + sW - 6 - btnW/2, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         editor._interactiveRects["lib_set_default"] = {x = sX + 6, y = btnY, w = btnW, h = 28}
         editor._interactiveRects["lib_unset_default"] = {x = sX + sW - 6 - btnW, y = btnY, w = btnW, h = 28}
     end
@@ -711,7 +712,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                 local valueColor = Color(220, 220, 220, alpha)
 
                 -- 第1行：名称
-                draw.SimpleText("名称:", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                draw.SimpleText(T("editor.globalvar.preview_name_label"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                     labelColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 draw.SimpleText(currentHoverData.name, "SourceHan_Heavy_12", contentX + 45, contentY + rowH2 / 2,
                     valueColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -719,7 +720,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
 
                 -- 第2行：内部名
                 local iname = currentHoverData.internalName or "—"
-                draw.SimpleText("内部名:", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                draw.SimpleText(T("editor.globalvar.preview_internal_name_label"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                     labelColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 draw.SimpleText(iname, "SourceHan_Heavy_12", contentX + 45, contentY + rowH2 / 2,
                     valueColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -727,7 +728,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
 
                 if isFuncType then
                     -- 第3行（函数类型）：内容描述
-                    draw.SimpleText("内容描述:", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                    draw.SimpleText(T("editor.globalvar.preview_description_label"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                         labelColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     draw.SimpleText(functionDesc or "—", "SourceHan_Heavy_12", contentX + 45, contentY + rowH2 / 2,
                         valueColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -736,13 +737,13 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                     local cardMode = currentHoverData.cardMode or "empty"
                     local cardValText = "—"
                     if cardMode == "empty" then
-                        cardValText = "空对象"
+                        cardValText = T("editor.globalvar.empty_object")
                     elseif currentHoverData.cardName and currentHoverData.cardName ~= "" then
                         cardValText = currentHoverData.cardName
                     elseif currentHoverData.cardFile then
                         cardValText = currentHoverData.cardFile:gsub("%.json$", "")
                     end
-                    draw.SimpleText("卡牌值:", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                    draw.SimpleText(T("editor.globalvar.preview_card_value_label"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                         labelColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     draw.SimpleText(cardValText, "SourceHan_Heavy_12", contentX + 45, contentY + rowH2 / 2,
                         valueColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -760,7 +761,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                         end
                     end
                     local valText = (initVal ~= nil) and tostring(initVal) or "—"
-                    draw.SimpleText("初始值:", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                    draw.SimpleText(T("editor.globalvar.preview_initial_value_label"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                         labelColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     draw.SimpleText(valText, "SourceHan_Heavy_12", contentX + 45, contentY + rowH2 / 2,
                         valueColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -768,9 +769,9 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                 contentY = contentY + rowH2 + rowGap
 
                 -- 第4行：变量类型（全局/长期）
-                local scopeLabel = (currentHoverData.scope == "longterm") and "长期变量" or "全局变量"
+                local scopeLabel = (currentHoverData.scope == "longterm") and T("editor.globalvar.longterm_variable") or T("editor.globalvar.global_variable")
                 local scopeColor = (currentHoverData.scope == "longterm") and Color(255, 200, 120, alpha) or Color(150, 200, 255, alpha)
-                draw.SimpleText("变量类型:", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                draw.SimpleText(T("editor.globalvar.preview_variable_type_label"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                     labelColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 draw.SimpleText(scopeLabel, "SourceHan_Heavy_12", contentX + 45, contentY + rowH2 / 2,
                     scopeColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
@@ -778,7 +779,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
 
                 -- 第5行（仅默认变量）：不可修改
                 if currentHoverData.isDefault then
-                    draw.SimpleText("不可修改", "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
+                    draw.SimpleText(T("editor.globalvar.not_modifiable"), "SourceHan_Heavy_12", contentX, contentY + rowH2 / 2,
                         Color(255, 100, 100, alpha), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 end
 
@@ -794,7 +795,7 @@ function DrawGlobalVarPage(editor, sX, sY, sW, sH, mx, my)
                             false, false, false)
                     end)
                     if not ok then
-                        draw.SimpleText("预览失败", "SourceHan_Heavy_12", cpX + cardPreviewW/2, cpY + cardPreviewH/2,
+                        draw.SimpleText(T("editor.globalvar.preview_failed"), "SourceHan_Heavy_12", cpX + cardPreviewW/2, cpY + cardPreviewH/2,
                             Color(255, 80, 80), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                     end
                 end

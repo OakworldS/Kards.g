@@ -47,6 +47,14 @@ end
 local function LoadSharedFiles()
     KARDS.CardEditor:Log("Loading shared files...")
 
+    -- 多语言基础设施（2026-10-17）：语言判定 + T() 查表 + 文本表。
+    -- 置于加载链最前，保证后续任何模块（含核心数据结构）都能直接使用 KARDS.Lang.T()
+    include("kards/sh_lang.lua")
+
+    -- 牌桌消息收发契约（2026-11-08）：声明式字段表驱动收发，见
+    -- docs/adr/0007-牌桌消息收发契约.md；紧跟 sh_lang 之后，Notify 依赖 KARDS.Lang.TFor
+    include("kards/sh_table_sync.lua")
+
     -- 核心数据结构
     include("card_editor/sh_card_data.lua")
 
@@ -55,6 +63,12 @@ local function LoadSharedFiles()
 
     -- 核心共享代码
     include("card_editor/sh_core.lua")
+
+    -- 输入路由共享引擎（2026-11-08，ADR 0004）：纯 Lua，不依赖 GMod API
+    include("card_editor/sh_input_router.lua")
+
+    -- 编辑器几何共享模块（2026-11-08，ADR 0006）：视图变换、端口矩形、曲线采样
+    include("card_editor/sh_editor_geometry.lua")
 
     -- 动画系统共享代码
     include("card_editor/sh_animation.lua")
@@ -70,6 +84,9 @@ local function LoadSharedFiles()
     -- 版本历史与素材来源（关于页数据源，2026-10-05）
     include("card_editor/sh_version_history.lua")
     include("card_editor/sh_source_credits.lua")
+
+    -- 贡献者名单（关于页贡献者卡数据源）
+    include("card_editor/sh_contributors.lua")
 
     -- 全局变量库（战斗系统基础，需在其他战斗模块之前加载）
     include("kards/sh_varlib.lua")
@@ -199,6 +216,9 @@ local function LoadClientFiles()
         -- 提前初始化 Canvas 命名空间，因为其他模块在加载时需要访问
         KARDS.CardEditor.Canvas = KARDS.CardEditor.Canvas or {}
 
+        -- 思源黑体空格补偿（渲染层统一处理，需在其他 UI 模块绘制前安装）
+        include("card_editor/cl_sourcehan_space.lua")
+
         -- 音效管理器
         include("card_editor/cl_audio_manager.lua")
 
@@ -208,6 +228,28 @@ local function LoadClientFiles()
         -- INE 节点编辑器系统
         KARDS.CardEditor:Log("Loading ine_editor/cl_ine_node_editor.lua...")
         include("card_editor/ine_editor/cl_ine_node_editor.lua")
+
+        -- INE 编辑器子系统：内联输入会话（透明 DTextEntry 生命周期唯一实现处，见 ADR 0010）
+        -- 必须在 cl_ine_node_editor.lua 之后、cl_ine_think.lua 之前
+        KARDS.CardEditor:Log("Loading ine_editor/cl_ine_inline_field.lua...")
+        include("card_editor/ine_editor/cl_ine_inline_field.lua")
+
+        -- INE 编辑器子系统：配置 DSL 解析（从 cl_ine_node_editor.lua 拆分，2026-10-18）
+        -- 必须紧跟核心文件：LogNewNode 注册模板时会调用 INE.ParseConfig
+        KARDS.CardEditor:Log("Loading ine_editor/cl_ine_config_parser.lua...")
+        include("card_editor/ine_editor/cl_ine_config_parser.lua")
+
+        -- INE 编辑器子系统：视图、缩放、通知、提示、浮层窗口（从 cl_ine_node_editor.lua 拆分）
+        KARDS.CardEditor:Log("Loading ine_editor/cl_ine_view.lua...")
+        include("card_editor/ine_editor/cl_ine_view.lua")
+
+        -- INE 编辑器子系统：每帧逻辑更新（从 cl_ine_node_editor.lua 拆分）
+        KARDS.CardEditor:Log("Loading ine_editor/cl_ine_think.lua...")
+        include("card_editor/ine_editor/cl_ine_think.lua")
+
+        -- INE 编辑器子系统：命中检测（从 cl_ine_node_editor.lua 拆分）
+        KARDS.CardEditor:Log("Loading ine_editor/cl_ine_hit_test.lua...")
+        include("card_editor/ine_editor/cl_ine_hit_test.lua")
 
         -- INE 编辑器子系统：统一槽系统（依赖 INE 命名空间）
         KARDS.CardEditor:Log("Loading ine_editor/cl_ine_unified_slot.lua...")
@@ -250,6 +292,15 @@ local function LoadClientFiles()
         end)
         if not inputOk then
             KARDS.CardEditor:Log("Error loading cl_ine_input_handling.lua: " .. tostring(inputErr), "ERROR")
+        end
+
+        -- INE 编辑器子系统：输入动作表（2026-11-08，ADR 0004，须在输入处理之后）
+        KARDS.CardEditor:Log("Loading ine_editor/cl_ine_input_actions.lua...")
+        local actionsOk, actionsErr = pcall(function()
+            include("card_editor/ine_editor/cl_ine_input_actions.lua")
+        end)
+        if not actionsOk then
+            KARDS.CardEditor:Log("Error loading cl_ine_input_actions.lua: " .. tostring(actionsErr), "ERROR")
         end
 
         -- INE 编辑器子系统：节点绘制

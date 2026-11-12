@@ -1,0 +1,78 @@
+[ti:Suomi marssii]
+[by:Kiss-Keailssas]
+[al:芬兰进行曲]
+说明：双语歌词格式：同一时间戳连写两行，第一行是芬兰语原文，第二行是中文译文。
+说明：显示时原文在上、译文在下，两行同为 65% 透明度。
+说明：时间轴由音频实测：人声 0:33 进入，节拍约 126 BPM，每句 8 拍即 3.8 秒；三个循环的起点为 0:33、1:22.5、2:12。
+[00:33.00]Ovat eessämme kunniamme päivät,
+[00:33.00]当我们的光荣日子来临
+[00:36.80]Meitä odottaa taistelu ja työ
+[00:36.80]我们面前是战斗与工作
+[00:40.60]Taas taaksemme rauhantoimet jäivät,
+[00:40.60]和平的使命已留在身后
+[00:44.40]Taas suomen leijona nyt lyö!
+[00:44.40]芬兰雄狮如今再次出击！
+[00:48.20]Siks nyt isketään,
+[00:48.20]所以现在冲锋吧，
+[00:52.00]eestä heimon tään
+[00:52.00]为了这个民族
+[00:55.80]Taas kalvat lyö,
+[00:55.80]刀剑再次挥动，
+[00:59.60]kun valjennut on kansamme yö.
+[00:59.60]当我们民族的夜已破晓。
+[01:03.40]Siis nyt eespäin,
+[01:03.40]所以现在前进吧，
+[01:07.20]veikot eespäin!
+[01:07.20]兄弟们前进！
+[01:11.00]Suomi marssii aamunkoittohon,
+[01:11.00]芬兰走向黎明，
+[01:14.80]voittohon!
+[01:14.80]走向胜利！
+[01:22.50]Ylös ryntäämme vainolaista vastaan,
+[01:22.50]冲向敌人奋勇出击，
+[01:26.30]Eestä kalliin maamme pohjoisen
+[01:26.30]为了我们宝贵的北方土地
+[01:30.10]Se ei konsanaan luovu karjalastaan
+[01:30.10]它永不放弃自己的卡累利阿
+[01:33.90]Meitä seuraavat henget isien!
+[01:33.90]先辈的英魂与我们同在！
+[01:37.70]Siks nyt isketään,
+[01:37.70]所以现在冲锋吧，
+[01:41.50]eestä heimon tään
+[01:41.50]为了这个民族
+[01:45.30]Taas kalvat lyö,
+[01:45.30]刀剑再次挥动，
+[01:49.10]kun valjennut on kansamme yö.
+[01:49.10]当我们民族的夜已破晓。
+[01:52.90]Siis nyt eespäin,
+[01:52.90]所以现在前进吧，
+[01:56.70]veikot eespäin!
+[01:56.70]兄弟们前进！
+[02:00.50]Suomi marssii aamunkoittohon,
+[02:00.50]芬兰走向黎明，
+[02:04.30]voittohon!
+[02:04.30]走向胜利！
+[02:12.00]Ja jos kohtalo niinkin käydä sallis
+[02:12.00]如果命运如此安排
+[02:15.80]Että kentällä sankarhaudan saan
+[02:15.80]让我在战场上获得英雄之墓
+[02:19.60]Niin et itkeä saa sä tyttö kallis
+[02:19.60]那么亲爱的姑娘，你无须哭泣
+[02:23.40]Minä kaaduinhan eestä synnyinmaan!
+[02:23.40]我是为祖国而倒下！
+[02:27.20]Siks nyt isketään,
+[02:27.20]所以现在冲锋吧，
+[02:31.00]eestä heimon tään
+[02:31.00]为了这个民族
+[02:34.80]Taas kalvat lyö,
+[02:34.80]刀剑再次挥动，
+[02:38.60]kun valjennut on kansamme yö.
+[02:38.60]当我们民族的夜已破晓。
+[02:42.40]Siis nyt eespäin,
+[02:42.40]所以现在前进吧，
+[02:46.20]veikot eespäin!
+[02:46.20]兄弟们前进！
+[02:50.00]Suomi marssii aamunkoittohon,
+[02:50.00]芬兰走向黎明，
+[02:53.80]voittohon!
+[02:53.80]走向胜利！

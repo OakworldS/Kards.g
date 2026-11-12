@@ -87,6 +87,10 @@ function ENT:BroadcastPickOffer(session)
     net.Broadcast()
 end
 
+-- 活跃三选一会话的牌桌集合（2026-10-16 性能优化）：BeginPick 登记、ResolvePick 结算
+-- 清除；超时检查只遍历此集合，不再每帧全量扫描所有牌桌实体
+local activePickTables = {}
+
 --[[
     开启一轮三选一：生成候选实体 → 广播 offer → 挂起等待选择。
 
@@ -145,6 +149,7 @@ function ENT:BeginPick(ply, slot, kind, candidates)
         co = co,
     }
     self._kardsPick = session
+    activePickTables[self] = true -- 登记进超时检查集合（结算时移除）
     -- 候选实体本 tick 刚创建，实体快照可能晚于 net 消息（同抽牌广播 0.1s 延迟先例）
     timer.Simple(0.1, function()
         if not IsValid(self) or self._kardsPick ~= session then return end
@@ -221,6 +226,7 @@ function ENT:ResolvePick(session, chosen, chosenIndex)
     if self._kardsPick == session then
         -- 协程已结束（未开启下一轮）：清空会话
         self._kardsPick = nil
+        activePickTables[self] = nil
     else
         -- 下一轮 BeginPick 已先行收尾并广播本轮结果，此处不重复
         return ok, err
@@ -266,18 +272,24 @@ net.Receive("KardsPickChoose", function(_, ply)
     ent:ResolvePick(session, chosen, index)
 end)
 
--- 超时与中断（每帧）：超时或发起者离桌时按第一张候选结算（该帧只处理一次）
+-- 超时与中断（每帧）：只遍历活跃会话集合（超时或发起者离桌时按第一张候选结算）
 hook.Add("Think", "KardsPickTimeoutCheck", function()
-    for _, ent in ipairs(ents.FindByClass("sent_kards_battle_table")) do
-        local session = ent._kardsPick
-        if session then
-            local expired = (CurTime() - session.at) > PickTimeout
-            local owner = session.ply
-            local ownerGone = not IsValid(owner)
-                or owner._kardsTable == nil
-                or owner._kardsTable.ent ~= ent
-            if expired or ownerGone then
-                ent:ResolvePick(session, session.candidates[1], 1)
+    for ent in pairs(activePickTables) do
+        if not IsValid(ent) then
+            activePickTables[ent] = nil
+        else
+            local session = ent._kardsPick
+            if not session then
+                activePickTables[ent] = nil -- 会话已被别处清空（自愈，防集合残留）
+            else
+                local expired = (CurTime() - session.at) > PickTimeout
+                local owner = session.ply
+                local ownerGone = not IsValid(owner)
+                    or owner._kardsTable == nil
+                    or owner._kardsTable.ent ~= ent
+                if expired or ownerGone then
+                    ent:ResolvePick(session, session.candidates[1], 1)
+                end
             end
         end
     end

@@ -28,6 +28,7 @@ local INE = KARDS.CardEditor.IndependentNodeEditor
 local Canvas = KARDS.CardEditor.Canvas
 local VarOp = KARDS.CardEditor.VarOpNodes or {}
 KARDS.CardEditor.VarOpNodes = VarOp
+local T = KARDS.Lang.T
 
 -- 标准组件颜色常量
 local COL_BG = Color(60, 60, 60)
@@ -87,19 +88,19 @@ local SET_OBJ_OPS = {
 }
 local SET_OBJ_EMPTY_OP = "设为"  -- 空对象固定操作
 -- "设置变量"节点：对象数值属性（值控件用 [lib] 数字槽，templates.md L1110）
-local SET_OBJ_NUM_PROPS = {花费 = true, 行动花费 = true, 攻击力 = true, 防御力 = true}
+local SET_OBJ_NUM_PROPS = {["花费"] = true, ["行动花费"] = true, ["攻击力"] = true, ["防御力"] = true}
 -- "设置变量"节点：对象插图属性（值控件用插图槽：粉 p 字符 + 图片下拉 + 悬停预览，templates.md L1112-1113）
-local SET_OBJ_IMG_PROPS = {卡牌插图 = true, 历史插图 = true}
+local SET_OBJ_IMG_PROPS = {["卡牌插图"] = true, ["历史插图"] = true}
 -- "设置变量"节点：对象文本槽属性（绿 t 字符 + 文本变量下拉/直接输入，templates.md L1114-1115）
 --   提示词原文写作"历史描述"，实际操作集为"历史文本"，此处按操作集应用
-local SET_OBJ_TEXT_SLOT_PROPS = {卡牌名称 = true, 描述 = true, 历史文本 = true}
+local SET_OBJ_TEXT_SLOT_PROPS = {["卡牌名称"] = true, ["描述"] = true, ["历史文本"] = true}
 -- "设置变量"节点：对象词条属性（词条多选组件，templates.md L1120-1121）
-local SET_OBJ_KEYWORD_PROPS = {词条 = true}
+local SET_OBJ_KEYWORD_PROPS = {["词条"] = true}
 
 -- 单位类型单选映射：显示名 → 卡牌接口 UnitTypes 内部名（readme 7.3）
 local UNIT_TYPE_CN_TO_EN = {
-    步兵 = "infantry", 炮兵 = "artillery", 坦克 = "tank",
-    战斗机 = "fighter", 轰炸机 = "bomber",
+    ["步兵"] = "infantry", ["炮兵"] = "artillery", ["坦克"] = "tank",
+    ["战斗机"] = "fighter", ["轰炸机"] = "bomber",
 }
 
 -- 子类型词库文件（data 下，每行一个子类型名，可随时文本调整）
@@ -218,8 +219,8 @@ local function GetAllKeywordKeys()
     local out = {}
     local function Add(list)
         for _, k in ipairs(list or {}) do
-            if not seen[k] and KARDS.CardEditor.Data.KeywordDisplayNames
-               and KARDS.CardEditor.Data.KeywordDisplayNames[k] then
+            if not seen[k] and KARDS.CardEditor.Data.GetKeywordName
+               and KARDS.CardEditor.Data.GetKeywordName(k) then
                 seen[k] = true
                 table.insert(out, k)
             end
@@ -255,8 +256,9 @@ end
 -- 下拉框选项与节点下方的按钮/行在屏幕上可能重叠（如"设置变量"最后一行操作下拉框的
 -- 首选项恰好落在 "+ 修改全局变量" 按钮区域），若不忽略，绘制阶段同一帧会重复触发
 -- 按钮/行点击，误开变量选择浮层。帧号比较自过期，无需手动重置。
-local function DropdownConsumed()
-    return Canvas._dropdownConsumedFrame == FrameNumber()
+local function DropdownConsumed(editor)
+    local session = editor and editor.session
+    return session ~= nil and session._dropdownConsumedFrame == FrameNumber()
 end
 
 -- ====================================================================================
@@ -474,8 +476,13 @@ local function DrawInputField(node, mX, mY, click, field, x, y, w, h, font, valu
     end
 
     -- 点击检测：激活/切换字段（拖动节点、下拉框展开或变量选择器浮层打开时忽略，避免误触）
-    if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown
-       and not Canvas.GlobalVarSelector and not DropdownConsumed() then
+    -- 本函数不接收编辑器实例，浮层状态经由节点反查所属会话
+    local fieldEditor = node and node.editor
+    local fieldSession = fieldEditor and fieldEditor.session
+    local selectorOpen = fieldSession and fieldSession.GlobalVarSelector
+    local dropdownOpen = fieldSession and fieldSession.ExpandedDropdown
+    if click and not Canvas.DraggingNode and not dropdownOpen
+       and not selectorOpen and not DropdownConsumed(fieldEditor) then
         if mX >= x and mX <= x + w and mY >= y and mY <= y + h then
             state.active = true
             state.node = node
@@ -727,7 +734,7 @@ end
 -- @param  filterType {string|nil} 仅显示指定类型（eval 右操作数同类型比较用）
 -- @param  extraGroups{table|nil}  附加分组（eval 左操作数的数据线输入）
 -- @param  onSelect   {function} 选中回调 onSelect(varName, dataType, v)
--- @param  onClose    {function} 关闭回调（浮层自身生命周期由 Canvas.GlobalVarSelector 管理）
+-- @param  onClose    {function} 关闭回调（浮层自身生命周期由 editor.session.GlobalVarSelector 管理）
 function VarOp.OpenGlobalVarSelector(editor, node, x, y, w, scale, mode, condIdx, side, filterType, extraGroups, onSelect, onClose)
     local rowH, navH, popupH = GVSLayout(scale)
     -- 屏幕边界钳制
@@ -738,11 +745,11 @@ function VarOp.OpenGlobalVarSelector(editor, node, x, y, w, scale, mode, condIdx
     if popupY + popupH > ScrH() - 8 then popupY = ScrH() - popupH - 8 end
     if popupY < 4 then popupY = 4 end
     -- 关闭可能已展开的普通下拉框，避免与浮层冲突
-    Canvas.ExpandedDropdown = nil
-    Canvas.ExpandedDropdownInfo = nil
+    editor.session.ExpandedDropdown = nil
+    editor.session.ExpandedDropdownInfo = nil
     -- 失活节点内联输入框（避免其 DTextEntry 与浮层搜索框 DTextEntry 抢焦点）
     if VarOp.InputState then VarOp.InputState.active = false end
-    Canvas.GlobalVarSelector = {
+    editor.session.GlobalVarSelector = {
         mode = mode, node = node, editor = editor,
         condIdx = condIdx, side = side,
         filterType = filterType, extraGroups = extraGroups,
@@ -762,21 +769,27 @@ end
 -- 布局：顶部搜索行（glua-input-field 透明 DTextEntry 捕获 IME 中文输入）→ 5×5 变量矩阵 → 底部翻页导航。
 -- 矩阵样式：彩色渐变边框 + 每行左侧类型色竖条 + 类型切换立即换行 + 类型块首行左侧类型标签；
 -- 搜索机制仿 NumericVarPopup：基于转译显示名过滤（大小写不敏感），搜索变化重置 page=1。
-function VarOp.DrawGlobalVarSelectorPopup()
-    local popup = Canvas.GlobalVarSelector
+function VarOp.DrawGlobalVarSelectorPopup(popup, ownerEditor)
+    -- 会话由浮层携带的来源编辑器确定，注册回调传入的编辑器作为兜底
+    local owner = (popup and popup.editor) or ownerEditor
+    local session = owner and owner.session
     -- 浮层关闭时兜底清理搜索框（Think 生命周期也会清理，双重保障）
     if not popup then
-        local e = Canvas._gvsSearchEntry
-        if e and IsValid(e) then e:Remove() end
-        Canvas._gvsSearchEntry = nil
+        if session then
+            local e = session._gvsSearchEntry
+            if e and IsValid(e) then e:Remove() end
+            session._gvsSearchEntry = nil
+        end
         return
     end
     local editor, node = popup.editor, popup.node
     if not editor or not node then
-        local e = Canvas._gvsSearchEntry
-        if e and IsValid(e) then e:Remove() end
-        Canvas._gvsSearchEntry = nil
-        Canvas.GlobalVarSelector = nil
+        if session then
+            local e = session._gvsSearchEntry
+            if e and IsValid(e) then e:Remove() end
+            session._gvsSearchEntry = nil
+            session.GlobalVarSelector = nil
+        end
         return
     end
 
@@ -961,7 +974,7 @@ function VarOp.DrawGlobalVarSelectorPopup()
         draw.RoundedBox(3, searchX, searchY, inputW, inputH, Color(40, 40, 40))
     end
     if searchText == "" then
-        draw.SimpleText("搜索变量...", smallFont, searchX + 6, searchY + inputH / 2,
+        draw.SimpleText(T("editor.node.search_variables"), smallFont, searchX + 6, searchY + inputH / 2,
             isSearchActive and Color(180, 180, 180) or Color(120, 120, 120),
             TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     else
@@ -997,7 +1010,7 @@ function VarOp.DrawGlobalVarSelectorPopup()
 
     if #rows == 0 then
         -- 空列表兜底（无变量或搜索无匹配）
-        draw.SimpleText(searchText ~= "" and "无匹配变量" or "(暂无变量)", smallFont,
+        draw.SimpleText(searchText ~= "" and T("editor.node.no_matching_variables") or T("editor.node.no_variables"), smallFont,
             px + pw / 2, contentY + contentH / 2,
             Color(100, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     else
@@ -1033,10 +1046,10 @@ function VarOp.DrawGlobalVarSelectorPopup()
                 if click and cellHov and not Canvas.DraggingNode then
                     if popup.onSelect then popup.onSelect(v.name, v.dataType, v) end
                     -- 选中后关闭浮层（先清理搜索框再置空）
-                    local e = Canvas._gvsSearchEntry
+                    local e = editor.session._gvsSearchEntry
                     if e and IsValid(e) then e:Remove() end
-                    Canvas._gvsSearchEntry = nil
-                    Canvas.GlobalVarSelector = nil
+                    editor.session._gvsSearchEntry = nil
+                    editor.session.GlobalVarSelector = nil
                     if popup.onClose then popup.onClose() end
                     return
                 end
@@ -1117,10 +1130,10 @@ function VarOp.DrawGlobalVarSelectorPopup()
                 popup.searchActive = false
             elseif not skipClose then
                 -- 点击浮层外 → 关闭
-                local e = Canvas._gvsSearchEntry
+                local e = editor.session._gvsSearchEntry
                 if e and IsValid(e) then e:Remove() end
-                Canvas._gvsSearchEntry = nil
-                Canvas.GlobalVarSelector = nil
+                editor.session._gvsSearchEntry = nil
+                editor.session.GlobalVarSelector = nil
                 if popup.onClose then popup.onClose() end
             end
         end
@@ -1128,7 +1141,7 @@ function VarOp.DrawGlobalVarSelectorPopup()
 end
 
 -- 打开词条多选浮层（"设置变量"节点"词条"操作的值控件，templates.md L1122）
--- 浮层状态挂 Canvas.KeywordMultiSelect，由 INE:DrawAllEditors 浮层阶段调用 DrawKeywordMultiSelect 绘制。
+-- 浮层状态挂 editor.session.KeywordMultiSelect，由 INE:DrawAllEditors 浮层阶段调用 DrawKeywordMultiSelect 绘制。
 -- 每行一个词条（中文显示名 + key），点击行切换勾选；滚轮翻页；点击外部/ESC 关闭。
 -- 值写入 entry.value（逗号分隔 key 字符串），切换即实时生效。
 function VarOp.OpenKeywordMultiSelect(editor, node, entry, entryId, x, y, w, scale)
@@ -1145,9 +1158,9 @@ function VarOp.OpenKeywordMultiSelect(editor, node, entry, entryId, x, y, w, sca
     if popupX < 4 then popupX = 4 end
     if popupY + popupH > ScrH() - 8 then popupY = ScrH() - popupH - 8 end
     if popupY < 4 then popupY = 4 end
-    Canvas.ExpandedDropdown = nil
-    Canvas.ExpandedDropdownInfo = nil
-    Canvas.KeywordMultiSelect = {
+    editor.session.ExpandedDropdown = nil
+    editor.session.ExpandedDropdownInfo = nil
+    editor.session.KeywordMultiSelect = {
         editor = editor, node = node, entry = entry, entryId = entryId,
         x = popupX, y = popupY, w = popupW, h = popupH,
         rowH = rowH, scale = scale, page = 1,
@@ -1162,8 +1175,9 @@ end
 
 -- 绘制词条多选浮层（由 INE:DrawAllEditors 在浮层阶段调用）
 -- 布局：标题行（词条多选 + 已选数）→ 每页 8 行词条 → 底部导航（页码 + 关闭提示）。
-function VarOp.DrawKeywordMultiSelect()
-    local kw = Canvas.KeywordMultiSelect
+function VarOp.DrawKeywordMultiSelect(kw, ownerEditor)
+    local owner = (kw and kw.editor) or ownerEditor
+    local session = owner and owner.session
     if not kw then return end
     local editor, node = kw.editor, kw.node
     -- 节点被删除时关闭浮层
@@ -1174,7 +1188,7 @@ function VarOp.DrawKeywordMultiSelect()
         end
     end
     if not nodeValid then
-        Canvas.KeywordMultiSelect = nil
+        if session then session.KeywordMultiSelect = nil end
         return
     end
     local mX, mY = gui.MouseX(), gui.MouseY()
@@ -1202,9 +1216,9 @@ function VarOp.DrawKeywordMultiSelect()
 
     -- ============ 标题行 ============
     local titleY = py + padTop
-    draw.SimpleText("词条多选", smallFont, px + 6, titleY + rowH / 2,
+    draw.SimpleText(T("editor.node.keyword_multi_select"), smallFont, px + 6, titleY + rowH / 2,
         COL_TEXT, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-    draw.SimpleText("已选 " .. selCount .. "/" .. #keys, smallFont, px + pw - 6, titleY + rowH / 2,
+    draw.SimpleText(T("editor.node.selected_count", selCount, #keys), smallFont, px + pw - 6, titleY + rowH / 2,
         Color(200, 180, 120), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
 
     -- ============ 滚轮翻页（浮层内消费，阻止画布缩放） ============
@@ -1224,7 +1238,7 @@ function VarOp.DrawKeywordMultiSelect()
     local listY = titleY + rowH
     for i = startIdx, endIdx do
         local k = keys[i]
-        local name = KARDS.CardEditor.Data.KeywordDisplayNames[k] or k
+        local name = KARDS.CardEditor.Data.GetKeywordName(k) or k
         local rowY = listY + (i - startIdx) * rowH
         local isSel = selKeys[k] == true
         local rowHov = mX >= px and mX <= px + pw and mY >= rowY and mY <= rowY + rowH
@@ -1277,7 +1291,7 @@ function VarOp.DrawKeywordMultiSelect()
         surface.DrawLine(arrowX + 4, arrowY, arrowX, arrowY + 4)
         if click and arrowHov and not Canvas.DraggingNode then kw.page = page + 1 end
     end
-    draw.SimpleText("点击词条切换 · 外部/ESC 关闭", smallFont, px + 8, navY + navH / 2,
+    draw.SimpleText(T("editor.node.keyword_toggle_hint"), smallFont, px + 8, navY + navH / 2,
         Color(110, 110, 110), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
     -- ============ 外部点击 / ESC 关闭 ============
@@ -1285,13 +1299,13 @@ function VarOp.DrawKeywordMultiSelect()
     local skipClose = kw._skipClickClose or false
     kw._skipClickClose = false
     if input.WasKeyPressed(KEY_ESCAPE) then
-        Canvas.KeywordMultiSelect = nil
+        editor.session.KeywordMultiSelect = nil
         return
     end
     if click and not Canvas.DraggingNode then
         local inPopup = mX >= px and mX <= px + pw and mY >= py and mY <= py + ph
         if not inPopup and not skipClose then
-            Canvas.KeywordMultiSelect = nil
+            editor.session.KeywordMultiSelect = nil
         end
     end
 end
@@ -1542,7 +1556,7 @@ function VarOp.RegisterAll()
     -- SetVariable
     LogNewNode({
         type = "var_set",
-        name = "设置变量",
+        name = T("editor.node.node_set_variable"),
         color = Color(200, 140, 60),
         width = 300, height = 100,
         hasInput = true, hasOutput = true,
@@ -1584,7 +1598,7 @@ function VarOp.RegisterAll()
     -- dataFields 默认一行条件，新节点拖出即有条件行。
     LogNewNode({
         type = "var_evaluate",
-        name = "判断变量关系",
+        name = T("editor.node.node_evaluate_relationship"),
         color = Color(140, 100, 200),
         width = 320, height = 120,
         hasInput = true, hasOutput = true,
@@ -1729,13 +1743,13 @@ function VarOp.DrawCreateVariable(node, cx, cy, cw, ch, scale)
 
         -- 点击删除：下拉框展开时忽略，防止误触；仅记录待删索引，循环结束后统一执行
         -- （不在循环内直接删除，避免 ipairs 遍历中修改数组导致的条目错位/绘制闪烁）
-        if click and delBtnHov and not Canvas.DraggingNode and not DropdownConsumed() then
-            local expInfo = Canvas.ExpandedDropdownInfo
+        if click and delBtnHov and not Canvas.DraggingNode and not DropdownConsumed(editor) then
+            local expInfo = editor.session.ExpandedDropdownInfo
             local inExpDropdown = false
             if expInfo then
                 local inOpt = mX >= expInfo.dropdownX and mX <= expInfo.dropdownX + expInfo.totalWidth
                           and mY >= expInfo.dropdownY and mY <= expInfo.dropdownY + expInfo.dropdownH
-                inExpDropdown = inOpt or (Canvas.ExpandedDropdown ~= nil)
+                inExpDropdown = inOpt or (editor.session.ExpandedDropdown ~= nil)
             end
             if not inExpDropdown then
                 deleteIdx = idx
@@ -1828,12 +1842,12 @@ function VarOp.DrawCreateVariable(node, cx, cy, cw, ch, scale)
                     or Color(math.floor(150 * dim), math.floor(105 * dim), math.floor(105 * dim)),
                 TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             RegisterIR(editor, node, "cr_objslot_" .. (entry.id or idx), slotX, row3Y, slotW, rowH)
-            if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+            if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                 if eHov then
                     entry.emptyObj = not emptyOn
                     -- 空对象点亮：清除已选对象变量（槽回到占位状态并降亮度）
                     if entry.emptyObj then entry.initValue = nil end
-                elseif slotHov and not Canvas.GlobalVarSelector then
+                elseif slotHov and not editor.session.GlobalVarSelector then
                     VarOp.OpenGlobalVarSelector(editor, node,
                         slotX, row3Y, slotW, scale, "set", nil, nil, "e", nil,
                         function(varName, dataType)
@@ -1852,7 +1866,7 @@ function VarOp.DrawCreateVariable(node, cx, cy, cw, ch, scale)
             draw.SimpleText("+", compFont, plusX + plusW / 2, row3Y + rowH / 2,
                 Color(220, 230, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             RegisterIR(editor, node, "cr_gplus_" .. (entry.id or idx), plusX, row3Y, plusW, rowH)
-            if click and plusHov and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+            if click and plusHov and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                 -- 收起时失活该项名输入框，防止 DTextEntry 残留
                 if entry._arrOpen == true and VarOp.InputState.active
                    and VarOp.InputState.node == node and VarOp.InputState.entry == entry
@@ -1931,7 +1945,7 @@ function VarOp.DrawCreateVariable(node, cx, cy, cw, ch, scale)
             RegisterIR(editor, node, "cr_func_" .. (entry.id or idx), fBtnX, row4Y, fBtnW, rowH)
             draw.SimpleText("编辑函数", smallFont, fBtnX + fBtnW / 2, row4Y + rowH / 2,
                 Color(200, 220, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-            if click and fBtnHov and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+            if click and fBtnHov and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                 -- 规格：点击即打开函数 INE 面板；若面板已打开，则从鼠标到面板中心创建
                 -- 闪烁连线 2 秒后消失（templates.md L1086/L1088，仅视觉引导）
                 local subID = "ine_func_" .. (editor and editor.id or "?") .. "_" .. fVarName
@@ -1968,16 +1982,16 @@ function VarOp.DrawCreateVariable(node, cx, cy, cw, ch, scale)
     RegisterIR(editor, node, "cr_add_btn", addBtnX, addBtnY, addBtnW, addBtnH)
 
     -- 防止与下拉框重叠误触：只有当鼠标在按钮区域内且没有任何 DrawDropdown 展开时才触发
-    if click and bHov and not Canvas.DraggingNode and not DropdownConsumed() then
-        -- 检查是否有下拉框展开：Canvas.ExpandedDropdown 只在下拉框展开期间非 nil
+    if click and bHov and not Canvas.DraggingNode and not DropdownConsumed(editor) then
+        -- 检查是否有下拉框展开：editor.session.ExpandedDropdown 只在下拉框展开期间非 nil
         -- 注意：DrawDropdown 可能会在本帧清除 ExpandedDropdown（如果点击选项），
         -- 因此额外检查刚才点击的坐标是否在某个下拉框展开区域内。
-        local expInfo = Canvas.ExpandedDropdownInfo
+        local expInfo = editor.session.ExpandedDropdownInfo
         local inExpDropdown = false
         if expInfo then
             local inOpt = mX >= expInfo.dropdownX and mX <= expInfo.dropdownX + expInfo.totalWidth
                       and mY >= expInfo.dropdownY and mY <= expInfo.dropdownY + expInfo.dropdownH
-            inExpDropdown = inOpt or (Canvas.ExpandedDropdown ~= nil)
+            inExpDropdown = inOpt or (editor.session.ExpandedDropdown ~= nil)
         end
         if not inExpDropdown then
             table.insert(node.data._varEntries, {
@@ -2028,7 +2042,7 @@ function VarOp.DrawCreateVariable(node, cx, cy, cw, ch, scale)
         RebuildOutputPorts(node)
     end
 end
--- 正式版内容：新建变量节点函数体注释结束（下方单行 双右方括号 关闭上方 --[[ 注释块）
+-- 正式版内容：新建变量节点函数体注释结束（下方单行 双右方括号 关闭上方长注释块）
 ]]
 
 -- ====================================================================================
@@ -2127,9 +2141,9 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         end
         -- "点击修改"提示（贴近删除按钮左侧）
-        local hintW = GetTW("点击修改", smallFont)
+        local hintW = GetTW(T("editor.node.click_to_change"), smallFont)
         local hintX = cx + cw - delBtnW - 6 - hintW
-        draw.SimpleText("点击修改", smallFont, hintX, yOff + rowH / 2,
+        draw.SimpleText(T("editor.node.click_to_change"), smallFont, hintX, yOff + rowH / 2,
             targetHov and COL_LINK or Color(100, 100, 100), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
         -- 删除按钮（"-"）
@@ -2143,10 +2157,10 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
         RegisterIR(editor, node, "sv_del_" .. entryId, delBtnX, yOff, delBtnW, rowH)
 
         -- 点击：删除优先；目标行打开重选浮层（浮层已打开或下拉框展开/本帧已消费下拉框选项点击时忽略）
-        if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+        if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
             if delBtnHov then
                 deleteIdx = idx
-            elseif targetHov and not Canvas.GlobalVarSelector then
+            elseif targetHov and not editor.session.GlobalVarSelector then
                 VarOp.OpenGlobalVarSelector(editor, node,
                     cx, yOff, cw, scale, "set", nil, nil, nil, nil,
                     function(varName, dataType, v)
@@ -2257,17 +2271,17 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 local fActive = (curV == "false")
                 draw.RoundedBox(3, bTrueX, yOff, btnW, rowH,
                     tActive and Color(90, 140, 90) or (tHov and Color(60, 90, 60) or Color(45, 50, 55)))
-                draw.SimpleText("真", smallFont, bTrueX + btnW / 2, yOff + rowH / 2,
+                draw.SimpleText(T("editor.node.true"), smallFont, bTrueX + btnW / 2, yOff + rowH / 2,
                     tActive and Color(255, 255, 255) or COL_TEXT,
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "sv_btrue_" .. entryId, bTrueX, yOff, btnW, rowH)
                 draw.RoundedBox(3, bFalseX, yOff, btnW, rowH,
                     fActive and Color(140, 90, 90) or (fHov and Color(90, 60, 60) or Color(45, 50, 55)))
-                draw.SimpleText("假", smallFont, bFalseX + btnW / 2, yOff + rowH / 2,
+                draw.SimpleText(T("editor.node.false"), smallFont, bFalseX + btnW / 2, yOff + rowH / 2,
                     fActive and Color(255, 255, 255) or COL_TEXT,
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "sv_bfalse_" .. entryId, bFalseX, yOff, btnW, rowH)
-                if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+                if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                     if tHov then entry.value = "true"
                     elseif fHov then entry.value = "false" end
                 end
@@ -2275,12 +2289,12 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
         elseif varType == "t" then
             -- 文本：内联输入框（无操作行，直接输入，templates.md L1122）
             DrawInputField(node, mX, mY, click, "sv_value", valX, yOff, valW, rowH, smallFont,
-                tostring(entry.value or ""), "文本", entry)
+                tostring(entry.value or ""), T("editor.node.text"), entry)
             RegisterIR(editor, node, "sv_text_" .. entryId, valX, yOff, valW, rowH)
         elseif varType == "g" then
             if opLabel == "设为" then
                 -- 数组槽：仅选择数组变量（templates.md L1131"设为 → 仅能选择数组的修改变量组件（数组槽）"）
-                local slotText = (entry.value and entry.value ~= "") and entry.value or "选择数组变量"
+                local slotText = (entry.value and entry.value ~= "") and entry.value or T("editor.node.select_array_variable")
                 local slotHov = mX >= valX and mX <= valX + valW and mY >= yOff and mY <= yOff + rowH
                 draw.RoundedBox(3, valX, yOff, valW, rowH, slotHov and Color(60, 70, 60) or Color(45, 50, 45))
                 draw.SimpleText(ClipTextWidth(slotText, math.max(8, valW - 8), smallFont), smallFont,
@@ -2288,7 +2302,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                     (entry.value and entry.value ~= "") and Color(255, 200, 120) or Color(120, 120, 120),
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "sv_gslot_" .. entryId, valX, yOff, valW, rowH)
-                if click and slotHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector and not DropdownConsumed() then
+                if click and slotHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector and not DropdownConsumed(editor) then
                     VarOp.OpenGlobalVarSelector(editor, node,
                         valX, yOff, valW, scale, "set", nil, nil, "g", nil,
                         function(varName, dataType)
@@ -2308,12 +2322,12 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 -- 镜像索引到 entry.itemIndex（战斗解析器据此定位数组项；值槽仍用 entry.value）
                 entry.itemIndex = node.data["sv_gidx_" .. entryId]
                 local itemX = valX + (idxW or math.max(charW * 2, math.floor(rowH * 1.8))) + 4
-                draw.SimpleText("项", smallFont, itemX, yOff + rowH / 2, COL_SUB,
+                draw.SimpleText(T("editor.node.item"), smallFont, itemX, yOff + rowH / 2, COL_SUB,
                     TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-                local weiX = itemX + GetTW("项", smallFont) + 4
-                draw.SimpleText("为", smallFont, weiX, yOff + rowH / 2, COL_SUB,
+                local weiX = itemX + GetTW(T("editor.node.item"), smallFont) + 4
+                draw.SimpleText(T("editor.node.to"), smallFont, weiX, yOff + rowH / 2, COL_SUB,
                     TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-                local subOpX = weiX + GetTW("为", smallFont) + 6
+                local subOpX = weiX + GetTW(T("editor.node.to"), smallFont) + 6
                 local subOpW = math.min(math.max(valW - (subOpX - valX) - 4, charW * 2), charW * 3)
                 local subOpts = {"值", "类型"}
                 entry.subOpIdx = entry.subOpIdx or 1
@@ -2361,28 +2375,28 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                         local fHov2 = mX >= bFalseX and mX <= bFalseX + btnW2 and mY >= yOff and mY <= yOff + rowH
                         draw.RoundedBox(3, bTrueX, yOff, btnW2, rowH,
                             (curV == "true") and Color(90, 140, 90) or (tHov2 and Color(60, 90, 60) or Color(45, 50, 55)))
-                        draw.SimpleText("真", smallFont, bTrueX + btnW2 / 2, yOff + rowH / 2,
+                        draw.SimpleText(T("editor.node.true"), smallFont, bTrueX + btnW2 / 2, yOff + rowH / 2,
                             (curV == "true") and Color(255, 255, 255) or COL_TEXT,
                             TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                         RegisterIR(editor, node, "sv_gbtrue_" .. entryId, bTrueX, yOff, btnW2, rowH)
                         draw.RoundedBox(3, bFalseX, yOff, btnW2, rowH,
                             (curV == "false") and Color(140, 90, 90) or (fHov2 and Color(90, 60, 60) or Color(45, 50, 55)))
-                        draw.SimpleText("假", smallFont, bFalseX + btnW2 / 2, yOff + rowH / 2,
+                        draw.SimpleText(T("editor.node.false"), smallFont, bFalseX + btnW2 / 2, yOff + rowH / 2,
                             (curV == "false") and Color(255, 255, 255) or COL_TEXT,
                             TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                         RegisterIR(editor, node, "sv_gbfalse_" .. entryId, bFalseX, yOff, btnW2, rowH)
-                        if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+                        if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                             if tHov2 then entry.value = "true"
                             elseif fHov2 then entry.value = "false" end
                         end
                     elseif itemType == "t" then
                         -- 文本：内联输入框
                         DrawInputField(node, mX, mY, click, "sv_value", subValX, yOff, subValW, rowH, smallFont,
-                            tostring(entry.value or ""), "文本", entry)
+                            tostring(entry.value or ""), T("editor.node.text"), entry)
                         RegisterIR(editor, node, "sv_gt_" .. entryId, subValX, yOff, subValW, rowH)
                     elseif itemType == "e" then
                         -- 对象：对象变量槽（点击展开仅对象变量的选择器）
-                        local slotText = (entry.value and entry.value ~= "") and entry.value or "$ 对象变量槽"
+                        local slotText = (entry.value and entry.value ~= "") and entry.value or T("editor.node.object_variable_slot")
                         local slotHov = mX >= subValX and mX <= subValX + subValW and mY >= yOff and mY <= yOff + rowH
                         draw.RoundedBox(3, subValX, yOff, subValW, rowH, slotHov and Color(70, 55, 55) or Color(50, 40, 40))
                         draw.SimpleText(ClipTextWidth(slotText, math.max(8, subValW - 8), smallFont), smallFont,
@@ -2390,7 +2404,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                             (entry.value and entry.value ~= "") and Color(255, 170, 170) or Color(140, 100, 100),
                             TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                         RegisterIR(editor, node, "sv_ge_" .. entryId, subValX, yOff, subValW, rowH)
-                        if click and slotHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector and not DropdownConsumed() then
+                        if click and slotHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector and not DropdownConsumed(editor) then
                             VarOp.OpenGlobalVarSelector(editor, node,
                                 subValX, yOff, subValW, scale, "set", nil, nil, "e", nil,
                                 function(varName, dataType)
@@ -2400,7 +2414,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                         end
                     elseif itemType == "g" then
                         -- 数组：数组变量槽（点击展开仅数组变量的选择器）
-                        local slotText = (entry.value and entry.value ~= "") and entry.value or "选择数组变量"
+                        local slotText = (entry.value and entry.value ~= "") and entry.value or T("editor.node.select_array_variable")
                         local slotHov = mX >= subValX and mX <= subValX + subValW and mY >= yOff and mY <= yOff + rowH
                         draw.RoundedBox(3, subValX, yOff, subValW, rowH, slotHov and Color(60, 70, 60) or Color(45, 50, 45))
                         draw.SimpleText(ClipTextWidth(slotText, math.max(8, subValW - 8), smallFont), smallFont,
@@ -2408,7 +2422,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                             (entry.value and entry.value ~= "") and Color(255, 200, 120) or Color(120, 120, 120),
                             TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                         RegisterIR(editor, node, "sv_gg_" .. entryId, subValX, yOff, subValW, rowH)
-                        if click and slotHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector and not DropdownConsumed() then
+                        if click and slotHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector and not DropdownConsumed(editor) then
                             VarOp.OpenGlobalVarSelector(editor, node,
                                 subValX, yOff, subValW, scale, "set", nil, nil, "g", nil,
                                 function(varName, dataType)
@@ -2418,7 +2432,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                         end
                     else
                         -- 函数：'改为 #' 占位
-                        draw.SimpleText("改为 #", smallFont, subValX, yOff + rowH / 2, COL_LINK,
+                        draw.SimpleText(T("editor.node.change_to_hash"), smallFont, subValX, yOff + rowH / 2, COL_LINK,
                             TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     end
                 else
@@ -2455,7 +2469,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                     local nameX = subValX + typeDdW + 4
                     local nameW = math.max(10, (cx + cw - 4) - nameX)
                     DrawInputField(node, mX, mY, click, "sv_itemName", nameX, yOff, nameW, rowH, smallFont,
-                        tostring(entry.itemName or ""), "项名", entry)
+                        tostring(entry.itemName or ""), T("editor.node.item_name"), entry)
                     RegisterIR(editor, node, "sv_gitemname_" .. entryId, nameX, yOff, nameW, rowH)
                 end
             end
@@ -2469,7 +2483,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 local lblW = GetTW(SET_OBJ_EMPTY_OP, smallFont)
                 local slotX = valX + lblW + 8
                 local slotW2 = math.max(10, (cx + cw - 4) - slotX)
-                local slotText = (entry.value and entry.value ~= "") and entry.value or "$ 对象变量槽"
+                local slotText = (entry.value and entry.value ~= "") and entry.value or T("editor.node.object_variable_slot")
                 local slotHov = mX >= slotX and mX <= slotX + slotW2 and mY >= yOff and mY <= yOff + rowH
                 draw.RoundedBox(3, slotX, yOff, slotW2, rowH, slotHov and Color(70, 55, 55) or Color(50, 40, 40))
                 draw.SimpleText(ClipTextWidth(slotText, math.max(8, slotW2 - 8), smallFont), smallFont,
@@ -2477,7 +2491,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                     (entry.value and entry.value ~= "") and Color(255, 170, 170) or Color(140, 100, 100),
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "sv_eempty_" .. entryId, slotX, yOff, slotW2, rowH)
-                if click and slotHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector and not DropdownConsumed() then
+                if click and slotHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector and not DropdownConsumed(editor) then
                     VarOp.OpenGlobalVarSelector(editor, node,
                         slotX, yOff, slotW2, scale, "set", nil, nil, "e", nil,
                         function(varName, dataType)
@@ -2488,7 +2502,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
             elseif SET_OBJ_NUM_PROPS[opLabel] then
                 -- 数值属性：{设为、增加、减少} 子操作下拉 + [lib] 数字槽（templates.md L1110）
                 -- 子操作索引存 entry.objOpIdx（1=设为 2=增加 3=减少），解析器据此分派
-                local subOps = {"设为", "增加", "减少"}
+                local subOps = {T("editor.node.op_set"), T("editor.node.op_add"), T("editor.node.op_subtract")}
                 if entry.objOpIdx == nil or entry.objOpIdx < 1 or entry.objOpIdx > #subOps then entry.objOpIdx = 1 end
                 local subMaxW = 0
                 for _, so in ipairs(subOps) do
@@ -2519,8 +2533,8 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 if entry._prevOpLabel ~= opLabel then
                     entry.value = ""
                 end
-                local weiW = GetTW("为", smallFont) + 6
-                draw.SimpleText("为", smallFont, valX, yOff + rowH / 2, COL_SUB,
+                local weiW = GetTW(T("editor.node.to"), smallFont) + 6
+                draw.SimpleText(T("editor.node.to"), smallFont, valX, yOff + rowH / 2, COL_SUB,
                     TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 local pCharW = math.max(14, charW * 1.4)
                 local pBtnX = valX + weiW
@@ -2545,7 +2559,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 RegisterIR(editor, node, "sv_eimg_" .. entryId, imgSlotX, yOff, imgSlotW, rowH)
                 -- 点击 p 或槽 → 展开图片下拉框（首项"无插图"，后续为 data/kards_images 文件；
                 -- _imagePreview 启用悬停预览）
-                if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed()
+                if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor)
                    and (pHov or slotHov) then
                     local imgFiles, _ = file.Find("kards_images/*", "DATA")
                     local optList = { "无插图" }
@@ -2578,8 +2592,8 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                         if dropX + totalDropW2 > ScrW() then
                             dropX = ScrW() - totalDropW2 - 10
                         end
-                        Canvas.ExpandedDropdown = (node.id or "?") .. "_sv_eimg_" .. entryId
-                        Canvas.ExpandedDropdownInfo = {
+                        editor.session.ExpandedDropdown = (node.id or "?") .. "_sv_eimg_" .. entryId
+                        editor.session.ExpandedDropdownInfo = {
                             x = valX, y = yOff, width = valW, height = rowH,
                             nodeId = node.id, dropdownId = "sv_eimg_" .. entryId,
                             options = optList,
@@ -2625,7 +2639,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                     if initKeys and type(initKeys) == "table" and #initKeys > 0 then
                         local parts = {}
                         for _, k in ipairs(initKeys) do
-                            if KARDS.CardEditor.Data.KeywordDisplayNames[k] then
+                            if KARDS.CardEditor.Data.GetKeywordName(k) then
                                 table.insert(parts, k)
                             end
                         end
@@ -2637,10 +2651,10 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 local kwParts = {}
                 for _, k in ipairs(GetAllKeywordKeys()) do
                     if kwSel[k] then
-                        table.insert(kwParts, KARDS.CardEditor.Data.KeywordDisplayNames[k] or k)
+                        table.insert(kwParts, KARDS.CardEditor.Data.GetKeywordName(k) or k)
                     end
                 end
-                local kwText = #kwParts > 0 and table.concat(kwParts, "、") or "选择词条"
+                local kwText = #kwParts > 0 and table.concat(kwParts, "、") or T("editor.node.select_keywords")
                 local kwHov = mX >= valX and mX <= valX + valW and mY >= yOff and mY <= yOff + rowH
                 draw.RoundedBox(3, valX, yOff, valW, rowH,
                     kwHov and Color(60, 70, 60) or Color(45, 50, 45))
@@ -2649,7 +2663,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                     #kwParts > 0 and Color(200, 220, 150) or Color(120, 120, 120),
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "sv_ekw_" .. entryId, valX, yOff, valW, rowH)
-                if click and kwHov and not Canvas.DraggingNode and not Canvas.KeywordMultiSelect and not DropdownConsumed() then
+                if click and kwHov and not Canvas.DraggingNode and not editor.session.KeywordMultiSelect and not DropdownConsumed(editor) then
                     VarOp.OpenKeywordMultiSelect(editor, node, entry, entryId, valX, yOff, valW, scale)
                 end
             elseif SET_OBJ_TEXT_SLOT_PROPS[opLabel] then
@@ -2670,7 +2684,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 local textInW = math.max(10, (cx + cw - 4) - textInX)
                 RegisterIR(editor, node, "sv_ets_t_" .. entryId, tBtnX, yOff, tCharW, rowH)
                 RegisterIR(editor, node, "sv_ets_" .. entryId, textInX, yOff, textInW, rowH)
-                if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+                if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                     if isTextRef then
                         -- 引用模式：点击 t 或输入区均清空进入直接输入
                         local inHov = mX >= textInX and mX <= textInX + textInW and mY >= yOff and mY <= yOff + rowH
@@ -2696,8 +2710,8 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                             if dropX + totalDropW2 > ScrW() then
                                 dropX = ScrW() - totalDropW2 - 10
                             end
-                            Canvas.ExpandedDropdown = (node.id or "?") .. "_sv_ets_" .. entryId
-                            Canvas.ExpandedDropdownInfo = {
+                            editor.session.ExpandedDropdown = (node.id or "?") .. "_sv_ets_" .. entryId
+                            editor.session.ExpandedDropdownInfo = {
                                 x = valX, y = yOff, width = valW, height = rowH,
                                 nodeId = node.id, dropdownId = "sv_ets_" .. entryId,
                                 options = tOpts,
@@ -2728,7 +2742,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 else
                     -- 直接输入模式：内联输入框
                     DrawInputField(node, mX, mY, click, "sv_value", textInX, yOff, textInW, rowH, smallFont,
-                        tostring(entry.value or ""), "文本", entry)
+                        tostring(entry.value or ""), T("editor.node.text"), entry)
                 end
             elseif opLabel == "单位类型" then
                 -- 单位类型：单选 {步兵、炮兵、坦克、战斗机、轰炸机}（readme 7.3）
@@ -2755,7 +2769,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                 end
                 if entry._subtypeNew ~= true then
                     -- 槽显示当前子类型；点击展开下拉（词库项 + "＋ 新建子类型…"尾项）
-                    local slotText = (entry.value and entry.value ~= "") and entry.value or "选择子类型"
+                    local slotText = (entry.value and entry.value ~= "") and entry.value or T("editor.node.select_subtype")
                     local slotHov = mX >= valX and mX <= valX + valW and mY >= yOff and mY <= yOff + rowH
                     draw.RoundedBox(3, valX, yOff, valW, rowH, slotHov and Color(60, 60, 70) or Color(45, 45, 50))
                     draw.SimpleText(ClipTextWidth(slotText, math.max(8, valW - 8), smallFont), smallFont,
@@ -2763,7 +2777,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                         (entry.value and entry.value ~= "") and Color(200, 200, 255) or Color(120, 120, 120),
                         TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                     RegisterIR(editor, node, "sv_est_" .. entryId, valX, yOff, valW, rowH)
-                    if click and slotHov and not Canvas.DraggingNode and not Canvas.ExpandedDropdown and not DropdownConsumed() then
+                    if click and slotHov and not Canvas.DraggingNode and not editor.session.ExpandedDropdown and not DropdownConsumed(editor) then
                         local stOpts = LoadSubtypeOptions()
                         table.insert(stOpts, SUBTYPE_CREATE_OPT)
                         -- 复用插图式多列下拉（选项多时自动分列）
@@ -2784,8 +2798,8 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                         if dropX + totalDropW2 > ScrW() then
                             dropX = ScrW() - totalDropW2 - 10
                         end
-                        Canvas.ExpandedDropdown = (node.id or "?") .. "_sv_est_" .. entryId
-                        Canvas.ExpandedDropdownInfo = {
+                        editor.session.ExpandedDropdown = (node.id or "?") .. "_sv_est_" .. entryId
+                        editor.session.ExpandedDropdownInfo = {
                             x = valX, y = yOff, width = valW, height = rowH,
                             nodeId = node.id, dropdownId = "sv_est_" .. entryId,
                             options = stOpts,
@@ -2817,7 +2831,7 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
                     -- 新建模式：行内输入框（实时写 entry.value）+ 右侧确认按钮（追加词库并退出）
                     local inW = math.max(10, valW - btnH - 6)
                     DrawInputField(node, mX, mY, click, "sv_value", valX, yOff, inW, rowH, smallFont,
-                        tostring(entry.value or ""), "新子类型", entry)
+                        tostring(entry.value or ""), T("editor.node.new_subtype"), entry)
                     local okBtnX = valX + inW + 6
                     local okBtnW = math.max(20, valW - inW - 6)
                     local okHov = mX >= okBtnX and mX <= okBtnX + okBtnW and mY >= yOff and mY <= yOff + rowH
@@ -2839,12 +2853,12 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
             else
                 -- 未单独定义控件的属性（品质等）：文本输入框（templates.md L1125）
                 DrawInputField(node, mX, mY, click, "sv_value", valX, yOff, valW, rowH, smallFont,
-                    tostring(entry.value or ""), "文本", entry)
+                    tostring(entry.value or ""), T("editor.node.text"), entry)
                 RegisterIR(editor, node, "sv_et_" .. entryId, valX, yOff, valW, rowH)
             end
         elseif varType == "f" then
             -- 函数：'改为' #（简化：函数值选择未接入函数子编辑器，仅占位显示，见验收）
-            draw.SimpleText("改为 #", smallFont, valX, yOff + rowH / 2, COL_LINK,
+            draw.SimpleText(T("editor.node.change_to_hash"), smallFont, valX, yOff + rowH / 2, COL_LINK,
                 TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         else
             draw.SimpleText("—", smallFont, valX, yOff + rowH / 2, Color(100, 100, 100),
@@ -2868,11 +2882,11 @@ function VarOp.DrawSetVariable(node, cx, cy, cw, ch, scale)
     local bHov = mX >= addBtnX and mX <= addBtnX + addBtnW
             and mY >= addBtnY and mY <= addBtnY + addBtnH
     draw.RoundedBox(4, addBtnX, addBtnY, addBtnW, addBtnH, bHov and COL_BTN_HOVER or COL_BTN)
-    draw.SimpleText("+ 修改全局变量", compFont, cx + cw / 2, addBtnY + addBtnH / 2,
+    draw.SimpleText(T("editor.node.add_global_variable"), compFont, cx + cw / 2, addBtnY + addBtnH / 2,
         Color(200, 220, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     RegisterIR(editor, node, "sv_add_btn", addBtnX, addBtnY, addBtnW, addBtnH)
     -- 本帧已消费下拉框选项点击时忽略：最后一行下拉框选项与按钮区域重叠，防止误开浮层
-    if click and bHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector and not DropdownConsumed() then
+    if click and bHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector and not DropdownConsumed(editor) then
         VarOp.OpenGlobalVarSelector(editor, node,
             addBtnX, addBtnY, addBtnW, scale, "set", nil, nil, nil, nil,
             function(varName, dataType, v)
@@ -3151,7 +3165,7 @@ function VarOp.DrawConvertExtractVariable(node, cx, cy, cw, ch, scale)
         end
     end
 end
--- 正式版内容：转换与提取节点函数体注释结束（下方单行 双右方括号 关闭上方 --[[ 注释块）
+-- 正式版内容：转换与提取节点函数体注释结束（下方单行 双右方括号 关闭上方长注释块）
 ]]
 
 -- ====================================================================================
@@ -3279,7 +3293,7 @@ local function OpenEvalSelector(editor, node, cond, idx, side, x, y, w, scale)
         end
         if #items > 0 then
             extraGroups = {{
-                title = "数据线输入",
+                title = T("editor.node.data_line_input"),
                 color = Color(100, 200, 255),
                 items = items,
             }}
@@ -3451,8 +3465,8 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
     end
     -- 行内固定列宽（所有条件行对齐，templates.md L1238 [连接符][操作数A][运算符][操作数B]）：
     -- [连接符区（非首行显示）] [条件N:序号区] [左操作数槽] [运算符] [右操作数]
-    local connW = GetTW("和", smallFont) + 10
-    local condLblW = GetTW("条件9:", smallFont) + 6
+    local connW = GetTW(T("editor.node.and_connector"), smallFont) + 10
+    local condLblW = GetTW(T("editor.node.condition_n", 9), smallFont) + 6
     local lSlotX = cx + 4 + connW + condLblW
     local lSlotW = math.max(charW * 2, math.floor((cw - connW - condLblW - 16) * 0.38))
     local opDDW = math.min(charW * 4, cw - connW - condLblW - lSlotW - 16)
@@ -3478,7 +3492,7 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
         -- 旧存档迁移：旧版 _condSelector（内嵌选择器展开）→ 一次性转换为打开浮层
         -- 浮层已打开（同节点）时不重复打开
         if node.data._condSelector and node.data._condSelector.condIdx == idx
-           and (not Canvas.GlobalVarSelector or Canvas.GlobalVarSelector.node ~= node) then
+           and (not editor.session.GlobalVarSelector or editor.session.GlobalVarSelector.node ~= node) then
             local mSide = node.data._condSelector.side or "left"
             node.data._condSelector = nil
             OpenEvalSelector(editor, node, cond, idx, mSide,
@@ -3499,12 +3513,12 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
                 cond.right.dataType = ""
                 cond.right.literal = ""
                 -- 模式切换关闭本行可能打开的右操作数浮层（旧存档 _condSelector 标记一并清除）
-                if Canvas.GlobalVarSelector and Canvas.GlobalVarSelector.node == node
-                   and Canvas.GlobalVarSelector.condIdx == idx then
-                    local gvsE = Canvas._gvsSearchEntry
+                if editor.session.GlobalVarSelector and editor.session.GlobalVarSelector.node == node
+                   and editor.session.GlobalVarSelector.condIdx == idx then
+                    local gvsE = editor.session._gvsSearchEntry
                     if gvsE and IsValid(gvsE) then gvsE:Remove() end
-                    Canvas._gvsSearchEntry = nil
-                    Canvas.GlobalVarSelector = nil
+                    editor.session._gvsSearchEntry = nil
+                    editor.session.GlobalVarSelector = nil
                 end
                 node.data._condSelector = nil
             end
@@ -3517,7 +3531,7 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
         -- === 连接符（非首行条件前方、行首；最后一行不显示，templates.md L1262-1267） ===
         if idx > 1 then
             local cn = node.data._connectors[idx - 1] or "AND"
-            local cnText = (cn == "OR") and "或" or "和"
+            local cnText = (cn == "OR") and T("editor.node.or_connector") or T("editor.node.and_connector")
             local cnX = cx + 4
             local cnHov = mX >= cnX and mX <= cnX + connW and mY >= yOff and mY <= yOff + rowH
             if cnHov then
@@ -3527,12 +3541,12 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
                 cnHov and Color(180, 220, 255) or COL_LINK,
                 TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             RegisterIR(editor, node, "ev_conn_" .. (idx - 1), cnX, yOff, connW, rowH)
-            if click and cnHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector then
+            if click and cnHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector then
                 node.data._connectors[idx - 1] = (cn == "AND") and "OR" or "AND"
             end
         end
         -- === 条件序号标签（条件N:） ===
-        draw.SimpleText("条件" .. idx .. ":", smallFont, cx + 4 + connW + condLblW / 2, yOff + rowH/2,
+        draw.SimpleText(T("editor.node.condition_n", idx), smallFont, cx + 4 + connW + condLblW / 2, yOff + rowH/2,
             COL_LABEL, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
         -- === 左操作数槽（全局变量 / 数据线输入） ===
@@ -3573,19 +3587,19 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
             draw.SimpleText(cond.left.varName, smallFont, textX, yOff + rowH/2,
                 lTypeCol, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         else
-            draw.SimpleText("选择变量", smallFont, lSlotX + 4, yOff + rowH/2,
+            draw.SimpleText(T("editor.node.select_variable"), smallFont, lSlotX + 4, yOff + rowH/2,
                 Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         end
         -- 点击打开变量选择器浮层（全局变量 + 数据线输入分组，不触发节点宽高重算）
         -- 浮层覆盖节点区域：旧浮层开着时点击本槽会落入浮层内部（只失活搜索框不关闭），
         -- 若直接放弃打开会被旧浮层过滤状态"锁死"（如右侧布尔过滤浮层覆盖本槽），
         -- 故点击时强制关闭旧浮层再打开全类型浮层（类型锁定修复）
-        if click and lSlotHov and not Canvas.DraggingNode and not Canvas.ExpandedDropdown then
-            if Canvas.GlobalVarSelector then
-                local gvsE = Canvas._gvsSearchEntry
+        if click and lSlotHov and not Canvas.DraggingNode and not editor.session.ExpandedDropdown then
+            if editor.session.GlobalVarSelector then
+                local gvsE = editor.session._gvsSearchEntry
                 if gvsE and IsValid(gvsE) then gvsE:Remove() end
-                Canvas._gvsSearchEntry = nil
-                Canvas.GlobalVarSelector = nil
+                editor.session._gvsSearchEntry = nil
+                editor.session.GlobalVarSelector = nil
             end
             if VarOp.InputState.active then VarOp.InputState.active = false end
             OpenEvalSelector(editor, node, cond, idx, "left",
@@ -3647,7 +3661,7 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
             -- 左操作数未选择：右侧无内容（右值形式由左类型决定，templates.md L1259；E9）
         elseif not EV_OPERATORS[lType] then
             -- 正式版内容：布尔/文本/数组类型比较（b/t/g）测试版砍掉，留待正式版（templates.md 标注"正式版再做"）
-            draw.SimpleText("正式版支持", smallFont, rX, yOff + rowH/2,
+            draw.SimpleText(T("editor.node.supported_in_full_version"), smallFont, rX, yOff + rowH/2,
                 Color(90, 90, 90), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         elseif rightMode == "none" then
             -- 无右值（对象"是空/非空"）：右侧完全不绘制（E5/E7）
@@ -3664,16 +3678,16 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
                 draw.SimpleText(cond.right.varName, smallFont, rX + 4 + barW + 4, yOff + rowH/2,
                     rTypeCol, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             else
-                draw.SimpleText("选择变量", smallFont, rX + 4, yOff + rowH/2,
+                draw.SimpleText(T("editor.node.select_variable"), smallFont, rX + 4, yOff + rowH/2,
                     Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             end
-            if click and rSlotHov and not Canvas.DraggingNode and not Canvas.ExpandedDropdown then
+            if click and rSlotHov and not Canvas.DraggingNode and not editor.session.ExpandedDropdown then
                 -- 同左操作数：强制关闭旧浮层再打开同类型过滤浮层（浮层覆盖节点区域，防被旧浮层锁死）
-                if Canvas.GlobalVarSelector then
-                    local gvsE = Canvas._gvsSearchEntry
+                if editor.session.GlobalVarSelector then
+                    local gvsE = editor.session._gvsSearchEntry
                     if gvsE and IsValid(gvsE) then gvsE:Remove() end
-                    Canvas._gvsSearchEntry = nil
-                    Canvas.GlobalVarSelector = nil
+                    editor.session._gvsSearchEntry = nil
+                    editor.session.GlobalVarSelector = nil
                 end
                 if VarOp.InputState.active then VarOp.InputState.active = false end
                 -- 右操作数：同类型变量过滤（filterType = 左类型）
@@ -3693,17 +3707,17 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
                 local fActive = (curLit == "false")
                 draw.RoundedBox(3, bTrueX, yOff, btnW, rowH,
                     tActive and Color(90, 140, 90) or (tHov and Color(60, 90, 60) or Color(45, 50, 55)))
-                draw.SimpleText("真", smallFont, bTrueX + btnW/2, yOff + rowH/2,
+                draw.SimpleText(T("editor.node.true"), smallFont, bTrueX + btnW/2, yOff + rowH/2,
                     tActive and Color(255, 255, 255) or COL_TEXT,
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "ev_btrue_" .. idx, bTrueX, yOff, btnW, rowH)
                 draw.RoundedBox(3, bFalseX, yOff, btnW, rowH,
                     fActive and Color(140, 90, 90) or (fHov and Color(90, 60, 60) or Color(45, 50, 55)))
-                draw.SimpleText("假", smallFont, bFalseX + btnW/2, yOff + rowH/2,
+                draw.SimpleText(T("editor.node.false"), smallFont, bFalseX + btnW/2, yOff + rowH/2,
                     fActive and Color(255, 255, 255) or COL_TEXT,
                     TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 RegisterIR(editor, node, "ev_bfalse_" .. idx, bFalseX, yOff, btnW, rowH)
-                if click and not Canvas.DraggingNode and not Canvas.ExpandedDropdown then
+                if click and not Canvas.DraggingNode and not editor.session.ExpandedDropdown then
                     if tHov then cond.right.literal = "true"
                     elseif fHov then cond.right.literal = "false" end
                 end
@@ -3717,7 +3731,7 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
                 -- 文本：内联输入框（glua-input-field 模式）
                 DrawInputField(node, mX, mY, click, "ev_right",
                     rX, yOff, rW, rowH, smallFont,
-                    cond.right.literal or "", "文本", nil, idx)
+                    cond.right.literal or "", T("editor.node.text"), nil, idx)
             end
         end
 
@@ -3730,10 +3744,10 @@ function VarOp.DrawEvaluateRelationship(node, cx, cy, cw, ch, scale)
     local bHov = mX >= cx+2 and mX <= cx+2+cw-4 and mY >= btnY and mY <= btnY+bH
     draw.RoundedBox(4, cx+2, btnY, cw-4, bH, bHov and COL_BTN_HOVER or COL_BTN)
     RegisterIR(editor, node, "ev_add_btn", cx+2, btnY, cw-4, bH)
-    draw.SimpleText("+ 增加全局变量条件", compFont, cx + cw/2, btnY + bH/2,
+    draw.SimpleText(T("editor.node.add_global_variable_condition"), compFont, cx + cw/2, btnY + bH/2,
         Color(200, 220, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
-    if click and bHov and not Canvas.DraggingNode and not Canvas.GlobalVarSelector then
+    if click and bHov and not Canvas.DraggingNode and not editor.session.GlobalVarSelector then
         table.insert(node.data._conditions, {
             left = { varName = "", dataType = "" },
             operator = "=",
@@ -3878,3 +3892,7 @@ hook.Add("Think", "VarOpManageInputEntry", ManageVarOpInputEntry)
 -- ====================================================================================
 VarOp.RegisterAll()
 print("[CardEditor] cl_ine_var_op_nodes.lua loaded (create_variable, set_variable, convert_extract_variable, evaluate_variable)")
+
+-- 注册浮层渲染器：状态在编辑器会话里，绘制仍由本模块提供（ADR 0003 决策 3）
+INE:RegisterPopupRenderer("GlobalVarSelector", VarOp.DrawGlobalVarSelectorPopup)
+INE:RegisterPopupRenderer("KeywordMultiSelect", VarOp.DrawKeywordMultiSelect)

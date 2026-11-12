@@ -33,6 +33,9 @@ KARDS.CardEditor.Audio = KARDS.CardEditor.Audio or {}
 KARDS.CardEditor.Audio.PlayNotification = KARDS.CardEditor.Audio.PlayNotification or function() end
 KARDS.CardEditor.Audio.PlayNotificationSuccess = KARDS.CardEditor.Audio.PlayNotificationSuccess or function() end
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 提示计数器
 KARDS.CardEditor.Canvas.NotificationCounter = 0
 
@@ -202,7 +205,7 @@ function KARDS.CardEditor.Canvas.DrawNotifications()
         draw.RoundedBoxEx(config.cornerRadius, x, y, totalWidth, config.titleHeight, config.titleColor, true, true, false, false)
 
         -- 绘制标题文本
-        local titleText = "提示  -Tip-"
+        local titleText = T("editor.notify.title")
         draw.SimpleText(titleText, config.fontSize, x + config.padding, y + config.titleHeight / 2, config.textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
         -- 绘制计数在标题框中

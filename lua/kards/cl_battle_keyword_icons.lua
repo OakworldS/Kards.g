@@ -36,6 +36,7 @@ local IconIds = {
     pincer = true, stealth = true,
     suppress = true, -- 动态状态（被压制）
     control = true, -- 动态状态（被控制）
+    neutralized = true, -- 动态状态（被抑制）
 }
 
 -- 图标/布局常量（3D2D 像素单位，卡面 renderW×renderH 坐标系，右上角外侧竖排）
@@ -187,13 +188,13 @@ local States = setmetatable({}, { __mode = "k" })
     在 3D2D 上下文内绘制单位/总部词条图标（由 cl_card_text_overlay.lua DrawOverlay
     的单位小模型 / 总部短卡分支调用，处于同一 cam.Start3D2D 块内）。
 
-    @param ent      Entity 卡牌实体（读 Kards_UnitKeywords / Kards_CardDefense NW）
+    @param ent      Entity 卡牌实体（经 KARDS.CardView.Read 取 unitKeywords / defense）
     @param renderW  number 卡面渲染像素宽（单位/总部短卡 209）
     @param renderH  number 卡面渲染像素高（单位/总部短卡 290）
 ]]
 function Icons:Draw(ent, renderW, renderH)
     if not IsValid(ent) then return end
-    local raw = ent:GetNWString("Kards_UnitKeywords", "")
+    local raw = KARDS.CardView.Read(ent).unitKeywords
     local list = ParseKeywords(raw)
     if #list == 0 then
         States[ent] = nil -- 词条清空：清理动画状态
@@ -251,7 +252,7 @@ function Icons:Draw(ent, renderW, renderH)
         end
     end
 
-    local defense = ent:GetNWInt("Kards_CardDefense", 0)
+    local defense = KARDS.CardView.Read(ent).defense
     -- 词条 > 5 个时第 5 格画省略号（只绘制前 4 个图标）
     local showEllipsis = #list > MAX_ICONS
     local visible = showEllipsis and (MAX_ICONS - 1) or #list -- 实际绘制图标数

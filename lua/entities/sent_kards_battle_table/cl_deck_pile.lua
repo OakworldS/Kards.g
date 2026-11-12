@@ -48,33 +48,65 @@ local function DeckPileRelPos(idx)
                   PILE_BASE_Z + (idx - 1) * PILE_STEP_Z)
 end
 
--- 世界坐标 → 屏幕坐标（像素）。相机参数取 KARDS.BattleCamera 经 CalcView 记录的
--- 渲染相机（与 KARDS.MouseRay 同源，保证正反投影一致）；未接管或点在相机后方返回 nil
-local function WorldToScreen(world)
+-- 投影参数（每帧算一次，供同一帧内所有卡复用）：相机基向量 / 半角正切 / 屏幕尺寸。
+-- 原实现每张卡各调一次 WorldToScreen，内部重复取 LocalPlayer / 相机 / Forward / Right /
+-- Up / tan / ScrW / ScrH；改为帧级缓存后，逐卡只剩向量点积与反投影。
+local function GetProjection()
     local ply = LocalPlayer()
     if not IsValid(ply) then return nil end
     local cam = KARDS.BattleCamera
     if not cam or not cam.ViewPos or not cam.ViewAng then return nil end
     local c = cam.Cameras[ply]
     local fov = (c and c.fov) or 75
-    local v = world - cam.ViewPos
-    local fwd, right, up = cam.ViewAng:Forward(), cam.ViewAng:Right(), cam.ViewAng:Up()
-    local depth = v:Dot(fwd)
-    if depth <= 0.01 then return nil end
+    local sw, sh = ScrW(), ScrH()
+    if sw <= 0 or sh <= 0 then return nil end
     local tan = math.tan(math.rad(fov) * 0.5)
-    local k = (ScrW() / ScrH()) * (3 / 4) -- 与 KARDS.MouseRay 的宽高比垂直半角修正一致
-    local ndcX = (v:Dot(right) / depth) / (tan * k)
-    local ndcY = (v:Dot(up) / depth) / (tan / k)
-    return (ndcX * 0.5 + 0.5) * ScrW(), (0.5 - ndcY * 0.5) * ScrH()
+    local k = (sw / sh) * (3 / 4) -- 与 KARDS.MouseRay 的宽高比垂直半角修正一致
+    return {
+        pos = cam.ViewPos,
+        fwd = cam.ViewAng:Forward(),
+        right = cam.ViewAng:Right(),
+        up = cam.ViewAng:Up(),
+        tanH = tan * k,
+        tanV = tan / k,
+        sw = sw,
+        sh = sh,
+    }
 end
 
--- 屏幕坐标 → 世界坐标（射线 ∩ 指定世界 z 平面）。相机未接管或射线不穿平面返回 nil
-local function ScreenToWorldOnPlane(sx, sy, planeZ)
-    local pos, dir = KARDS.MouseRay(sx, sy)
-    if not pos or not dir or math.abs(dir.z) < 1e-4 then return nil end
-    local t = (planeZ - pos.z) / dir.z
+-- 世界坐标 → 屏幕坐标（像素）。proj 为 GetProjection() 结果；点在相机后方返回 nil
+local function WorldToScreen(world, proj)
+    local v = world - proj.pos
+    local depth = v:Dot(proj.fwd)
+    if depth <= 0.01 then return nil end
+    local ndcX = (v:Dot(proj.right) / depth) / proj.tanH
+    local ndcY = (v:Dot(proj.up) / depth) / proj.tanV
+    return (ndcX * 0.5 + 0.5) * proj.sw, (0.5 - ndcY * 0.5) * proj.sh
+end
+
+-- 屏幕坐标 → 世界坐标（射线 ∩ 指定世界 z 平面）。与 WorldToScreen 同一投影口径的
+-- 逆运算（不再逐卡调用 KARDS.MouseRay，省去其内部的相机查找与基向量重建）；
+-- 射线不穿平面返回 nil
+local function ScreenToWorldOnPlane(sx, sy, planeZ, proj)
+    local ndcX = (sx / proj.sw) * 2 - 1
+    local ndcY = 1 - (sy / proj.sh) * 2
+    local dir = proj.fwd + proj.right * (ndcX * proj.tanH) + proj.up * (ndcY * proj.tanV)
+    if math.abs(dir.z) < 1e-4 then return nil end
+    local t = (planeZ - proj.pos.z) / dir.z
     if t <= 0 then return nil end
-    return pos + dir * t
+    return proj.pos + dir * t
+end
+
+-- 卡堆屏幕基准（每帧每桌算一次）：第一张（总部）原始位的屏幕坐标 + 一个 y 步长对应的
+-- 屏幕竖直位移。三者只与牌桌和相机有关，与卡牌序号无关，故不应逐卡重算。
+local function PileScreenBase(tableEnt, proj)
+    local baseLocal = DeckPileRelPos(1)
+    local sx0, sy0 = WorldToScreen(tableEnt:LocalToWorld(baseLocal), proj)
+    if not sx0 then return nil end
+    local sx1, sy1 = WorldToScreen(
+        tableEnt:LocalToWorld(baseLocal - Vector(0, PILE_STEP_Y, 0)), proj)
+    if not sx1 then return nil end
+    return sx0, sy0, sy1 - sy0
 end
 
 --[[
@@ -88,30 +120,41 @@ end
     @param tableEnt Entity 牌桌实体
     @param idx      number 堆叠序号（1 起）
     @param rawZ     number 该卡原始相对 z（高度）
+    @param proj     table|nil GetProjection() 结果（逐卡调用方传入，省去重复计算）
+    @param sx0      number|nil 第一张的屏幕 x（与 sy0 / stepY 由 PileScreenBase 算得）
+    @param sy0      number|nil 第一张的屏幕 y
+    @param stepY    number|nil 一个 y 步长的屏幕竖直位移
     @return Vector|nil 局部坐标
 ]]
-local function PileParallaxRelPos(tableEnt, idx, rawZ)
-    local baseLocal = DeckPileRelPos(1)
-    local sx0, sy0 = WorldToScreen(tableEnt:LocalToWorld(baseLocal))
-    if not sx0 then return nil end
-    local sx1, sy1 = WorldToScreen(tableEnt:LocalToWorld(baseLocal - Vector(0, PILE_STEP_Y, 0)))
-    if not sx1 then return nil end
-    local stepY = sy1 - sy0
+local function PileParallaxRelPos(tableEnt, idx, rawZ, proj, sx0, sy0, stepY)
+    proj = proj or GetProjection()
+    if not proj then return nil end
+    if not sx0 then
+        sx0, sy0, stepY = PileScreenBase(tableEnt, proj)
+        if not sx0 then return nil end
+    end
     local planeZ = tableEnt:LocalToWorld(Vector(0, 0, rawZ)).z
-    local world = ScreenToWorldOnPlane(sx0, sy0 + (idx - 1) * stepY, planeZ)
+    local world = ScreenToWorldOnPlane(sx0, sy0 + (idx - 1) * stepY, planeZ, proj)
     if not world then return nil end
     return tableEnt:WorldToLocal(world)
 end
 
 -- 遍历本桌堆叠卡（含总部），对每张按堆叠序号执行抗视差落位
 local function ApplyPileParallax(tableEnt)
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
+    local proj = GetProjection()
+    if not proj then return end
+    local sx0, sy0, stepY = PileScreenBase(tableEnt, proj)
+    if not sx0 then return end
+    -- 共享每帧 PMX 列表（KARDS.GetPmxList，cl_init.lua）：同帧只做一次全量扫描
+    for _, ent in ipairs(KARDS.GetPmxList()) do
         if IsValid(ent) and ent:GetNWString("Kards_CardRole", "") == "deck" then
             local role = ent:GetNWString("Kards_DeckRole", "grid")
             if role == "pile" or role == "hq" then
                 local idx = ent:GetNWInt("Kards_PileIndex", 0)
                 if idx >= 1 then
-                    local v = PileParallaxRelPos(tableEnt, idx, DeckPileRelPos(idx).z)
+                    -- rawZ 直接按公式算（原 DeckPileRelPos(idx).z 会为每张卡建一个 Vector）
+                    local rawZ = PILE_BASE_Z + (idx - 1) * PILE_STEP_Z
+                    local v = PileParallaxRelPos(tableEnt, idx, rawZ, proj, sx0, sy0, stepY)
                     if v then
                         local cur = ent:GetLocalPos()
                         -- 已落位则跳过（避免每帧重复写入）
@@ -123,8 +166,32 @@ local function ApplyPileParallax(tableEnt)
     end
 end
 
+-- 抗视差脏标记（2026-10-16 性能优化）：相机 / 堆叠数据变化或保存动画结束时置真。
+-- 组卡模式下场景大部分时间静止，相机与堆叠都未变时整帧跳过，省去每帧的列表遍历
+-- 与逐卡反投影。
+local pileDirty = true
+local lastViewPos, lastViewAng = nil, nil
+local wasAnimating = false
+
+-- 堆叠数据变化（卡牌增删 / 堆叠序号或角色变更）→ 标记脏
+local function MarkPileDirty(ent)
+    if IsValid(ent) and ent:GetClass() == "sent_pmx_static_imported" then
+        pileDirty = true
+    end
+end
+hook.Add("EntityNetworkedVarChanged", "KardsDeckPileDirty", function(ent, key)
+    if key == "Kards_Mode" then
+        pileDirty = true
+    elseif key == "Kards_PileIndex" or key == "Kards_CardRole" or key == "Kards_DeckRole" then
+        MarkPileDirty(ent)
+    end
+end)
+hook.Add("OnEntityCreated", "KardsDeckPileCreated", MarkPileDirty)
+hook.Add("OnEntityRemoved", "KardsDeckPileRemoved", MarkPileDirty)
+
 -- 抗视差驱动（每帧）：仅本端为组卡构建者（槽位 2 + 组卡模式）时执行；
--- 保存动画播放期间让位（AnimPlayer 正在写位姿），动画播完自动恢复
+-- 保存动画播放期间让位（AnimPlayer 正在写位姿），动画播完自动恢复。
+-- 相机与堆叠均未变化的帧直接返回（pileDirty 为假且相机位姿与上帧相同）。
 hook.Add("Think", "KardsDeckPileParallax", function()
     local ply = LocalPlayer()
     if not IsValid(ply) then return end
@@ -133,7 +200,27 @@ hook.Add("Think", "KardsDeckPileParallax", function()
     if st.inTable.slot ~= 2 then return end
     local tableEnt = st.inTable.ent
     if tableEnt:GetNWString("Kards_Mode", "battle") ~= "deck" then return end
-    if KARDS.AnimPlayer and KARDS.AnimPlayer:Any(SAVE_ANIM_GROUP) then return end
+    local animating = KARDS.AnimPlayer and KARDS.AnimPlayer:Any(SAVE_ANIM_GROUP)
+    if animating then
+        wasAnimating = true
+        return
+    end
+    if wasAnimating then
+        wasAnimating = false
+        pileDirty = true -- 动画期间让位，结束后强制重算一次
+    end
+    local cam = KARDS.BattleCamera
+    local vp, va = cam and cam.ViewPos, cam and cam.ViewAng
+    if not pileDirty and vp and va and lastViewPos and lastViewAng
+        and vp.x == lastViewPos.x and vp.y == lastViewPos.y and vp.z == lastViewPos.z
+        and va.p == lastViewAng.p and va.y == lastViewAng.y and va.r == lastViewAng.r then
+        return
+    end
+    if vp and va then
+        lastViewPos = Vector(vp.x, vp.y, vp.z)
+        lastViewAng = Angle(va.p, va.y, va.r)
+    end
+    pileDirty = false
     ApplyPileParallax(tableEnt)
 end)
 

@@ -3,12 +3,15 @@
 -- 继承其运行时渲染（Draw）与箱体碰撞（ApplyImportedModel → PhysicsInitBox），
 -- 生成时自动应用 wooden_table 模型并做 y-up → z-up 轴修正（GLB 竖立模型平躺）。
 
+-- 多语言查表（2026-10-17）：实体显示名/说明随加载时语言
+local T = KARDS.Lang.T
+
 ENT.Base = "sent_pmx_static_imported"
 ENT.Type = "anim"
-ENT.PrintName = "Kards牌桌"
+ENT.PrintName = T("entity.table.name")
 ENT.Author = "Kards Team"
-ENT.Purpose = "通过前置模组导入的 wooden_table 模型（运行时渲染）"
-ENT.Instructions = "生成后自动应用牌桌模型，带静态箱体碰撞（可站立，不可推动）"
+ENT.Purpose = T("entity.table.purpose")
+ENT.Instructions = T("entity.table.instructions")
 ENT.Spawnable = true
 ENT.AdminOnly = false
 ENT.Category = "Kards"
@@ -16,8 +19,9 @@ ENT.RenderGroup = RENDERGROUP_BOTH -- 与前置一致：不透明 + 半透明双
 
 -- 自注册显示名短语：GMod 名称显示经 language.GetPhrase 处理，未注册短语会被加 # 前缀
 -- （如 #Kards牌桌）；同键同值注册后 GetPhrase 原样返回，保证 Q 菜单/属性面板显示正确
+-- （2026-10-17：短语键取语言表解析后的显示名，中英文各注册一次即可）
 if CLIENT then
-    language.Add("Kards牌桌", "Kards牌桌")
+    language.Add(ENT.PrintName, ENT.PrintName)
 end
 
 -- ====================================================================
@@ -113,7 +117,7 @@ end
 -- 且覆盖自动注册的 Name（避免 # 前缀问题）。两端各自注册（Q 菜单列表在客户端填充）
 if SERVER then
     list.Set("SpawnableEntities", "sent_kards_battle_table", {
-        Name = "Kards牌桌",
+        Name = ENT.PrintName,
         Category = "Kards",
         Order = 1,
     })
@@ -121,7 +125,7 @@ end
 
 if CLIENT then
     list.Set("SpawnableEntities", "sent_kards_battle_table", {
-        Name = "Kards牌桌",
+        Name = ENT.PrintName,
         Category = "Kards",
         Order = 1,
     })

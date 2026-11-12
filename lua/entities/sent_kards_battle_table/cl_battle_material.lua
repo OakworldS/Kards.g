@@ -703,7 +703,8 @@ hook.Add("InitPostEntity", "KardsDeckPileFiles", PrepareDeckPileFiles)
 -- 该国卡背图；back 槽朝下，ClearCache 后预填翻转材质（PrefillBackFlip）。
 local deckPileBackReady = {}
 hook.Add("Think", "KardsBattleDeckPileMaterial", function()
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
+    -- 共享每帧 PMX 列表（KARDS.GetPmxList，cl_init.lua）：同帧只做一次全量扫描
+    for _, ent in ipairs(KARDS.GetPmxList()) do
         if IsValid(ent) and ent:GetNWBool("Kards_IsBattleDeckPile", false) then
             local modelID = ent:GetNWString("Kards_DeckModelID", "")
             if modelID ~= "" then
@@ -772,7 +773,8 @@ hook.Add("InitPostEntity", "KardsHandSlotFiles", PrepareHandSlotFiles)
 -- ====================================================================
 local handSlotModelReady = {}
 hook.Add("Think", "KardsHandSlotCardMaterial", function()
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
+    -- 共享每帧 PMX 列表（KARDS.GetPmxList，cl_init.lua）：同帧只做一次全量扫描
+    for _, ent in ipairs(KARDS.GetPmxList()) do
         if IsValid(ent) and ent:GetNWBool("Kards_IsHandSlotCard", false) then
             local modelID = ent:GetNWString("Kards_DeckModelID", "")
             if modelID ~= "" and not handSlotModelReady[modelID] then

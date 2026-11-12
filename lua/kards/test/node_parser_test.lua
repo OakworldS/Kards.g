@@ -962,9 +962,13 @@ function RunNodeParserTests()
     return TestsFailed == 0
 end
 
--- GMod 控制台命令：kards_node_test
-if concommand then
-    concommand.Add("kards_node_test", function()
+-- GMod 控制台命令：kards_node_test（仅服务端注册；玩家执行需 operator 及以上，服务器控制台放行）
+if SERVER and concommand then
+    concommand.Add("kards_node_test", function(ply)
+        if not KARDS.CanUseDevCommand(ply) then
+            print("[Kards] kards_node_test：需要 operator 及以上权限")
+            return
+        end
         RunNodeParserTests()
     end)
 end

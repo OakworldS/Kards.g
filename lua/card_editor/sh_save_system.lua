@@ -4,6 +4,9 @@
 
 KARDS.CardEditor.SaveSystem = KARDS.CardEditor.SaveSystem or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- ============ 默认卡牌锁定（测试版开关） ============
 -- 「默认卡牌」= 随插件发布的官方卡牌：一旦标记为默认即被锁定，不可修改、不可删除，
 -- 仅可通过「解锁默认卡牌」取消锁定后再编辑。
@@ -215,7 +218,7 @@ function KARDS.CardEditor.SaveSystem.SaveCard(fileName, textureInfo)
     -- 默认卡牌锁定（不可修改）：目标文件已存在且为默认卡牌时，禁止覆盖保存，
     -- 需先在保存窗口解锁后再保存。正式版同样生效——保护官方默认卡牌不被玩家篡改。
     if KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName) then
-        print("[CardEditor] SaveCard blocked: '" .. fileName .. "' 是默认卡牌，已锁定不可修改")
+        print("[CardEditor] SaveCard blocked: '" .. fileName .. "' " .. T("editor.save.default_card_locked_save"))
         return false, "locked"
     end
 
@@ -238,7 +241,9 @@ function KARDS.CardEditor.SaveSystem.SaveCard(fileName, textureInfo)
                 cardType = "headquarter",
                 imagePath = app.imagePath or "",
                 name = app.name or "",
+                nameEn = app.nameEn or "", -- 英文卡名（空则客户端回退中文名）
                 specialEffect = app.specialEffect or "", -- 描述
+                specialEffectEn = app.specialEffectEn or "", -- 英文描述（空则客户端回退中文描述）
                 defense = app.defense or 20,
                 isDefault = app.isDefault == true, -- 默认卡牌（锁定）标记
             },
@@ -308,8 +313,10 @@ end
 local function EnsureHQAppearance(app)
     app.cardType = "headquarter"
     app.name = app.name or "总部"
+    app.nameEn = app.nameEn or ""       -- 英文卡名（空则回退中文名）
     app.imagePath = app.imagePath or ""
     app.specialEffect = app.specialEffect or "" -- 描述
+    app.specialEffectEn = app.specialEffectEn or "" -- 英文描述（空则回退中文描述）
     app.defense = app.defense or 20
     app.cost = 0          -- 总部无费用
     app.actionCost = 0    -- 总部无行动费用
@@ -542,7 +549,7 @@ function KARDS.CardEditor.SaveSystem.GetCardInfo(fileName)
     local info = {
         fileName = fileName,
         name = "",
-        savedAt = data.savedAt or "未知时间",
+        savedAt = data.savedAt or T("editor.save.unknown_time"),
         cardAppearance = data.cardAppearance or {},
         -- 卡面纹理落盘路径 + 渲染像素尺寸（组卡环节直接引用，避免反复离屏渲染）
         texturePath = data.texturePath or nil,
@@ -580,7 +587,7 @@ end
 --- @return boolean 是否解锁成功
 function KARDS.CardEditor.SaveSystem.UnlockDefaultCard(fileName)
     if KARDS.CardEditor.DefaultCardTestMode ~= true then
-        print("[CardEditor] UnlockDefaultCard 已禁用（正式版）")
+        print("[CardEditor] " .. T("editor.save.unlock_disabled"))
         return false
     end
     local path, name = ResolveCardPath(fileName)
@@ -594,7 +601,7 @@ function KARDS.CardEditor.SaveSystem.UnlockDefaultCard(fileName)
     local json = FileOps.Encode(data)
     if not json or not FileOps.Write(path, json) then return false end
     InvalidateCaches()
-    print("[CardEditor] 默认卡牌已解锁: " .. tostring(name))
+    print("[CardEditor] " .. T("editor.save.default_card_unlocked") .. ": " .. tostring(name))
     return true
 end
 
@@ -734,8 +741,7 @@ function KARDS.CardEditor.SaveSystem.LoadEffectForRuntime(fileName)
         if node.runtimeData ~= nil then
             node.data = node.runtimeData
         elseif node.config and node.config ~= "" and not node.base then
-            print(("[CardEditor] 警告: 效果节点「%s」为旧格式（无 base/runtimeData），效果将不执行，请重新保存"):format(
-                tostring(node.name)))
+            print(T("editor.save.legacy_effect_warning", tostring(node.name)))
         end
     end
     return data
@@ -788,7 +794,7 @@ function KARDS.CardEditor.SaveSystem.DeleteCard(fileName)
     -- 默认卡牌锁定（不可删除）：已锁定卡牌一律拒绝删除，需先解锁。
     -- 正式版同样生效——保护官方默认卡牌不被玩家删除。
     if KARDS.CardEditor.SaveSystem.IsDefaultCard(fileName) then
-        print("[CardEditor] DeleteCard blocked: '" .. tostring(fileName) .. "' 是默认卡牌，已锁定不可删除")
+        print("[CardEditor] DeleteCard blocked: '" .. tostring(fileName) .. "' " .. T("editor.save.default_card_locked_delete"))
         return false, "locked"
     end
     if KARDS.CardEditor.SaveSystem.DeleteFile(CARDS_DIR, fileName) then return true end

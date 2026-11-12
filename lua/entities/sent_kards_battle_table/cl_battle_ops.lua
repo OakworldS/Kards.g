@@ -20,6 +20,10 @@
 if not CLIENT then return end
 
 KARDS = KARDS or {}
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 local BS = KARDS.BattleState
 
 -- 单位短卡命中尺寸（basic_card_unit 世界 7.2×8.528 / 2 + 四周容差；手牌命中尺寸
@@ -40,11 +44,8 @@ function KARDS.UnitOpsReset()
     prevOpLeft = false
 end
 
--- 总部实体识别：服务端总部实体设置 Kards_DeckRole="hq"（见 table_battledeck.lua
+-- 总部实体识别：KARDS.HitTest.Filters.IsHQ（Kards_DeckRole="hq"，见 table_battledeck.lua
 -- LoadPlayerBattleDeck）；战场单位实体无此 NW（Kards_CardAttack/Defense/ActionCost）
-local function IsHQ(ent)
-    return IsValid(ent) and ent:GetNWString("Kards_DeckRole", "") == "hq"
-end
 
 -- 射线命中多个候选场（表数组）中最近的一个实体；skipHQ 时跳过总部实体
 -- @param fields  table 候选场数组（{ [ent] = 槽位 } 布局表）
@@ -53,18 +54,11 @@ end
 -- @param dir    Vector 射线方向（鼠标视线）
 -- @return Entity|nil 最近命中的实体
 local function HitUnits(fields, skipHQ, pos, dir)
-    local bestD, hit = math.huge, nil
-    for _, field in ipairs(fields) do
-        for e in pairs(field or {}) do
-            if IsValid(e) and not (skipHQ and IsHQ(e)) then
-                if KARDS.RayCardHit(pos, dir, e, KARDS.UnitHitHalfW, KARDS.UnitHitHalfL) then
-                    local d = KARDS.RayPointDistSqr(pos, dir, e:GetPos())
-                    if d < bestD then bestD, hit = d, e end
-                end
-            end
-        end
-    end
-    return hit
+    local filter = skipHQ
+        and KARDS.HitTest.All(KARDS.HitTest.Filters.Valid, KARDS.HitTest.Filters.NotHQ)
+        or KARDS.HitTest.Filters.Valid
+    return KARDS.HitTest.NearestCardFace(pos, dir, fields,
+        KARDS.UnitHitHalfW, KARDS.UnitHitHalfL, nil, filter)
 end
 
 -- 鼠标投影到牌桌局部 z 平面（前线移动判定用；与 cl_init.lua MouseLocalZ 同法）
@@ -91,16 +85,24 @@ local function ResolveUnitOpTarget(pos, dir, unitOpSel)
     if not IsValid(unitOpSel) then return nil end
     local ownSlot = BS.inTable.slot
     local enemySlot = (ownSlot == 1) and 2 or 1
-    -- 1) 悬停敌方单位 → 交战（readme 7.1：交战 = 攻击另一个单位；总部不算）
-    local enemyFields = { BS.fieldLayouts[enemySlot] }
+    -- 1) 敌方候选场：单位与总部各取最近（2026-10-16 优化，原实现分两次遍历；
+    --    本处仍按「两次取最近」表达，优先级不变：单位先于总部）
+    --    （readme 7.1：交战 = 攻击另一个单位；总部不算交战，攻击总部不算交战）
+    local support = BS.fieldLayouts[enemySlot]
+    local enemyFields = { support }
     if BS.frontlineOwnerSlot == enemySlot then
         enemyFields[#enemyFields + 1] = BS.frontlineLayout
     end
-    local enemy = HitUnits(enemyFields, true, pos, dir)
+    local enemy = KARDS.HitTest.NearestCardFace(pos, dir, enemyFields,
+        KARDS.UnitHitHalfW, KARDS.UnitHitHalfL, nil,
+        KARDS.HitTest.All(KARDS.HitTest.Filters.Valid, KARDS.HitTest.Filters.NotHQ))
+    -- 总部只可能在本方 / 敌方支援阵线；与原第二次遍历的口径一致
+    local hq = KARDS.HitTest.NearestCardFace(pos, dir, { support },
+        KARDS.UnitHitHalfW, KARDS.UnitHitHalfL, nil,
+        KARDS.HitTest.All(KARDS.HitTest.Filters.Valid, KARDS.HitTest.Filters.IsHQ))
     if enemy then return { kind = "engage", ent = enemy } end
-    -- 2) 悬停敌方总部 → 攻击总部（readme 7.1：攻击总部不算交战）
-    local hq = HitUnits({ BS.fieldLayouts[enemySlot] }, false, pos, dir)
-    if hq and IsHQ(hq) then return { kind = "hq", ent = hq } end
+    -- 2) 敌方总部 → 攻击总部
+    if hq then return { kind = "hq", ent = hq } end
     -- 3) 支援阵线单位指向前线区域 → 移动至前线（readme 7.1 操作；
     --    前线单位已在前线，不提供移动——仅本方支援阵线单位可移动）
     if BS.fieldLayouts[ownSlot] and BS.fieldLayouts[ownSlot][unitOpSel] then
@@ -145,10 +147,11 @@ hook.Add("Think", "KardsUnitOpThink", function()
         return
     end
 
-    local pos = (KARDS.BattleCamera and KARDS.BattleCamera.ViewPos) or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-        dir = (KARDS.BattleCamera and KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
+    -- 相机射线统一走抗视差实现（KARDS.HitTest.MouseRay）
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then
+        prevOpLeft = left
+        return
     end
 
     local ownSlot = BS.inTable.slot
@@ -212,10 +215,10 @@ hook.Add("Think", "KardsUnitOpThink", function()
             local hit = HitUnits(allFields, false, pos, dir)
             if IsValid(hit) then
                 if hit ~= BS.unitOpSel then
-                    KARDS.BattleHint.Push("不能指向此目标")
+                    KARDS.BattleHint.Push(T("battle.pointing.invalid"))
                 end
             else
-                KARDS.BattleHint.Push("请指向目标")
+                KARDS.BattleHint.Push(T("battle.pointing.none"))
             end
         end
         BS.unitOpSel = nil

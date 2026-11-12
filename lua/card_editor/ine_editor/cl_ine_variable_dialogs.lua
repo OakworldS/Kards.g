@@ -13,8 +13,8 @@
 
 依赖：
   - INE:ShowOverlayWindow（在 cl_ine_node_editor.lua 中定义）
-  - INE.VarSearchState、INE.NumVarFieldState、INE.FuncVarFieldState、INE.ArrayVarFieldState
-    （DTextEntry IME 兼容方案状态，在 cl_ine_node_editor.lua 行 54~100 声明）
+  - INE:Field(editor, kind) 与 INE:Entry(editor, kind)（按编辑器实例存放的内联输入会话）
+    状态工厂在 cl_ine_node_editor.lua 的 INE.FieldStateFactories 声明，生命周期见 ADR 0010
 
 源文件：cl_ine_node_editor.lua（行 2183~2817）
 =======================================================================================
@@ -23,6 +23,7 @@
 -- 此文件内容将剪切自 cl_ine_node_editor.lua 行 2183~2817
 -- 包含：ShowNumberVarDialog、ShowFuncVarDialog、ShowArrayVarDialog
 local INE = KARDS.CardEditor.IndependentNodeEditor
+local T = KARDS.Lang.T
 
 -- 节点选择器"高级"上拉框辅助：统计固定展示的基础变量系统节点数量
 -- 基础变量系统节点由 cl_ine_var_op_nodes.lua RegisterAll 标记 _varOpNode 并保存内置清单
@@ -57,7 +58,7 @@ function INE:ShowNumberVarDialog(editor, varIdx, varData)
     local dialogW, dialogH = 400, 250
     INE:ShowOverlayWindow(editor, {
         id = "ine_numvar_dialog",
-        title = "数字变量",
+        title = T("editor.nodevar.number_variable"),
         showScope = true, scope = varData.scope or "global",
         x = editor.x + (editor.width - dialogW) / 2,
         y = editor.y + (editor.height - dialogH) / 2,
@@ -68,10 +69,10 @@ function INE:ShowNumberVarDialog(editor, varIdx, varData)
             local vars = ed.variables["n"] or {}
             local vd = vars[varIdx]
             if not vd then return end
-            local activeField = INE.NumVarFieldState and INE.NumVarFieldState.active and INE.NumVarFieldState.field
+            local activeField = INE:Field(ed, "NumVar") and INE:Field(ed, "NumVar").active and INE:Field(ed, "NumVar").field
 
             -- 变量名
-            draw.SimpleText("变量名:", "SourceHan_Heavy_12", cx + 15, cy + 15, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.variable_name"), "SourceHan_Heavy_12", cx + 15, cy + 15, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local nameX, nameY, nameW, nameH = cx + 15, cy + 35, cw - 30, 30
             local nameHov = mx >= nameX and mx <= nameX + nameW and my >= nameY and my <= nameY + nameH
             local nameActive = activeField == "name"
@@ -92,7 +93,7 @@ function INE:ShowNumberVarDialog(editor, varIdx, varData)
             ed._numVarField_name = {x = nameX, y = nameY, w = nameW, h = nameH}
 
             -- 内部名称
-            draw.SimpleText("内部名称（代码中使用，留空自动分配唯一ID）:", "SourceHan_Heavy_10", cx + 15, cy + 75, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.internal_name_hint"), "SourceHan_Heavy_10", cx + 15, cy + 75, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local inameX, inameY, inameW, inameH = cx + 15, cy + 92, cw - 30, 28
             local inameHov = mx >= inameX and mx <= inameX + inameW and my >= inameY and my <= inameY + inameH
             local inameActive = activeField == "iname"
@@ -113,7 +114,7 @@ function INE:ShowNumberVarDialog(editor, varIdx, varData)
             ed._numVarField_iname = {x = inameX, y = inameY, w = inameW, h = inameH}
 
             -- 初始值
-            draw.SimpleText("初始值:", "SourceHan_Heavy_12", cx + 15, cy + 130, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.initial_value"), "SourceHan_Heavy_12", cx + 15, cy + 130, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local valX, valY, valW, valH = cx + 15, cy + 150, cw - 30, 28
             local valHov = mx >= valX and mx <= valX + valW and my >= valY and my <= valY + valH
             local valActive = activeField == "val"
@@ -138,9 +139,9 @@ function INE:ShowNumberVarDialog(editor, varIdx, varData)
             local confirmHov = mx >= cx + cw/2 - 80 and mx <= cx + cw/2 - 80 + 70 and my >= btnY and my <= btnY + 28
             local cancelHov = mx >= cx + cw/2 + 10 and mx <= cx + cw/2 + 10 + 70 and my >= btnY and my <= btnY + 28
             draw.RoundedBox(6, cx + cw/2 - 80, btnY, 70, 28, confirmHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("确定", "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.confirm"), "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             draw.RoundedBox(6, cx + cw/2 + 10, btnY, 70, 28, cancelHov and Color(100, 60, 60) or Color(65, 55, 55))
-            draw.SimpleText("取消", "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.cancel"), "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._numVarConfirmRect = {x = cx + cw/2 - 80, y = btnY, w = 70, h = 28}
             ed._numVarCancelRect = {x = cx + cw/2 + 10, y = btnY, w = 70, h = 28}
         end
@@ -163,7 +164,7 @@ function INE:ShowFuncVarDialog(editor, varIdx)
     local funcScope = funcVarData and funcVarData.scope or "global"
     INE:ShowOverlayWindow(editor, {
         id = "ine_funcvar_dialog",
-        title = "函数变量",
+        title = T("editor.nodevar.function_variable"),
         showScope = true, scope = funcScope,
         x = editor.x + (editor.width - dialogW) / 2,
         y = editor.y + (editor.height - dialogH) / 2,
@@ -177,10 +178,10 @@ function INE:ShowFuncVarDialog(editor, varIdx)
             if not vd then return end
 
             -- 函数名称
-            draw.SimpleText("函数名称:", "SourceHan_Heavy_12", cx + 15, cy + 10, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.function_name"), "SourceHan_Heavy_12", cx + 15, cy + 10, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local nameX, nameY, nameW, nameH = cx + 15, cy + 28, cw - 30, 28
             local nameHov = mx >= nameX and mx <= nameX + nameW and my >= nameY and my <= nameY + nameH
-            local nameActive = INE.FuncVarFieldState and INE.FuncVarFieldState.active and INE.FuncVarFieldState.editorID == (ed.panelID or ed.id)
+            local nameActive = INE:Field(dataEditor, "FuncVar") and INE:Field(dataEditor, "FuncVar").active and INE:Field(dataEditor, "FuncVar").editorID == (ed.panelID or ed.id)
             draw.RoundedBox(4, nameX, nameY, nameW, nameH, nameActive and Color(60, 65, 80) or (nameHov and Color(60, 65, 70) or Color(50, 55, 60)))
             if nameActive then
                 surface.SetDrawColor(Color(100, 150, 255, 150))
@@ -199,7 +200,7 @@ function INE:ShowFuncVarDialog(editor, varIdx)
 
             -- 参数列表标题
             local listTitleY = cy + 65
-            draw.SimpleText("参数列表:", "SourceHan_Heavy_12", cx + 15, listTitleY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.parameter_list"), "SourceHan_Heavy_12", cx + 15, listTitleY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
             -- 参数列表（每项显示：类型图标 + 参数名 + 删除按钮）
             local params = vd.params or {}
@@ -229,18 +230,18 @@ function INE:ShowFuncVarDialog(editor, varIdx)
 
             -- 添加参数输入框
             local addFieldY = paramStartY + #params * paramItemH + 6
-            local paramFieldActive = INE.FuncParamFieldState and INE.FuncParamFieldState.active and INE.FuncParamFieldState.editorID == (ed.panelID or ed.id)
+            local paramFieldActive = INE:Field(dataEditor, "FuncParam") and INE:Field(dataEditor, "FuncParam").active and INE:Field(dataEditor, "FuncParam").editorID == (ed.panelID or ed.id)
             local pfieldX, pfieldY, pfieldW, pfieldH = cx + 15, addFieldY, cw - 100, 24
             draw.RoundedBox(4, pfieldX, pfieldY, pfieldW, pfieldH, paramFieldActive and Color(60, 65, 80) or Color(45, 45, 50))
             if paramFieldActive then
                 surface.SetDrawColor(Color(100, 150, 255, 150))
                 surface.DrawOutlinedRect(pfieldX, pfieldY, pfieldW, pfieldH)
             end
-            local paramInputText = INE.FuncParamFieldState and INE.FuncParamFieldState.text or ""
+            local paramInputText = INE:Field(dataEditor, "FuncParam") and INE:Field(dataEditor, "FuncParam").text or ""
             if paramInputText ~= "" then
                 draw.SimpleText(paramInputText, "SourceHan_Heavy_12", pfieldX + 8, pfieldY + pfieldH / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             else
-                draw.SimpleText("输入参数名...", "SourceHan_Heavy_12", pfieldX + 8, pfieldY + pfieldH / 2, Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                draw.SimpleText(T("editor.nodevar.parameter_name_placeholder"), "SourceHan_Heavy_12", pfieldX + 8, pfieldY + pfieldH / 2, Color(120, 120, 120), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             end
             -- 光标
             if paramFieldActive and math.floor(SysTime() * 2) % 2 == 0 then
@@ -255,14 +256,14 @@ function INE:ShowFuncVarDialog(editor, varIdx)
             local addBtnX = pfieldX + pfieldW + 6
             local addBtnHov = mx >= addBtnX and mx <= addBtnX + 50 and my >= pfieldY and my <= pfieldY + pfieldH
             draw.RoundedBox(4, addBtnX, pfieldY, 50, pfieldH, addBtnHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("添加", "SourceHan_Heavy_12", addBtnX + 25, pfieldY + pfieldH / 2, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.add"), "SourceHan_Heavy_12", addBtnX + 25, pfieldY + pfieldH / 2, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._funcVarField_addBtn = {x = addBtnX, y = pfieldY, w = 50, h = pfieldH}
 
             -- 参数类型选择器（仅在待确认添加参数时显示）
             ed._funcVarTypeBtns = {}
             if ed._funcVarPendingParam then
                 local pendingY = pfieldY + pfieldH + 8
-                draw.SimpleText("选择参数类型:", "SourceHan_Heavy_10", cx + 15, pendingY + 11, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                draw.SimpleText(T("editor.nodevar.select_parameter_type"), "SourceHan_Heavy_10", cx + 15, pendingY + 11, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 local typeBtnSize2 = 22
                 local typeBtnGap2 = 6
                 local typeStartX2 = cx + 110
@@ -296,9 +297,9 @@ function INE:ShowFuncVarDialog(editor, varIdx)
             local confirmHov = mx >= cx + cw/2 - 80 and mx <= cx + cw/2 - 80 + 70 and my >= btnY and my <= btnY + 28
             local cancelHov = mx >= cx + cw/2 + 10 and mx <= cx + cw/2 + 10 + 70 and my >= btnY and my <= btnY + 28
             draw.RoundedBox(6, cx + cw/2 - 80, btnY, 70, 28, confirmHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("确定", "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.confirm"), "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             draw.RoundedBox(6, cx + cw/2 + 10, btnY, 70, 28, cancelHov and Color(100, 60, 60) or Color(65, 55, 55))
-            draw.SimpleText("取消", "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.cancel"), "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._funcVarConfirmRect = {x = cx + cw/2 - 80, y = btnY, w = 70, h = 28}
             ed._funcVarCancelRect = {x = cx + cw/2 + 10, y = btnY, w = 70, h = 28}
         end
@@ -320,7 +321,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
     local arrScope = arrVarData and arrVarData.scope or "global"
     INE:ShowOverlayWindow(editor, {
         id = "ine_arrayvar_dialog",
-        title = "数组变量",
+        title = T("editor.nodevar.array_variable"),
         showScope = true, scope = arrScope,
         x = editor.x + (editor.width - dialogW) / 2,
         y = editor.y + (editor.height - dialogH) / 2,
@@ -331,10 +332,10 @@ function INE:ShowArrayVarDialog(editor, varIdx)
             local vars = ed.variables["g"] or {}
             local vd = vars[varIdx]
             if not vd then return end
-            local activeField = INE.ArrayVarFieldState and INE.ArrayVarFieldState.active and INE.ArrayVarFieldState.field
+            local activeField = INE:Field(ed, "ArrayVar") and INE:Field(ed, "ArrayVar").active and INE:Field(ed, "ArrayVar").field
 
             -- 变量名
-            draw.SimpleText("变量名:", "SourceHan_Heavy_12", cx + 15, cy + 10, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.variable_name"), "SourceHan_Heavy_12", cx + 15, cy + 10, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local nameX, nameY, nameW, nameH = cx + 15, cy + 28, cw - 30, 28
             local nameHov = mx >= nameX and mx <= nameX + nameW and my >= nameY and my <= nameY + nameH
             local nameActive = activeField == "name"
@@ -354,7 +355,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
             ed._arrayVarField_name = {x = nameX, y = nameY, w = nameW, h = nameH}
 
             -- 内部名称
-            draw.SimpleText("内部名称（代码中使用，留空自动分配唯一ID）:", "SourceHan_Heavy_10", cx + 15, cy + 62, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.internal_name_hint"), "SourceHan_Heavy_10", cx + 15, cy + 62, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local inameX, inameY, inameW, inameH = cx + 15, cy + 78, cw - 30, 28
             local inameHov = mx >= inameX and mx <= inameX + inameW and my >= inameY and my <= inameY + inameH
             local inameActive = activeField == "iname"
@@ -375,7 +376,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
 
             -- 项列表标题
             local listTitleY = cy + 115
-            draw.SimpleText("数组成员:", "SourceHan_Heavy_12", cx + 15, listTitleY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.array_members"), "SourceHan_Heavy_12", cx + 15, listTitleY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
             -- 建立类型ID→DataTypes的反查表
             local idToDt = {}
@@ -429,9 +430,9 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                 elseif item.type == "e" then
                     local cv = item.value or {}
                     if cv.isEmpty then
-                        previewStr = "空对象"
+                        previewStr = T("editor.nodevar.empty_object")
                     else
-                        previewStr = cv.cardName or (cv.cardFile and cv.cardFile:gsub("%.json$", "") or "已保存卡牌")
+                        previewStr = cv.cardName or (cv.cardFile and cv.cardFile:gsub("%.json$", "") or T("editor.nodevar.saved_card"))
                     end
                 end
                 -- 截断过长的预览文本
@@ -453,12 +454,12 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                 local addBtnX, addBtnY, addBtnW, addBtnH = cx + 15, addAreaY, 70, 24
                 local addBtnHov = mx >= addBtnX and mx <= addBtnX + addBtnW and my >= addBtnY and my <= addBtnY + addBtnH
                 draw.RoundedBox(4, addBtnX, addBtnY, addBtnW, addBtnH, addBtnHov and Color(70, 120, 70) or Color(55, 65, 55))
-                draw.SimpleText("添加项", "SourceHan_Heavy_12", addBtnX + addBtnW / 2, addBtnY + addBtnH / 2, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                draw.SimpleText(T("editor.nodevar.add_item"), "SourceHan_Heavy_12", addBtnX + addBtnW / 2, addBtnY + addBtnH / 2, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 ed._arrayVarAddBtn = {x = addBtnX, y = addBtnY, w = addBtnW, h = addBtnH}
 
                 -- 类型选择器（点击"添加项"后显示）
                 ed._arrayVarTypeBtns = {}
-                local selectedType = INE.ArrayVarPendingType
+                local selectedType = INE:ArrayVarCtx(ed).pendingType
                 if selectedType then
                     local typeBtnSize2 = 22
                     local typeBtnGap2 = 6
@@ -490,7 +491,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                     local valInputY = typeStartY2 + typeBtnSize2 + 8
                     local valActive = activeField == "val_n" or activeField == "val_t"
                     if selectedType == "n" then
-                        draw.SimpleText("值:", "SourceHan_Heavy_12", cx + 15, valInputY + 12, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                        draw.SimpleText(T("editor.nodevar.value"), "SourceHan_Heavy_12", cx + 15, valInputY + 12, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                         local valX, valY, valW, valH = cx + 40, valInputY, cw - 160, 24
                         local valHov = mx >= valX and mx <= valX + valW and my >= valY and my <= valY + valH
                         draw.RoundedBox(4, valX, valY, valW, valH, valActive and Color(60, 65, 80) or (valHov and Color(60, 65, 70) or Color(50, 55, 60)))
@@ -498,7 +499,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                             surface.SetDrawColor(Color(100, 150, 255, 150))
                             surface.DrawOutlinedRect(valX, valY, valW, valH)
                         end
-                        local valText = tostring(INE.ArrayVarItemValue or "")
+                        local valText = tostring(INE:ArrayVarCtx(ed).itemValue or "")
                         draw.SimpleText(valText, "SourceHan_Heavy_12", valX + 8, valY + valH / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                         if valActive and math.floor(SysTime() * 2) % 2 == 0 then
                             surface.SetFont("SourceHan_Heavy_12")
@@ -508,7 +509,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                         end
                         ed._arrayVarField_val = {x = valX, y = valY, w = valW, h = valH}
                     elseif selectedType == "t" then
-                        draw.SimpleText("文本:", "SourceHan_Heavy_12", cx + 15, valInputY + 12, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                        draw.SimpleText(T("editor.nodevar.text"), "SourceHan_Heavy_12", cx + 15, valInputY + 12, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                         local valX, valY, valW, valH = cx + 50, valInputY, cw - 170, 24
                         local valHov = mx >= valX and mx <= valX + valW and my >= valY and my <= valY + valH
                         draw.RoundedBox(4, valX, valY, valW, valH, valActive and Color(60, 65, 80) or (valHov and Color(60, 65, 70) or Color(50, 55, 60)))
@@ -516,7 +517,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                             surface.SetDrawColor(Color(100, 150, 255, 150))
                             surface.DrawOutlinedRect(valX, valY, valW, valH)
                         end
-                        local valText = tostring(INE.ArrayVarItemValue or "")
+                        local valText = tostring(INE:ArrayVarCtx(ed).itemValue or "")
                         draw.SimpleText(valText, "SourceHan_Heavy_12", valX + 8, valY + valH / 2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                         if valActive and math.floor(SysTime() * 2) % 2 == 0 then
                             surface.SetFont("SourceHan_Heavy_12")
@@ -526,8 +527,8 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                         end
                         ed._arrayVarField_val = {x = valX, y = valY, w = valW, h = valH}
                     elseif selectedType == "p" then
-                        draw.SimpleText("值:", "SourceHan_Heavy_12", cx + 15, valInputY + 12, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-                        local curBool = (INE.ArrayVarItemValue == true) or (INE.ArrayVarItemValue == nil)
+                        draw.SimpleText(T("editor.nodevar.value"), "SourceHan_Heavy_12", cx + 15, valInputY + 12, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                        local curBool = (INE:ArrayVarCtx(ed).itemValue == true) or (INE:ArrayVarCtx(ed).itemValue == nil)
                         local trueX, trueY, trueW, trueH = cx + 40, valInputY, 50, 24
                         local falseX = trueX + trueW + 6
                         local trueHov = mx >= trueX and mx <= trueX + trueW and my >= trueY and my <= trueY + trueH
@@ -539,9 +540,9 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                         ed._arrayVarField_boolTrue = {x = trueX, y = trueY, w = trueW, h = trueH}
                         ed._arrayVarField_boolFalse = {x = falseX, y = trueY, w = trueW, h = trueH}
                     elseif selectedType == "f" then
-                        draw.SimpleText("→ 正在打开函数变量创建窗口...", "SourceHan_Heavy_12", cx + 15, valInputY + 14, Color(180, 200, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                        draw.SimpleText(T("editor.nodevar.opening_function_creator"), "SourceHan_Heavy_12", cx + 15, valInputY + 14, Color(180, 200, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     elseif selectedType == "g" then
-                        draw.SimpleText("→ 正在打开数组变量创建窗口...", "SourceHan_Heavy_12", cx + 15, valInputY + 14, Color(180, 200, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                        draw.SimpleText(T("editor.nodevar.opening_array_creator"), "SourceHan_Heavy_12", cx + 15, valInputY + 14, Color(180, 200, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                     end
 
                     -- "确认添加"按钮（仅对简单类型显示）
@@ -549,7 +550,7 @@ function INE:ShowArrayVarDialog(editor, varIdx)
                     if selectedType == "n" or selectedType == "t" or selectedType == "p" then
                         local confirmAddHov = mx >= cx + cw - 100 and mx <= cx + cw - 100 + 70 and my >= confirmAddY and my <= confirmAddY + 24
                         draw.RoundedBox(4, cx + cw - 100, confirmAddY, 70, 24, confirmAddHov and Color(70, 120, 70) or Color(55, 65, 55))
-                        draw.SimpleText("确认添加", "SourceHan_Heavy_12", cx + cw - 65, confirmAddY + 12, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                        draw.SimpleText(T("editor.nodevar.confirm_add"), "SourceHan_Heavy_12", cx + cw - 65, confirmAddY + 12, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                         ed._arrayVarAddConfirmRect = {x = cx + cw - 100, y = confirmAddY, w = 70, h = 24}
                     end
                 end
@@ -560,9 +561,9 @@ function INE:ShowArrayVarDialog(editor, varIdx)
             local confirmHov = mx >= cx + cw/2 - 80 and mx <= cx + cw/2 - 80 + 70 and my >= btnY and my <= btnY + 28
             local cancelHov = mx >= cx + cw/2 + 10 and mx <= cx + cw/2 + 10 + 70 and my >= btnY and my <= btnY + 28
             draw.RoundedBox(6, cx + cw/2 - 80, btnY, 70, 28, confirmHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("确定", "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.confirm"), "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             draw.RoundedBox(6, cx + cw/2 + 10, btnY, 70, 28, cancelHov and Color(100, 60, 60) or Color(65, 55, 55))
-            draw.SimpleText("取消", "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.cancel"), "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._arrayVarConfirmRect = {x = cx + cw/2 - 80, y = btnY, w = 70, h = 28}
             ed._arrayVarCancelRect = {x = cx + cw/2 + 10, y = btnY, w = 70, h = 28}
         end
@@ -584,7 +585,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
     local cardScope = cardVarData and cardVarData.scope or "global"
     INE:ShowOverlayWindow(editor, {
         id = "ine_cardvar_dialog",
-        title = "卡牌对象",
+        title = T("editor.nodevar.card_object"),
         showScope = true, scope = cardScope,
         x = editor.x + (editor.width - dialogW) / 2,
         y = editor.y + (editor.height - dialogH) / 2,
@@ -595,10 +596,10 @@ function INE:ShowCardVarDialog(editor, varIdx)
             local vars = ed.variables["e"] or {}
             local vd = vars[varIdx]
             if not vd then return end
-            local activeField = INE.CardVarFieldState and INE.CardVarFieldState.active and INE.CardVarFieldState.field
+            local activeField = INE:Field(ed, "CardVar") and INE:Field(ed, "CardVar").active and INE:Field(ed, "CardVar").field
 
             -- 变量名
-            draw.SimpleText("变量名:", "SourceHan_Heavy_12", cx + 15, cy + 10, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.variable_name"), "SourceHan_Heavy_12", cx + 15, cy + 10, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local nameX, nameY, nameW, nameH = cx + 15, cy + 28, cw - 30, 28
             local nameHov = mx >= nameX and mx <= nameX + nameW and my >= nameY and my <= nameY + nameH
             local nameActive = activeField == "name"
@@ -618,7 +619,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
             ed._cardVarField_name = {x = nameX, y = nameY, w = nameW, h = nameH}
 
             -- 内部变量名
-            draw.SimpleText("内部变量:", "SourceHan_Heavy_12", cx + 15, cy + 64, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.internal_variable"), "SourceHan_Heavy_12", cx + 15, cy + 64, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local inameX, inameY, inameW, inameH = cx + 15, cy + 82, cw - 30, 28
             local inameHov = mx >= inameX and mx <= inameX + inameW and my >= inameY and my <= inameY + inameH
             local inameActive = activeField == "internalName"
@@ -639,7 +640,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
 
             -- 模式选择
             local modeY = cy + 124
-            draw.SimpleText("卡牌来源:", "SourceHan_Heavy_12", cx + 15, modeY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.card_source"), "SourceHan_Heavy_12", cx + 15, modeY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local mode = vd._mode or "empty"
             local radioY = modeY + 20
             -- 空对象
@@ -649,7 +650,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
             if mode == "empty" then
                 draw.RoundedBox(4, emptyRadioX + 4, radioY + 6, 6, 6, Color(180, 200, 255))
             end
-            draw.SimpleText("空对象", "SourceHan_Heavy_12", emptyRadioX + 22, radioY + 9, emptyHov and Color(220, 220, 220) or Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.empty_object"), "SourceHan_Heavy_12", emptyRadioX + 22, radioY + 9, emptyHov and Color(220, 220, 220) or Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             ed._cardVarEmptyRadio = {x = emptyRadioX - 10, y = radioY - 4, w = 150, h = 24}
 
             -- 已保存的卡牌
@@ -659,7 +660,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
             if mode == "saved" then
                 draw.RoundedBox(4, savedRadioX + 4, radioY + 6, 6, 6, Color(180, 200, 255))
             end
-            draw.SimpleText("已保存的卡牌", "SourceHan_Heavy_12", savedRadioX + 22, radioY + 9, savedHov and Color(220, 220, 220) or Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.saved_cards"), "SourceHan_Heavy_12", savedRadioX + 22, radioY + 9, savedHov and Color(220, 220, 220) or Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             ed._cardVarSavedRadio = {x = savedRadioX - 10, y = radioY - 4, w = 180, h = 24}
 
             -- 当选择"已保存的卡牌"时，显示卡牌列表
@@ -667,7 +668,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
             if mode == "saved" then
                 ed._cardVarItemRects = {}
                 local listY = radioY + 32
-                draw.SimpleText("选择卡牌:", "SourceHan_Heavy_12", cx + 15, listY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+                draw.SimpleText(T("editor.nodevar.select_card"), "SourceHan_Heavy_12", cx + 15, listY, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
 
                 -- 获取已保存卡牌列表（缓存）
                 if not ed._cardVarCardInfos then
@@ -734,7 +735,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
 
                 -- 如果没有卡牌
                 if #cardInfos == 0 then
-                    draw.SimpleText("暂无已保存的卡牌", "SourceHan_Heavy_12", cx + cw / 2, listY + 15, Color(120, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                    draw.SimpleText(T("editor.nodevar.no_saved_cards"), "SourceHan_Heavy_12", cx + cw / 2, listY + 15, Color(120, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 end
             end
 
@@ -743,9 +744,9 @@ function INE:ShowCardVarDialog(editor, varIdx)
             local confirmHov = mx >= cx + cw/2 - 80 and mx <= cx + cw/2 - 80 + 70 and my >= btnY and my <= btnY + 28
             local cancelHov = mx >= cx + cw/2 + 10 and mx <= cx + cw/2 + 10 + 70 and my >= btnY and my <= btnY + 28
             draw.RoundedBox(6, cx + cw/2 - 80, btnY, 70, 28, confirmHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("确定", "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.confirm"), "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             draw.RoundedBox(6, cx + cw/2 + 10, btnY, 70, 28, cancelHov and Color(100, 60, 60) or Color(65, 55, 55))
-            draw.SimpleText("取消", "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.cancel"), "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._cardVarConfirmRect = {x = cx + cw/2 - 80, y = btnY, w = 70, h = 28}
             ed._cardVarCancelRect = {x = cx + cw/2 + 10, y = btnY, w = 70, h = 28}
 
@@ -778,7 +779,7 @@ function INE:ShowCardVarDialog(editor, varIdx)
                 -- 调用卡牌预览绘制（不更改缩放）
                 local ok, err = pcall(KARDS.CardEditor.Canvas.DrawCardPreview, app, previewX, previewY, previewW, previewH)
                 if not ok then
-                    draw.SimpleText("预览加载失败", "SourceHan_Heavy_10", previewX + previewW / 2, previewY + previewH / 2, Color(255, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                    draw.SimpleText(T("editor.nodevar.preview_load_failed"), "SourceHan_Heavy_10", previewX + previewW / 2, previewY + previewH / 2, Color(255, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                 end
             end
         end
@@ -798,7 +799,7 @@ function INE:ShowStringVarDialog(editor, varIdx, varData)
     local dialogW, dialogH = 400, 250
     INE:ShowOverlayWindow(editor, {
         id = "ine_stringvar_dialog",
-        title = "字符串变量",
+        title = T("editor.nodevar.string_variable"),
         showScope = true, scope = varData.scope or "global",
         x = editor.x + (editor.width - dialogW) / 2,
         y = editor.y + (editor.height - dialogH) / 2,
@@ -809,10 +810,10 @@ function INE:ShowStringVarDialog(editor, varIdx, varData)
             local vars = ed.variables["t"] or {}
             local vd = vars[varIdx]
             if not vd then return end
-            local activeField = INE.StringVarFieldState and INE.StringVarFieldState.active and INE.StringVarFieldState.field
+            local activeField = INE:Field(ed, "StringVar") and INE:Field(ed, "StringVar").active and INE:Field(ed, "StringVar").field
 
             -- 变量名
-            draw.SimpleText("变量名:", "SourceHan_Heavy_12", cx + 15, cy + 15, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.variable_name"), "SourceHan_Heavy_12", cx + 15, cy + 15, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local nameX, nameY, nameW, nameH = cx + 15, cy + 35, cw - 30, 30
             local nameHov = mx >= nameX and mx <= nameX + nameW and my >= nameY and my <= nameY + nameH
             local nameActive = activeField == "name"
@@ -832,7 +833,7 @@ function INE:ShowStringVarDialog(editor, varIdx, varData)
             ed._stringVarField_name = {x = nameX, y = nameY, w = nameW, h = nameH}
 
             -- 内部变量名
-            draw.SimpleText("内部变量名（代码中使用，留空自动分配唯一ID）:", "SourceHan_Heavy_10", cx + 15, cy + 75, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.internal_var_name_hint"), "SourceHan_Heavy_10", cx + 15, cy + 75, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local inameX, inameY, inameW, inameH = cx + 15, cy + 92, cw - 30, 28
             local inameHov = mx >= inameX and mx <= inameX + inameW and my >= inameY and my <= inameY + inameH
             local inameActive = activeField == "iname"
@@ -852,7 +853,7 @@ function INE:ShowStringVarDialog(editor, varIdx, varData)
             ed._stringVarField_iname = {x = inameX, y = inameY, w = inameW, h = inameH}
 
             -- 文本内容
-            draw.SimpleText("文本:", "SourceHan_Heavy_12", cx + 15, cy + 130, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.text"), "SourceHan_Heavy_12", cx + 15, cy + 130, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local valX, valY, valW, valH = cx + 15, cy + 150, cw - 30, 28
             local valHov = mx >= valX and mx <= valX + valW and my >= valY and my <= valY + valH
             local valActive = activeField == "text"
@@ -876,9 +877,9 @@ function INE:ShowStringVarDialog(editor, varIdx, varData)
             local confirmHov = mx >= cx + cw/2 - 80 and mx <= cx + cw/2 - 80 + 70 and my >= btnY and my <= btnY + 28
             local cancelHov = mx >= cx + cw/2 + 10 and mx <= cx + cw/2 + 10 + 70 and my >= btnY and my <= btnY + 28
             draw.RoundedBox(6, cx + cw/2 - 80, btnY, 70, 28, confirmHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("确定", "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.confirm"), "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             draw.RoundedBox(6, cx + cw/2 + 10, btnY, 70, 28, cancelHov and Color(100, 60, 60) or Color(65, 55, 55))
-            draw.SimpleText("取消", "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.cancel"), "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._stringVarConfirmRect = {x = cx + cw/2 - 80, y = btnY, w = 70, h = 28}
             ed._stringVarCancelRect = {x = cx + cw/2 + 10, y = btnY, w = 70, h = 28}
         end
@@ -897,7 +898,7 @@ function INE:ShowBoolVarDialog(editor, varIdx, varData)
     local dialogW, dialogH = 400, 250
     INE:ShowOverlayWindow(editor, {
         id = "ine_boolvar_dialog",
-        title = "布尔值变量",
+        title = T("editor.nodevar.boolean_variable"),
         showScope = true, scope = varData.scope or "global",
         x = editor.x + (editor.width - dialogW) / 2,
         y = editor.y + (editor.height - dialogH) / 2,
@@ -908,10 +909,10 @@ function INE:ShowBoolVarDialog(editor, varIdx, varData)
             local vars = ed.variables["p"] or {}
             local vd = vars[varIdx]
             if not vd then return end
-            local activeField = INE.BoolVarFieldState and INE.BoolVarFieldState.active and INE.BoolVarFieldState.field
+            local activeField = INE:Field(ed, "BoolVar") and INE:Field(ed, "BoolVar").active and INE:Field(ed, "BoolVar").field
 
             -- 变量名
-            draw.SimpleText("变量名:", "SourceHan_Heavy_12", cx + 15, cy + 15, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.variable_name"), "SourceHan_Heavy_12", cx + 15, cy + 15, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local nameX, nameY, nameW, nameH = cx + 15, cy + 35, cw - 30, 30
             local nameHov = mx >= nameX and mx <= nameX + nameW and my >= nameY and my <= nameY + nameH
             local nameActive = activeField == "name"
@@ -931,7 +932,7 @@ function INE:ShowBoolVarDialog(editor, varIdx, varData)
             ed._boolVarField_name = {x = nameX, y = nameY, w = nameW, h = nameH}
 
             -- 内部变量
-            draw.SimpleText("内部变量（代码中使用，留空自动分配唯一ID）:", "SourceHan_Heavy_10", cx + 15, cy + 75, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.internal_var_hint"), "SourceHan_Heavy_10", cx + 15, cy + 75, Color(160, 160, 160), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local inameX, inameY, inameW, inameH = cx + 15, cy + 92, cw - 30, 28
             local inameHov = mx >= inameX and mx <= inameX + inameW and my >= inameY and my <= inameY + inameH
             local inameActive = activeField == "iname"
@@ -951,7 +952,7 @@ function INE:ShowBoolVarDialog(editor, varIdx, varData)
             ed._boolVarField_iname = {x = inameX, y = inameY, w = inameW, h = inameH}
 
             -- 真假值（true/false 按钮）
-            draw.SimpleText("真假值:", "SourceHan_Heavy_12", cx + 15, cy + 130, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+            draw.SimpleText(T("editor.nodevar.boolean_value"), "SourceHan_Heavy_12", cx + 15, cy + 130, Color(180, 180, 180), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
             local boolVal = (vd.initialValue == true)
             local boolBtnY = cy + 150
             local trueX, trueW, trueH = cx + 15, 60, 28
@@ -970,9 +971,9 @@ function INE:ShowBoolVarDialog(editor, varIdx, varData)
             local confirmHov = mx >= cx + cw/2 - 80 and mx <= cx + cw/2 - 80 + 70 and my >= btnY and my <= btnY + 28
             local cancelHov = mx >= cx + cw/2 + 10 and mx <= cx + cw/2 + 10 + 70 and my >= btnY and my <= btnY + 28
             draw.RoundedBox(6, cx + cw/2 - 80, btnY, 70, 28, confirmHov and Color(70, 120, 70) or Color(55, 65, 55))
-            draw.SimpleText("确定", "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.confirm"), "SourceHan_Heavy_14", cx + cw/2 - 45, btnY + 14, Color(200, 255, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             draw.RoundedBox(6, cx + cw/2 + 10, btnY, 70, 28, cancelHov and Color(100, 60, 60) or Color(65, 55, 55))
-            draw.SimpleText("取消", "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.cancel"), "SourceHan_Heavy_14", cx + cw/2 + 45, btnY + 14, Color(255, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             ed._boolVarConfirmRect = {x = cx + cw/2 - 80, y = btnY, w = 70, h = 28}
             ed._boolVarCancelRect = {x = cx + cw/2 + 10, y = btnY, w = 70, h = 28}
         end
@@ -1031,11 +1032,11 @@ function INE:RegisterTemplates()
     if not (KARDS and KARDS.RulesVocabulary) then
         local ok, err = pcall(include, "kards/sh_rules_vocabulary.lua")
         if ok then
-            print("[INE] 已手动加载规则词汇表 (kards/sh_rules_vocabulary.lua)")
+            print("[INE] " .. T("editor.nodevar.rules_vocab_loaded"))
             -- 词汇表状态变化会改变 @section 引用的解析结果，必须清空解析缓存
             INE.ConfigCache = {}
         else
-            print("[INE] 警告: 规则词汇表加载失败: " .. tostring(err))
+            print("[INE] " .. T("editor.nodevar.rules_vocab_load_failed", tostring(err)))
         end
     end
     -- 从 JSON 文件加载所有节点模板（注册所有节点，mode 过滤由调用者处理）
@@ -1049,26 +1050,27 @@ end
 concommand.Add("kards_reload_templates", function()
     local INE = KARDS.CardEditor.IndependentNodeEditor
     if not INE then
-        print("[INE] 错误: IndependentNodeEditor 未加载")
+        print("[INE] " .. T("editor.nodevar.ine_not_loaded"))
         return
     end
     -- 确保规则词汇表模块已加载（@section 引用依赖它）
     if not (KARDS and KARDS.RulesVocabulary) then
         local ok, err = pcall(include, "kards/sh_rules_vocabulary.lua")
         if ok then
-            print("[INE] 已手动加载规则词汇表 (kards/sh_rules_vocabulary.lua)")
+            print("[INE] " .. T("editor.nodevar.rules_vocab_loaded"))
             -- 词汇表状态变化会改变 @section 引用的解析结果，必须清空解析缓存
             INE.ConfigCache = {}
         else
-            print("[INE] 警告: 规则词汇表加载失败: " .. tostring(err))
+            print("[INE] " .. T("editor.nodevar.rules_vocab_load_failed", tostring(err)))
         end
     end
     -- 诊断：词汇表加载状态（@section 引用依赖此模块）
-    print("[INE] 词汇表诊断: KARDS=" .. tostring(KARDS)
-        .. " RulesVocabulary=" .. tostring(KARDS and KARDS.RulesVocabulary)
-        .. " GetOptions=" .. tostring(KARDS and KARDS.RulesVocabulary and KARDS.RulesVocabulary.GetOptions))
+    print("[INE] " .. T("editor.nodevar.vocab_diagnostic",
+        tostring(KARDS),
+        tostring(KARDS and KARDS.RulesVocabulary),
+        tostring(KARDS and KARDS.RulesVocabulary and KARDS.RulesVocabulary.GetOptions)))
     if KARDS and KARDS.RulesVocabulary and KARDS.RulesVocabulary.GetOptions then
-        print("[INE] 词汇表 combat_keywords 选项数: " .. #(KARDS.RulesVocabulary.GetOptions("combat_keywords") or {}))
+        print("[INE] " .. T("editor.nodevar.vocab_option_count", #(KARDS.RulesVocabulary.GetOptions("combat_keywords") or {})))
     end
     -- 清除所有 JSON 模板注册（保留 isStartNode 内置节点）
     local cleared = 0
@@ -1078,11 +1080,11 @@ concommand.Add("kards_reload_templates", function()
             cleared = cleared + 1
         end
     end
-    print("[INE] 模板重载: 已清除 " .. cleared .. " 个旧模板注册")
+    print("[INE] " .. T("editor.nodevar.templates_cleared", cleared))
     local registered = INE:LoadNodeTemplatesFromFiles()
-    print("[INE] 模板重载完成，成功注册 " .. #registered .. " 个节点（若仍有疑问请查看上方 [INE] 错误输出）")
+    print("[INE] " .. T("editor.nodevar.templates_registered", #registered))
     -- 提示关闭并重新打开效果编辑器以应用新模板
-    print("[INE] 提示: 请关闭并重新打开卡牌效果编辑器，新建节点将使用新模板")
+    print("[INE] " .. T("editor.nodevar.reopen_editor_hint"))
 end)
 
 --[[
@@ -1144,7 +1146,7 @@ end
 function INE:CreateNewNodeInstance(nodeName, editor, x, y)
     local template = INE.RegisteredNodes[nodeName]
     if not template then
-        error("[IndependentNodeEditor] 节点未注册: " .. tostring(nodeName))
+        error("[IndependentNodeEditor] " .. T("editor.nodevar.node_not_registered", tostring(nodeName)))
     end
     
     -- 创建节点实例（从模板复制属性，并添加运行时状态字段）
@@ -1301,6 +1303,12 @@ function INE:CreateEditor(panelID, pos, scale, allowedNodes, hidden, simplified,
         selectionStartY = 0,                             -- 框选起始Y位置
         fileMenuOpen = false,                            -- 文件菜单是否打开
         contextMenu = nil,                               -- 右键上下文菜单对象
+        _selectionDeleteBtn = nil,                       -- 框选后的删除按钮矩形
+        _selectionDisconnectBtn = nil,                   -- 框选后的断开连接按钮矩形
+        _rightMouseDown = false,                         -- 右键是否处于按下状态（用于检测释放）
+        _contextMenuHeld = false,                        -- 右键菜单左键是否已处理（防重复）
+        _selectionDeleteBtnHeld = false,                 -- 框选删除按钮左键是否已处理（防重复）
+        _selectionDisconnectBtnHeld = false,             -- 框选断开连接按钮左键是否已处理（防重复）
         canvasOffsetX = 0,                               -- 画布平移X偏移量
         canvasOffsetY = 0,                               -- 画布平移Y偏移量
         canvasScale = 1,                                 -- 画布缩放比例
@@ -1363,6 +1371,10 @@ function INE:CreateEditor(panelID, pos, scale, allowedNodes, hidden, simplified,
         variables = {}                                   -- 该编辑器实例独立的变量数据 { typeId = { {name, desc}, ... } }
     }
 
+    -- 编辑器会话：弹窗、搜索框句柄等瞬态界面状态，按实例一份，不参与序列化
+    -- （见 docs/adr/0003-节点图值与编辑器会话分离.md）
+    editor.session = INE:CreateEditorSession()
+
     -- 从传入参数合并可拖动等配置项
     if pos and pos.draggable ~= nil then
         editor.draggable = pos.draggable
@@ -1404,72 +1416,11 @@ function INE:CloseEditor(panelID)
     local editor = INE.Editors[panelID]
     if not editor then return end
 
-    -- 清理 DTextEntry 搜索输入框
-    if INE.VarSearchState and INE.VarSearchState.editorID == panelID then
-        INE.VarSearchState.active = false
-        INE.VarSearchState.editorID = nil
-        INE.VarSearchState.typeId = nil
-        local entry = INE.VarSearchTextEntry
-        if entry and IsValid(entry) then
-            entry:Remove()
-        end
-        INE.VarSearchTextEntry = nil
-    end
-    
-    -- 清理数字变量对话框 DTextEntry
-    if INE.NumVarFieldState and INE.NumVarFieldState.editorID == panelID then
-        INE.NumVarFieldState.active = false
-        INE.NumVarFieldState.editorID = nil
-        INE.NumVarFieldState.field = nil
-        local entry = INE.NumVarTextEntry
-        if entry and IsValid(entry) then
-            entry:Remove()
-        end
-        INE.NumVarTextEntry = nil
-    end
-    
-    -- 清理函数变量对话框 DTextEntry
-    if INE.FuncVarFieldState and INE.FuncVarFieldState.editorID == panelID then
-        INE.FuncVarFieldState.active = false
-        INE.FuncVarFieldState.editorID = nil
-        local entry = INE.FuncVarTextEntry
-        if entry and IsValid(entry) then
-            entry:Remove()
-        end
-        INE.FuncVarTextEntry = nil
-    end
-    if INE.FuncParamFieldState and INE.FuncParamFieldState.editorID == panelID then
-        INE.FuncParamFieldState.active = false
-        INE.FuncParamFieldState.editorID = nil
-        local entry = INE.FuncParamTextEntry
-        if entry and IsValid(entry) then
-            entry:Remove()
-        end
-        INE.FuncParamTextEntry = nil
-    end
-
-    -- 清理卡牌对象变量对话框 DTextEntry
-    if INE.CardVarFieldState and INE.CardVarFieldState.editorID == panelID then
-        INE.CardVarFieldState.active = false
-        INE.CardVarFieldState.editorID = nil
-        INE.CardVarFieldState.field = nil
-        local entry = INE.CardVarTextEntry
-        if entry and IsValid(entry) then
-            entry:Remove()
-        end
-        INE.CardVarTextEntry = nil
-    end
-
-    -- 清理布尔值变量对话框 DTextEntry
-    if INE.BoolVarFieldState and INE.BoolVarFieldState.editorID == panelID then
-        INE.BoolVarFieldState.active = false
-        INE.BoolVarFieldState.editorID = nil
-        INE.BoolVarFieldState.field = nil
-        local entry = INE.BoolVarTextEntry
-        if entry and IsValid(entry) then
-            entry:Remove()
-        end
-        INE.BoolVarTextEntry = nil
+    -- 清理各类内联输入：状态失活并销毁透明 DTextEntry 句柄。
+    -- 状态与句柄按编辑器实例存放，因此这里只清本编辑器的会话（见 ADR 0010）。
+    local IF = KARDS.CardEditor.InlineField
+    for _, kind in ipairs({ "VarSearch", "NumVar", "FuncVar", "FuncParam", "CardVar", "BoolVar", "StringVar", "ArrayVar", "TextSlot" }) do
+        IF.Drop(editor, kind)
     end
 
     -- 清理基础变量操作节点内联输入框 DTextEntry
@@ -1568,22 +1519,32 @@ function INE:AddHooks()
         if input.WasMousePressed(MOUSE_WHEEL_UP) then
             INE._wheelZoomIn = true
             INE._filterWheelUp = true
-            -- 直接标志 NumericVarPopup / GlobalVarSelector，绕开 INE 变量作用域问题
-            local nvp = KARDS.CardEditor.Canvas.NumericVarPopup
-            if nvp then nvp._wheelScroll = "up" end
-            local gvs = KARDS.CardEditor.Canvas.GlobalVarSelector
-            if gvs then gvs._wheelScroll = "up" end
-            local kw = KARDS.CardEditor.Canvas.KeywordMultiSelect
-            if kw then kw._wheelScroll = "up" end
+            -- 批二的数字弹窗与批一浮层都在编辑器会话里，逐个会话标记
+            for _, ed in pairs(INE.Editors) do
+                local session = ed.session
+                if session then
+                    local nvp = session.NumericVarPopup
+                    if nvp then nvp._wheelScroll = "up" end
+                    local gvs = session.GlobalVarSelector
+                    if gvs then gvs._wheelScroll = "up" end
+                    local kw = session.KeywordMultiSelect
+                    if kw then kw._wheelScroll = "up" end
+                end
+            end
         elseif input.WasMousePressed(MOUSE_WHEEL_DOWN) then
             INE._wheelZoomOut = true
             INE._filterWheelDown = true
-            local nvp = KARDS.CardEditor.Canvas.NumericVarPopup
-            if nvp then nvp._wheelScroll = "down" end
-            local gvs = KARDS.CardEditor.Canvas.GlobalVarSelector
-            if gvs then gvs._wheelScroll = "down" end
-            local kw = KARDS.CardEditor.Canvas.KeywordMultiSelect
-            if kw then kw._wheelScroll = "down" end
+            for _, ed in pairs(INE.Editors) do
+                local session = ed.session
+                if session then
+                    local nvp = session.NumericVarPopup
+                    if nvp then nvp._wheelScroll = "down" end
+                    local gvs = session.GlobalVarSelector
+                    if gvs then gvs._wheelScroll = "down" end
+                    local kw = session.KeywordMultiSelect
+                    if kw then kw._wheelScroll = "down" end
+                end
+            end
         end
     end)
     
@@ -1631,7 +1592,7 @@ function INE:CreateStartNodesForEditor(editor)
     if not hasStartPoint then return end
     
     if not INE.RegisteredNodes["start_point"] then
-        error("[IndependentNodeEditor] 开始点节点类型 'start_point' 未注册")
+        error("[IndependentNodeEditor] " .. T("editor.nodevar.start_node_not_registered"))
     end
     
     -- 移除已有的 start_point 和 data_start_point 节点，避免重复
@@ -1843,16 +1804,15 @@ end
     绘制所有未隐藏的编辑器实例。
     由HUDPaint钩子每帧调用。
 ]]
--- 本帧 INE 面板是否已由卡牌编辑器（Canvas）显式绘制（帧号防重）。
--- 卡牌编辑器在 DrawEffectEditor 内显式调用 DrawAllEditorsInternal 并记录帧号，
+-- 本帧 INE 面板是否已由卡牌编辑器（Canvas）显式绘制，帧号由 INE:MarkDrawn 记录（ADR 0005）。
+-- 卡牌编辑器在 DrawEffectEditor 内显式调用 MarkDrawn 与 DrawAllEditorsInternal，
 -- INE_DrawEditors 钩子据此跳过，保证 INE 面板始终绘制在 Canvas 内容之后（最顶层），
 -- 不依赖 HUDPaint 钩子注册顺序（Lua pairs 遍历顺序不保证 FIFO，此前 Canvas 的不透明
 -- 背景曾盖住 INE 面板导致面板不可见）。
-INE._canvasDrawnFrame = 0
 
 function INE:DrawAllEditors()
     -- 本帧已由卡牌编辑器显式绘制（见 cl_canvas_editor.lua DrawEffectEditor），跳过避免重复
-    if INE._canvasDrawnFrame == FrameNumber() then return end
+    if INE:IsDrawnThisFrame() then return end
     INE:DrawAllEditorsInternal()
 end
 
@@ -1870,12 +1830,12 @@ function INE:DrawAllEditorsInternal()
     if not canvasActive then
         KARDS.CardEditor.Canvas.HoverTooltipUpdated = false
     end
-    -- 首次初始化：确保 _prevCardObjectMD 为 false 而非 nil，让首次点击也能正确触发边缘检测
-    if KARDS.CardEditor.Canvas._prevCardObjectMD == nil then
-        KARDS.CardEditor.Canvas._prevCardObjectMD = false
+    -- 首次初始化：确保 _prevMouseDown 为 false 而非 nil，让首次点击也能正确触发边缘检测
+    if INE._prevMouseDown == nil then
+        INE._prevMouseDown = false
     end
-    self._frameMouseJustPressed = mouseDown and not KARDS.CardEditor.Canvas._prevCardObjectMD
-    KARDS.CardEditor.Canvas._prevCardObjectMD = mouseDown
+    self._frameMouseJustPressed = mouseDown and not INE._prevMouseDown
+    INE._prevMouseDown = mouseDown
 
     for id, editor in pairs(INE.Editors) do
         if not editor.hidden then
@@ -1914,27 +1874,14 @@ function INE:DrawAllEditorsInternal()
         end
     end
     
-    -- 在所有编辑器面板绘制完成后再绘制已展开的下拉选项列表，
-    -- 确保选项图层在所有面板矩形之上，避免 z-order 问题。
-    KARDS.CardEditor.Canvas.DrawExpandedDropdowns()
-    
-    -- 绘制数字槽变量选择弹窗
-    KARDS.CardEditor.Canvas.DrawNumericVarPopup()
-    
-    -- 绘制函数变量选择弹窗（funcslot 函数槽单选下拉，样式与数字槽弹窗相同）
-    KARDS.CardEditor.Canvas.DrawFuncVarPopup()
-    
-    -- 绘制卡牌对象选择器弹窗（INE 单选组件的卡牌对象模式）
-    KARDS.CardEditor.Canvas.DrawCardObjectSelector()
-    
-    -- 绘制全局变量选择器浮层（"设置变量"/"判断变量关系"共用，浮层绘制在所有节点之上）
-    if KARDS.CardEditor.VarOpNodes and KARDS.CardEditor.VarOpNodes.DrawGlobalVarSelectorPopup then
-        KARDS.CardEditor.VarOpNodes.DrawGlobalVarSelectorPopup()
-    end
-    
-    -- 绘制词条多选浮层（"设置变量"节点"词条"操作，templates.md L1122）
-    if KARDS.CardEditor.VarOpNodes and KARDS.CardEditor.VarOpNodes.DrawKeywordMultiSelect then
-        KARDS.CardEditor.VarOpNodes.DrawKeywordMultiSelect()
+    -- 在所有编辑器面板绘制完成后再绘制浮层，确保浮层图层在所有面板矩形之上，
+    -- 避免 z-order 问题。批一与批二的浮层状态都收在各编辑器会话里，
+    -- 逐个会话绘制，多开函数子编辑器时不会只画出其中一个。绘制函数由使用方
+    -- 通过 INE:RegisterPopupRenderer 注册，顺序由 INE.PopupKinds 决定（见 ADR 0003 决策 3）。
+    for _, editor in pairs(INE.Editors) do
+        if not editor.hidden then
+            INE:DrawSessionPopups(editor)
+        end
     end
 
     -- 绘制函数面板连线闪烁动画（"新建变量"f 类型"编辑函数"按钮，templates.md L1088）
@@ -2005,9 +1952,9 @@ function INE:DrawEditor(editor)
 
         -- 标题文字（显示节点数量便于调试定位）
         local nodeCount = #editor.nodes
-        local titleText = editor.customTitle or "节点编辑器"
+        local titleText = editor.customTitle or T("editor.nodevar.node_editor")
         draw.SimpleText(titleText, "SourceHan_Heavy_16", x + 10, y + 17, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        draw.SimpleText("[节点:" .. nodeCount .. "]", "SourceHan_Heavy_14", x + w - 45, y + 17, Color(180, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodevar.node_count", nodeCount), "SourceHan_Heavy_14", x + w - 45, y + 17, Color(180, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
         
         -- 绘制文件菜单按钮（如果启用）
         if editor.showTitleMenu then
@@ -2021,8 +1968,8 @@ function INE:DrawEditor(editor)
                            mouseY >= fileBtnY and mouseY <= fileBtnY + fileBtnH
             
             local isFuncMode = editor.editorMode == "function"
-            local btnLabel = isFuncMode and "函数" or "效果文件"
-            local tooltipText = isFuncMode and "函数操作（保存/导入/清空）" or "效果文件操作（导入/导出/清空）"
+            local btnLabel = isFuncMode and T("editor.nodevar.file_menu_function") or T("editor.nodevar.file_menu_effect")
+            local tooltipText = isFuncMode and T("editor.nodevar.file_tooltip_function") or T("editor.nodevar.file_tooltip_effect")
             
             draw.RoundedBox(4, fileBtnX, fileBtnY, fileBtnW, fileBtnH, (hovered or editor.fileMenuOpen) and Color(80, 80, 90) or Color(70, 70, 80))
             draw.SimpleText(btnLabel, "SourceHan_Heavy_14", fileBtnX + fileBtnW/2, fileBtnY + fileBtnH/2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
@@ -2043,10 +1990,10 @@ function INE:DrawEditor(editor)
                               mouseY >= viewBtnY and mouseY <= viewBtnY + viewBtnH
             
             draw.RoundedBox(4, viewBtnX, viewBtnY, viewBtnW, viewBtnH, (viewHovered or editor._viewMenuOpen) and Color(80, 80, 90) or Color(70, 70, 80))
-            draw.SimpleText("视图", "SourceHan_Heavy_14", viewBtnX + viewBtnW/2, viewBtnY + viewBtnH/2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.nodevar.view"), "SourceHan_Heavy_14", viewBtnX + viewBtnW/2, viewBtnY + viewBtnH/2, Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             
             if viewHovered then
-                INE:UpdateHoverTooltip(editor, "视图操作（重置/适配/查找节点）")
+                INE:UpdateHoverTooltip(editor, T("editor.nodevar.view_tooltip"))
             end
             
             editor._viewBtnRect = {x = viewBtnX, y = viewBtnY, w = viewBtnW, h = viewBtnH}
@@ -2067,7 +2014,7 @@ function INE:DrawEditor(editor)
             draw.SimpleText("X", "SourceHan_Heavy_14", closeBtnX + closeBtnW/2, closeBtnY + closeBtnH/2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             
             if hovered then
-                INE:UpdateHoverTooltip(editor, "关闭节点编辑器")
+                INE:UpdateHoverTooltip(editor, T("editor.nodevar.close_editor"))
             end
         end
     end
@@ -2091,7 +2038,7 @@ function INE:DrawEditor(editor)
     if not editor.borderless then
         -- 选择面板背景
         draw.RoundedBox(4, selectorX, selectorY, selectorW, contentH - 10, Color(45, 45, 50))
-        draw.SimpleText("可用节点", "SourceHan_Heavy_14", selectorX + selectorW/2, selectorY + 12, Color(180, 180, 180), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodevar.available_nodes"), "SourceHan_Heavy_14", selectorX + selectorW/2, selectorY + 12, Color(180, 180, 180), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         
         -- 页面切换单选按钮：节点选择 | 变量
         local toggleY = selectorY + 24
@@ -2107,17 +2054,17 @@ function INE:DrawEditor(editor)
         local nodesHov = mouseX >= toggleX1 and mouseX <= toggleX1 + toggleW and
                         mouseY >= toggleY and mouseY <= toggleY + toggleH
         draw.RoundedBox(4, toggleX1, toggleY, toggleW, toggleH, isNodesPage and Color(0, 102, 204) or Color(55, 55, 60))
-        draw.SimpleText("节点选择", "SourceHan_Heavy_12", toggleX1 + toggleW/2, toggleY + toggleH/2, isNodesPage and Color(255, 255, 255) or Color(180, 180, 180), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodevar.node_selection"), "SourceHan_Heavy_12", toggleX1 + toggleW/2, toggleY + toggleH/2, isNodesPage and Color(255, 255, 255) or Color(180, 180, 180), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         editor._toggleNodesRect = {x = toggleX1, y = toggleY, w = toggleW, h = toggleH}
         
         -- "变量" 按钮（悬停时显示"展示所有？"，全变量模式显示"还原？"）
         local varsHov = mouseX >= toggleX2 and mouseX <= toggleX2 + toggleW and
                        mouseY >= toggleY and mouseY <= toggleY + toggleH
-        local varBtnLabel = "变量"
+        local varBtnLabel = T("editor.nodevar.variables")
         if isVarsPage and editor._allVarMode then
-            varBtnLabel = "还原？"
+            varBtnLabel = T("editor.nodevar.restore")
         elseif isVarsPage and varsHov then
-            varBtnLabel = "展示所有？"
+            varBtnLabel = T("editor.nodevar.show_all")
         end
         local varBtnColor = isVarsPage and (editor._allVarMode and Color(180, 50, 50) or Color(0, 102, 204)) or Color(55, 55, 60)
         draw.RoundedBox(4, toggleX2, toggleY, toggleW, toggleH, varBtnColor)
@@ -2185,7 +2132,7 @@ function INE:DrawEditor(editor)
                         draw.SimpleText(template.displayName or template.name, "SourceHan_Heavy_14", selectorX + selectorW / 2, nodeListY + nodeEntryH / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
                         if hovered then
-                            INE:UpdateHoverTooltip(editor, "拖动以创建 " .. (template.displayName or template.name) .. " 节点")
+                            INE:UpdateHoverTooltip(editor, T("editor.nodevar.drag_to_create", (template.displayName or template.name)))
                         end
                     end
 
@@ -2215,7 +2162,7 @@ function INE:DrawEditor(editor)
                         draw.RoundedBox(6, selectorX + 12, advListY + 2, selectorW - 24, 46, Color(40, 40, 40))
                         draw.SimpleText(template.displayName or template.name, "SourceHan_Heavy_14", selectorX + selectorW / 2, advListY + 25, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
                         if advHovered then
-                            INE:UpdateHoverTooltip(editor, "拖动以创建 " .. (template.displayName or template.name) .. " 节点")
+                            INE:UpdateHoverTooltip(editor, T("editor.nodevar.drag_to_create", (template.displayName or template.name)))
                         end
                         advListY = advListY + 50 + 10
                     end
@@ -2228,10 +2175,10 @@ function INE:DrawEditor(editor)
                                mouseY >= advBtnY and mouseY <= advBtnY + advBtnH
             draw.RoundedBox(4, advBtnX, advBtnY, advBtnW, advBtnH,
                 (advHovered or editor._advPanelOpen) and Color(80, 80, 90) or Color(55, 55, 60))
-            draw.SimpleText("高级", "SourceHan_Heavy_14", advBtnX + advBtnW / 2, advBtnY + advBtnH / 2,
+            draw.SimpleText(T("editor.nodevar.advanced"), "SourceHan_Heavy_14", advBtnX + advBtnW / 2, advBtnY + advBtnH / 2,
                 Color(220, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             if advHovered then
-                INE:UpdateHoverTooltip(editor, editor._advPanelOpen and "收起基础变量节点固定区" or "展开基础变量节点固定区")
+                INE:UpdateHoverTooltip(editor, editor._advPanelOpen and T("editor.nodevar.collapse_base_vars") or T("editor.nodevar.expand_base_vars"))
             end
         else
             -- 变量页面
@@ -2458,6 +2405,29 @@ function INE:DrawEditor(editor)
         end
     end
     
+    -- 绘制框选操作按钮（删除 / 断开连接，2026-11-08）
+    if editor._selectionDeleteBtn and #editor.selectedNodes > 0 then
+        local btn = editor._selectionDeleteBtn
+        local mouseX, mouseY = gui.MouseX(), gui.MouseY()
+        local hovered = INE:IsPointInRect(mouseX, mouseY, btn)
+        draw.RoundedBox(4, btn.x, btn.y, btn.w, btn.h, hovered and Color(150, 70, 70) or Color(70, 55, 60))
+        surface.SetDrawColor(hovered and Color(220, 120, 120) or Color(130, 90, 90))
+        surface.DrawOutlinedRect(btn.x, btn.y, btn.w, btn.h)
+        draw.SimpleText(T("editor.nodeinput.delete_selected_button"), "SourceHan_Heavy_14",
+            btn.x + btn.w / 2, btn.y + btn.h / 2, Color(240, 220, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+
+    if editor._selectionDisconnectBtn and #editor.selectedNodes > 0 then
+        local btn = editor._selectionDisconnectBtn
+        local mouseX, mouseY = gui.MouseX(), gui.MouseY()
+        local hovered = INE:IsPointInRect(mouseX, mouseY, btn)
+        draw.RoundedBox(4, btn.x, btn.y, btn.w, btn.h, hovered and Color(70, 90, 130) or Color(55, 60, 75))
+        surface.SetDrawColor(hovered and Color(120, 150, 220) or Color(90, 100, 130))
+        surface.DrawOutlinedRect(btn.x, btn.y, btn.w, btn.h)
+        draw.SimpleText(T("editor.nodeinput.disconnect_selected_button"), "SourceHan_Heavy_14",
+            btn.x + btn.w / 2, btn.y + btn.h / 2, Color(220, 230, 250), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+    
     -- 绘制临时节点预览（从节点面板拖拽时跟随鼠标）
     if editor.tempNode then
         local mouseX, mouseY = gui.MouseX(), gui.MouseY()
@@ -2472,23 +2442,23 @@ function INE:DrawEditor(editor)
     -- 绘制视图下拉菜单
     if editor._viewMenuOpen and editor._viewBtnRect then
         local menuItems = {
-            "返回原点",
-            "适配所有节点",
-            "最左节点",
-            "最右节点",
-            "最上节点",
-            "最下节点",
-            "放大",
-            "缩小",
-            "还原缩放",
-            "沿鼠标缩放",
-            "查看顺序",
-            "查找节点...",
-            "切换坐标系",
+            T("editor.nodevar.view_reset_origin"),
+            T("editor.nodevar.view_fit_all"),
+            T("editor.nodevar.view_leftmost"),
+            T("editor.nodevar.view_rightmost"),
+            T("editor.nodevar.view_topmost"),
+            T("editor.nodevar.view_bottommost"),
+            T("editor.nodevar.view_zoom_in"),
+            T("editor.nodevar.view_zoom_out"),
+            T("editor.nodevar.view_reset_zoom"),
+            T("editor.nodevar.view_zoom_follow_mouse"),
+            T("editor.nodevar.view_view_order"),
+            T("editor.nodevar.view_find_node"),
+            T("editor.nodevar.view_toggle_coordinates"),
             "--",
-            "全屏",
-            "半屏",
-            "窗口"
+            T("editor.nodevar.view_fullscreen"),
+            T("editor.nodevar.view_half"),
+            T("editor.nodevar.view_window")
         }
         local menuX = editor._viewBtnRect.x
         local menuY = editor._viewBtnRect.y + editor._viewBtnRect.h + 2
@@ -2510,7 +2480,7 @@ function INE:DrawEditor(editor)
             if itemText == "--" then
                 -- 绘制分隔线
                 draw.RoundedBox(0, menuX + 10, itemY + menuItemH / 2, menuW - 20, 1, Color(80, 80, 90))
-            elseif itemText == "查看顺序" then
+            elseif itemText == T("editor.nodevar.view_view_order") then
                 -- "查看顺序"单选按钮：两段文字，激活的文字放大居左，未激活的文字缩小暗色居右
                 if itemHovered then
                     draw.RoundedBox(0, menuX, itemY, menuW, menuItemH, Color(75, 75, 85))
@@ -2518,11 +2488,11 @@ function INE:DrawEditor(editor)
                 end
                 local isConnectMode = editor._viewConnectionMode  -- true=查看连线，false=查看内容
                 -- 激活文字（左侧）：大号，高亮
-                local activeLabel = isConnectMode and "查看连线" or "查看内容"
+                local activeLabel = isConnectMode and T("editor.nodevar.view_connections") or T("editor.nodevar.view_content")
                 draw.SimpleText(activeLabel, "SourceHan_Heavy_16", menuX + 10, itemY + menuItemH / 2,
                     Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 -- 未激活文字（右侧）：小号，暗色
-                local inactiveLabel = isConnectMode and "查看内容" or "查看连线"
+                local inactiveLabel = isConnectMode and T("editor.nodevar.view_content") or T("editor.nodevar.view_connections")
                 draw.SimpleText(inactiveLabel, "SourceHan_Heavy_12", menuX + menuW - 10, itemY + menuItemH / 2,
                     Color(120, 120, 120), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
             else
@@ -2531,7 +2501,7 @@ function INE:DrawEditor(editor)
                     editor._viewMenuHoveredItem = i
                 end
                 local textOffset = 10
-                if itemText == "沿鼠标缩放" then
+                if itemText == T("editor.nodevar.view_zoom_follow_mouse") then
                     -- 绘制复选框
                     local cbSize = 12
                     local cbX = menuX + 10
@@ -2551,7 +2521,7 @@ function INE:DrawEditor(editor)
     -- 绘制文件下拉菜单
     if editor.fileMenuOpen and editor._fileBtnRect then
         local isFuncMode = editor.editorMode == "function"
-        local menuItems = isFuncMode and {"编辑基础函数", "保存", "导入...", "清空画布"} or {"导出...", "导入...", "清空画布"}
+        local menuItems = isFuncMode and {T("editor.nodevar.file_edit_base_function"), T("editor.nodevar.file_save"), T("editor.nodevar.file_import"), T("editor.nodevar.file_clear_canvas")} or {T("editor.nodevar.file_export"), T("editor.nodevar.file_import"), T("editor.nodevar.file_clear_canvas")}
         local menuX = editor._fileBtnRect.x
         local menuY = editor._fileBtnRect.y + editor._fileBtnRect.h + 2
         local menuW = 120
@@ -2575,6 +2545,54 @@ function INE:DrawEditor(editor)
             end
             
             draw.SimpleText(itemText, "SourceHan_Heavy_14", menuX + 10, itemY + menuItemH/2, Color(220, 220, 220), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        end
+    end
+    
+    -- 绘制右键菜单（2026-11-08）
+    if editor.contextMenu then
+        local menu = editor.contextMenu
+        local mouseX, mouseY = gui.MouseX(), gui.MouseY()
+
+        -- 一级菜单
+        draw.RoundedBox(4, menu.x, menu.y, menu.w, menu.h, Color(45, 45, 55))
+        surface.SetDrawColor(90, 90, 100)
+        surface.DrawOutlinedRect(menu.x, menu.y, menu.w, menu.h)
+        for i, item in ipairs(menu.items) do
+            if item.separator then
+                surface.SetDrawColor(80, 80, 90)
+                surface.DrawRect(menu.x + 8, item.y + math.floor(item.h / 2), menu.w - 16, 1)
+            else
+                if i == menu.hovered then
+                    draw.RoundedBox(3, menu.x + 2, item.y + 1, menu.w - 4, item.h - 2, Color(70, 70, 90))
+                end
+                local textColor = item.danger and Color(230, 120, 120) or Color(225, 225, 230)
+                draw.SimpleText(item.label, "SourceHan_Heavy_14", menu.x + 10, item.y + item.h / 2,
+                    textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                if item.submenuItems then
+                    draw.SimpleText(">", "SourceHan_Heavy_14", menu.x + menu.w - 10, item.y + item.h / 2,
+                        Color(200, 200, 210), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+                end
+            end
+        end
+
+        -- 二级菜单
+        local sub = menu.submenu
+        if sub then
+            draw.RoundedBox(4, sub.x, sub.y, sub.w, sub.h, Color(45, 45, 55))
+            surface.SetDrawColor(90, 90, 100)
+            surface.DrawOutlinedRect(sub.x, sub.y, sub.w, sub.h)
+            for i, item in ipairs(sub.items) do
+                if item.separator then
+                    surface.SetDrawColor(80, 80, 90)
+                    surface.DrawRect(sub.x + 8, item.y + math.floor(item.h / 2), sub.w - 16, 1)
+                else
+                    if i == sub.hovered then
+                        draw.RoundedBox(3, sub.x + 2, item.y + 1, sub.w - 4, item.h - 2, Color(70, 70, 90))
+                    end
+                    draw.SimpleText(item.label, "SourceHan_Heavy_14", sub.x + 10, item.y + item.h / 2,
+                        Color(225, 225, 230), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                end
+            end
         end
     end
     

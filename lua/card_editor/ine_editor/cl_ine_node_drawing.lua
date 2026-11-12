@@ -34,6 +34,31 @@
 --       DrawTempConnection、DrawDataConnection、DrawTempDataConnection、
 --       DrawSelectedOutputFeedback、DrawTempNodePreview、DrawImportWarningDialog
 local INE = KARDS.CardEditor.IndependentNodeEditor
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
+-- 绘制期颜色记忆化：绘制路径下同一 (r,g,b,a) 组合每帧被反复构造，
+-- 记忆后仅在首次调用时创建 Color 表，绘制期间不再产生临时表分配。
+-- 颜色值相同即等价，本文件内不存在对颜色表字段的写入（已核实）。
+-- 仅对 0~255 的整数分量做记忆化；浮点分量（如逐帧插值的 alpha）直接构造，
+-- 避免缓存键随浮点值变化而无限增长。
+local drawColorCache = {}
+local function C(r, g, b, a)
+    local alpha = a or 255
+    if r % 1 == 0 and g % 1 == 0 and b % 1 == 0 and alpha % 1 == 0
+        and r >= 0 and r <= 255 and g >= 0 and g <= 255
+        and b >= 0 and b <= 255 and alpha >= 0 and alpha <= 255 then
+        local key = ((r * 256 + g) * 256 + b) * 256 + alpha
+        local color = drawColorCache[key]
+        if not color then
+            color = Color(r, g, b, a)
+            drawColorCache[key] = color
+        end
+        return color
+    end
+    return Color(r, g, b, a)
+end
+
 --[[
     更新节点的数据点位置（用于点击检测）。
     独立计算数据点位置，不依赖绘制流程。
@@ -43,119 +68,9 @@ local INE = KARDS.CardEditor.IndependentNodeEditor
     @param  portType {string}  端口类型 ("output" 或 "input")
 ]]
 function INE:UpdateDataPortPositions(editor, node, portType)
-    local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-    local nodeW = node.width * editor.canvasScale
-    local nodeH = node.height * editor.canvasScale
-    local scale = editor.canvasScale
-
-    local portR = 6 * scale
-    local portSpacing = 4 * scale
-    local buttonSize = portR * 2
-
-    if portType == "output" then
-        local selectedPorts = node.selectedOutputTypes or {}
-        local portCount = #selectedPorts
-        -- 是否有"增加数据点"按钮（有可用类型时才有按钮；开始点数据端口固定，不提供增删按钮）
-        local hasButton = node.availableOutputTypes and #node.availableOutputTypes > 0 and not node.isStartNode
-
-        node._outputDataPortPositions = node._outputDataPortPositions or {}
-
-        -- 计算数据点位置（普通节点与底边重合；开始点数据端口垂直居中，与其他开始点的端口位置一致）
-        local portsY = nodeY + nodeH
-        if node.isStartNode then
-            portsY = nodeY + nodeH / 2
-        end
-        local totalWidth
-        if portCount > 0 then
-            totalWidth = portCount * (portR * 2 + portSpacing) + (hasButton and (buttonSize + portSpacing) or 0)
-        else
-            totalWidth = hasButton and buttonSize or 0
-        end
-        local startX = nodeX + nodeW / 2 - totalWidth / 2 + portR
-        -- 数据源开始点（钳击对象）：数据点固定在左边缘（y 轴）上，与标题文本对齐
-        if node.isStartNode then
-            startX = nodeX
-        end
-
-        -- 更新数据点位置
-        for i, portData in ipairs(selectedPorts) do
-            local portX = startX + (i - 1) * (portR * 2 + portSpacing)
-            node._outputDataPortPositions[i] = {
-                x = portX,
-                y = portsY,
-                radius = portR,
-                data = portData
-            }
-        end
-
-        -- 清除多余的位置记录
-        for i = portCount + 1, #node._outputDataPortPositions do
-            node._outputDataPortPositions[i] = nil
-        end
-
-        -- 更新"增加数据点"按钮位置（与节点底边重合；无可用类型时无按钮）
-        if hasButton then
-            local addButtonX
-            if portCount > 0 then
-                addButtonX = startX + portCount * (portR * 2 + portSpacing) + portSpacing
-            else
-                addButtonX = startX
-            end
-            node._dataPortButtonRect = {
-                x = addButtonX - portR - 2 * scale,
-                y = portsY - portR - 2 * scale,
-                w = buttonSize + 4 * scale,
-                h = buttonSize + 4 * scale
-            }
-        else
-            node._dataPortButtonRect = nil
-        end
-    elseif portType == "input" then
-        local selectedPorts = node.selectedInputTypes or {}
-        local portCount = #selectedPorts
-
-        node._inputDataPortPositions = node._inputDataPortPositions or {}
-
-        -- 计算数据点位置（与节点顶边重合，水平居中排列）
-        local portsY = nodeY
-        local totalWidth
-        if portCount > 0 then
-            totalWidth = portCount * (portR * 2 + portSpacing) + buttonSize + portSpacing
-        else
-            totalWidth = buttonSize
-        end
-        local startX = nodeX + nodeW / 2 - totalWidth / 2 + portR
-
-        -- 更新数据点位置
-        for i, portData in ipairs(selectedPorts) do
-            local portX = startX + (i - 1) * (portR * 2 + portSpacing)
-            node._inputDataPortPositions[i] = {
-                x = portX,
-                y = portsY,
-                radius = portR,
-                data = portData
-            }
-        end
-
-        -- 清除多余的位置记录
-        for i = portCount + 1, #node._inputDataPortPositions do
-            node._inputDataPortPositions[i] = nil
-        end
-
-        -- 更新"输入数据点支持数据"按钮位置（与节点顶边重合）
-        local addButtonX
-        if portCount > 0 then
-            addButtonX = startX + portCount * (portR * 2 + portSpacing) + portSpacing
-        else
-            addButtonX = startX
-        end
-        node._inputDataPortButtonRect = {
-            x = addButtonX - portR - 2 * scale,
-            y = portsY - portR - 2 * scale,
-            w = buttonSize + 4 * scale,
-            h = buttonSize + 4 * scale
-        }
-    end
+    -- 计算体已迁至共享几何模块（ADR 0006），此处保留签名供既有调用方使用；
+    -- portType 不再区分，几何模块一次算齐输出与输入端口
+    return KARDS.CardEditor.Geometry.GetPortRects(editor, node)
 end
 
 --[[
@@ -175,74 +90,42 @@ function INE:DrawDataPorts(editor, node)
     -- 有已选端口即使无可用类型也绘制（如"新建变量"节点的动态输出点，无添加按钮）
     if not hasButton and portCount == 0 then return end
 
-    local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-    local nodeW = node.width * editor.canvasScale
-    local nodeH = node.height * editor.canvasScale
     local scale = editor.canvasScale
-
     local portR = 6 * scale
-    local portSpacing = 4 * scale
     local buttonSize = portR * 2
 
-    -- 存储数据点位置用于点击检测
-    node._outputDataPortPositions = node._outputDataPortPositions or {}
-
-    -- 计算数据点位置（普通节点与底边重合；开始点数据端口垂直居中，与其他开始点的端口位置一致）
-    local portsY = nodeY + nodeH
-    if node.isStartNode then
-        portsY = nodeY + nodeH / 2
-    end
-    -- 总宽度 = 数据点 + 按钮（按钮始终在数据点右侧；无可用类型时不占按钮空间）
-    local totalWidth
-    if portCount > 0 then
-        totalWidth = portCount * (portR * 2 + portSpacing) + (hasButton and (buttonSize + portSpacing) or 0)
-    else
-        totalWidth = hasButton and buttonSize or 0
-    end
-    local startX = nodeX + nodeW / 2 - totalWidth / 2 + portR
-    -- 数据源开始点（钳击对象）：数据点固定在左边缘（y 轴）上，与标题文本对齐
-    if node.isStartNode then
-        startX = nodeX
-    end
+    -- 端口位置、按钮矩形、下拉框矩形统一由共享几何模块计算并写入节点字段（ADR 0006）
+    local geometry = KARDS.CardEditor.Geometry.GetPortRects(editor, node)
 
     -- 绘制已选择的数据点
     for i, portData in ipairs(selectedPorts) do
-        local portX = startX + (i - 1) * (portR * 2 + portSpacing)
+        local position = geometry.output.positions[i]
         -- 兼容多种端口格式：{id=} / {type=} / 类型引用 / 字符串
         local dataType = INE.GetDataTypeById(portData.id or portData.type or portData)
-        if dataType then
-            INE.DrawDataTypeIcon(dataType, portX, portsY, portR * 2)
-            -- 存储数据点位置
-            node._outputDataPortPositions[i] = {
-                x = portX,
-                y = portsY,
-                radius = portR,
-                data = portData
-            }
+        if dataType and position then
+            INE.DrawDataTypeIcon(dataType, position.x, position.y, portR * 2)
         end
     end
 
     -- 绘制"增加数据点"按钮（绿色圆形，带+号），与节点底边重合（无可用类型时无按钮）
     local addButtonX, addButtonY
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    if hasButton then
-        if portCount > 0 then
-            addButtonX = startX + portCount * (portR * 2 + portSpacing) + portSpacing
-        else
-            addButtonX = startX
-        end
-        addButtonY = portsY  -- 按钮中心在节点底边上
+    if hasButton and geometry.output.buttonRect then
+        -- 按钮中心由几何模块的按钮矩形反推，与命中判定使用同一份几何
+        local buttonRect = geometry.output.buttonRect
+        addButtonX = buttonRect.x + buttonRect.w / 2
+        addButtonY = buttonRect.y + buttonRect.h / 2
 
         -- 检查鼠标悬停
         local isHovered = self:IsPointInCircle(mouseX, mouseY, addButtonX, addButtonY, portR + 2 * scale)
 
         -- 绘制按钮背景（绿色）
-        local buttonColor = isHovered and Color(80, 200, 80) or Color(60, 180, 60)
+        local buttonColor = isHovered and C(80, 200, 80) or C(60, 180, 60)
         draw.RoundedBox(portR, addButtonX - portR, addButtonY - portR, buttonSize, buttonSize, buttonColor)
 
         -- 根据选中状态绘制符号
         -- "+": 无选中（仅添加）；"-": 全选（仅移除）；"+/-": 部分选中（可添可删）
-        surface.SetDrawColor(Color(255, 255, 255))
+        surface.SetDrawColor(C(255, 255, 255))
         local crossSize = 4 * scale
         local selectedCount = #selectedPorts
         local totalCount = #node.availableOutputTypes
@@ -264,24 +147,14 @@ function INE:DrawDataPorts(editor, node)
             surface.DrawLine(addButtonX - halfSize, addButtonY + vOffset, addButtonX + halfSize, addButtonY + vOffset)
         end
 
-        -- 存储按钮位置用于点击检测（增加点击区域，便于点击）
-        node._dataPortButtonRect = {
-            x = addButtonX - portR - 2 * scale,
-            y = addButtonY - portR - 2 * scale,
-            w = buttonSize + 4 * scale,
-            h = buttonSize + 4 * scale
-        }
-    else
-        node._dataPortButtonRect = nil
+        -- 按钮矩形已由几何模块写入 node._dataPortButtonRect，供点击检测读取（ADR 0006）
     end
 
-    -- 先清除上一帧的下拉框区域（确保不会使用过期 rect 重新展开）
-    node._dataPortDropdownRect = nil
-
-    -- 如果下拉框激活，绘制多选下拉框（无可用类型时不可能激活）
-    if hasButton and node.dataPortDropdownActive then
-        local dropdownX = addButtonX - 90 * scale
-        local dropdownY = addButtonY + portR + 4 * scale
+    -- 下拉框矩形由几何模块计算，未激活时置 nil（ADR 0006）
+    if hasButton and node.dataPortDropdownActive and geometry.output.dropdownRect then
+        local dropdownRect = geometry.output.dropdownRect
+        local dropdownX = dropdownRect.x
+        local dropdownY = dropdownRect.y
         local options = node.availableOutputTypes
         local selectedIndices = {}
         for i, portData in ipairs(selectedPorts) do
@@ -293,7 +166,7 @@ function INE:DrawDataPorts(editor, node)
             end
         end
 
-        local rect = self:DrawMultiSelectDropdown(editor, dropdownX, dropdownY, options, selectedIndices, function(idx, isSelected)
+        self:DrawMultiSelectDropdown(editor, dropdownX, dropdownY, options, selectedIndices, function(idx, isSelected)
             if isSelected then
                 table.insert(node.selectedOutputTypes, options[idx])
             else
@@ -331,7 +204,6 @@ function INE:DrawDataPorts(editor, node)
             end
         end, scale)
 
-        node._dataPortDropdownRect = rect
     end
 
     -- 检测鼠标悬停在数据点上，显示名称提示（数据源开始点除外：标题已居中显示在节点上，悬停提示冗余）
@@ -347,8 +219,8 @@ function INE:DrawDataPorts(editor, node)
                 local tipY = mouseY - 10 * scale - 16 * scale
                 local tipW = textW + tipPadding * 2
                 local tipH = 16 * scale + tipPadding * 2
-                draw.RoundedBox(3, tipX, tipY, tipW, tipH, Color(30, 30, 40, 230))
-                draw.SimpleText(tipText, tipFont, tipX + tipPadding, tipY + tipH / 2, Color(255, 255, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+                draw.RoundedBox(3, tipX, tipY, tipW, tipH, C(30, 30, 40, 230))
+                draw.SimpleText(tipText, tipFont, tipX + tipPadding, tipY + tipH / 2, C(255, 255, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
                 break
             end
         end
@@ -368,73 +240,47 @@ function INE:DrawInputDataPorts(editor, node)
     if (not node.availableInputTypes or #node.availableInputTypes == 0)
     and (not node.selectedInputTypes or #node.selectedInputTypes == 0) then return end
 
-    local nodeX, nodeY = self:WorldToScreen(editor, node.x, node.y)
-    local nodeW = node.width * editor.canvasScale
-    local nodeH = node.height * editor.canvasScale
     local scale = editor.canvasScale
-
     local portR = 6 * scale
-    local portSpacing = 4 * scale
     local buttonSize = portR * 2
 
     -- 已选择的输入数据点
     local selectedPorts = node.selectedInputTypes or {}
-    local portCount = #selectedPorts
     -- 是否有"输入数据点支持数据"按钮（无可用类型时不绘制按钮，端口完全由代码自动管理）
     local hasButton = node.availableInputTypes and #node.availableInputTypes > 0
 
-    -- 存储数据点位置用于点击检测
-    node._inputDataPortPositions = node._inputDataPortPositions or {}
-
-    -- 计算数据点位置（与节点顶边重合，水平居中排列）
-    local portsY = nodeY
-    -- 总宽度 = 数据点 + 按钮（按钮始终在数据点右侧；无可用类型时不占按钮空间）
-    local totalWidth
-    if portCount > 0 then
-        totalWidth = portCount * (portR * 2 + portSpacing) + (hasButton and (buttonSize + portSpacing) or 0)
-    else
-        totalWidth = hasButton and buttonSize or 0
-    end
-    local startX = nodeX + nodeW / 2 - totalWidth / 2 + portR
+    -- 端口位置、按钮矩形、下拉框矩形统一由共享几何模块计算并写入节点字段（ADR 0006）
+    local geometry = KARDS.CardEditor.Geometry.GetPortRects(editor, node)
 
     -- 绘制已选择的输入数据点
     for i, portData in ipairs(selectedPorts) do
-        local portX = startX + (i - 1) * (portR * 2 + portSpacing)
+        local position = geometry.input.positions[i]
         -- 兼容多种端口格式：{id=} / {type=} / 类型引用 / 字符串
         local dataType = INE.GetDataTypeById(portData.id or portData.type or portData)
-        if dataType then
-            INE.DrawDataTypeIcon(dataType, portX, portsY, portR * 2)
-            -- 存储数据点位置
-            node._inputDataPortPositions[i] = {
-                x = portX,
-                y = portsY,
-                radius = portR,
-                data = portData
-            }
+        if dataType and position then
+            INE.DrawDataTypeIcon(dataType, position.x, position.y, portR * 2)
         end
     end
 
     -- 绘制"输入数据点支持数据"按钮（深蓝色圆形，带+号），与节点顶边重合（无可用类型时无按钮）
     local addButtonX, addButtonY
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
-    if hasButton then
-        if portCount > 0 then
-            addButtonX = startX + portCount * (portR * 2 + portSpacing) + portSpacing
-        else
-            addButtonX = startX
-        end
-        addButtonY = portsY  -- 按钮中心在节点顶边上
+    if hasButton and geometry.input.buttonRect then
+        -- 按钮中心由几何模块的按钮矩形反推，与命中判定使用同一份几何
+        local buttonRect = geometry.input.buttonRect
+        addButtonX = buttonRect.x + buttonRect.w / 2
+        addButtonY = buttonRect.y + buttonRect.h / 2
 
         -- 检查鼠标悬停
         local isHovered = self:IsPointInCircle(mouseX, mouseY, addButtonX, addButtonY, portR + 2 * scale)
 
         -- 绘制按钮背景（深蓝色）
-        local buttonColor = isHovered and Color(80, 120, 200) or Color(60, 100, 180)
+        local buttonColor = isHovered and C(80, 120, 200) or C(60, 100, 180)
         draw.RoundedBox(portR, addButtonX - portR, addButtonY - portR, buttonSize, buttonSize, buttonColor)
 
         -- 根据选中状态绘制符号
         -- "+": 无选中（仅添加）；"-": 全选（仅移除）；"+/-": 部分选中（可添可删）
-        surface.SetDrawColor(Color(255, 255, 255))
+        surface.SetDrawColor(C(255, 255, 255))
         local crossSize = 4 * scale
         local selectedCount = #selectedPorts
         local totalCount = #node.availableInputTypes
@@ -456,24 +302,14 @@ function INE:DrawInputDataPorts(editor, node)
             surface.DrawLine(addButtonX - halfSize, addButtonY + vOffset, addButtonX + halfSize, addButtonY + vOffset)
         end
 
-        -- 存储按钮位置用于点击检测（增加点击区域，便于点击）
-        node._inputDataPortButtonRect = {
-            x = addButtonX - portR - 2 * scale,
-            y = addButtonY - portR - 2 * scale,
-            w = buttonSize + 4 * scale,
-            h = buttonSize + 4 * scale
-        }
-    else
-        node._inputDataPortButtonRect = nil
+        -- 按钮矩形已由几何模块写入 node._inputDataPortButtonRect，供点击检测读取（ADR 0006）
     end
 
-    -- 先清除上一帧的下拉框区域（确保不会使用过期 rect 重新展开）
-    node._inputDataPortDropdownRect = nil
-
-    -- 如果下拉框激活，绘制多选下拉框（无可用类型时不可能激活）
-    if hasButton and node.inputDataPortDropdownActive then
-        local dropdownX = addButtonX - 90 * scale
-        local dropdownY = addButtonY + portR + 4 * scale
+    -- 下拉框矩形由几何模块计算，未激活时置 nil（ADR 0006）
+    if hasButton and node.inputDataPortDropdownActive and geometry.input.dropdownRect then
+        local dropdownRect = geometry.input.dropdownRect
+        local dropdownX = dropdownRect.x
+        local dropdownY = dropdownRect.y
         local options = node.availableInputTypes
         local selectedIndices = {}
         for i, portData in ipairs(selectedPorts) do
@@ -485,7 +321,7 @@ function INE:DrawInputDataPorts(editor, node)
             end
         end
 
-        local rect = self:DrawMultiSelectDropdown(editor, dropdownX, dropdownY, options, selectedIndices, function(idx, isSelected)
+        self:DrawMultiSelectDropdown(editor, dropdownX, dropdownY, options, selectedIndices, function(idx, isSelected)
             if isSelected then
                 table.insert(node.selectedInputTypes, options[idx])
             else
@@ -522,8 +358,6 @@ function INE:DrawInputDataPorts(editor, node)
                 end
             end
         end, scale)
-
-        node._inputDataPortDropdownRect = rect
     end
 
     -- 检测鼠标悬停在输入数据点上，显示名称提示
@@ -538,8 +372,8 @@ function INE:DrawInputDataPorts(editor, node)
             local tipY = mouseY - 10 * scale - 16 * scale
             local tipW = textW + tipPadding * 2
             local tipH = 16 * scale + tipPadding * 2
-            draw.RoundedBox(3, tipX, tipY, tipW, tipH, Color(30, 30, 40, 230))
-            draw.SimpleText(tipText, tipFont, tipX + tipPadding, tipY + tipH / 2, Color(255, 255, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.RoundedBox(3, tipX, tipY, tipW, tipH, C(30, 30, 40, 230))
+            draw.SimpleText(tipText, tipFont, tipX + tipPadding, tipY + tipH / 2, C(255, 255, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             break
         end
     end
@@ -576,7 +410,7 @@ function INE:DrawNode(editor, node)
     -- 开始点绘制：文字分布在端口两侧（端口由 DrawNodePorts 在最后层绘制）
     -- 数据源开始点（钳击对象）的数据端口同样位于垂直居中，与普通开始点的端口位置一致
     if node.isStartNode then
-        local title = node.data.title or node.name or "开始点"
+        local title = node.data.title or node.name or T("editor.nodedraw.start_node")
         local startNodeFont = self:GetScaledFont("SourceHan_Heavy", 20, editor.canvasScale)
         local centerX = nodeX
         local centerY = nodeY + nodeH / 2
@@ -587,10 +421,10 @@ function INE:DrawNode(editor, node)
         local gap = 8 * editor.canvasScale
 
         if firstChar ~= "" then
-            draw.SimpleText(firstChar, startNodeFont, centerX - gap, centerY, Color(200, 200, 200), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(firstChar, startNodeFont, centerX - gap, centerY, C(200, 200, 200), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
         end
         if restChars ~= "" then
-            draw.SimpleText(restChars, startNodeFont, centerX + gap, centerY, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(restChars, startNodeFont, centerX + gap, centerY, C(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         end
         return
     end
@@ -599,10 +433,10 @@ function INE:DrawNode(editor, node)
     local highlightColor = nil
     if node.isInvalid then
         -- 无效节点（不属于当前面板）：红色高亮
-        highlightColor = Color(255, 80, 80, 150)
+        highlightColor = C(255, 80, 80, 150)
     elseif node.isUnregistered then
         -- 未注册节点类型：深红色高亮
-        highlightColor = Color(255, 100, 100, 100)
+        highlightColor = C(255, 100, 100, 100)
     end
 
     -- 绘制高亮边框（如有）
@@ -613,23 +447,23 @@ function INE:DrawNode(editor, node)
     -- 确定节点主体颜色，未注册节点使用暗红
     local nodeColor = node.color
     if node.isUnregistered then
-        nodeColor = Color(100, 50, 50)
+        nodeColor = C(100, 50, 50)
     end
 
     -- 绘制节点主体（双层圆角矩形模拟边框效果）
     draw.RoundedBox(8 * editor.canvasScale, nodeX, nodeY, nodeW, nodeH, nodeColor)
-    draw.RoundedBox(8 * editor.canvasScale, nodeX + 2 * editor.canvasScale, nodeY + 2 * editor.canvasScale, nodeW - 4 * editor.canvasScale, nodeH - 4 * editor.canvasScale, Color(50, 50, 55))
+    draw.RoundedBox(8 * editor.canvasScale, nodeX + 2 * editor.canvasScale, nodeY + 2 * editor.canvasScale, nodeW - 4 * editor.canvasScale, nodeH - 4 * editor.canvasScale, C(50, 50, 55))
 
     if not node.isUnregistered then
         -- 绘制标题栏
-        draw.RoundedBox(4 * editor.canvasScale, nodeX, nodeY, nodeW, 24 * editor.canvasScale, Color(70, 70, 75))
+        draw.RoundedBox(4 * editor.canvasScale, nodeX, nodeY, nodeW, 24 * editor.canvasScale, C(70, 70, 75))
         -- 绘制节点标题（开始点使用 data.title，普通节点使用 displayName/name）
         local displayTitle = node.data.title or node.displayName or node.name
         local titleFont = self:GetScaledFont("SourceHan_Heavy", 14, editor.canvasScale)
         local typeFont = self:GetScaledFont("SourceHan_Heavy", 12, editor.canvasScale)
-        draw.SimpleText(displayTitle, titleFont, nodeX + 10 * editor.canvasScale, nodeY + 12 * editor.canvasScale, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(displayTitle, titleFont, nodeX + 10 * editor.canvasScale, nodeY + 12 * editor.canvasScale, C(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         -- 右侧绘制灰色小号 [type] 标签（如 NodeBase 风格）
-        draw.SimpleText("[" .. node.type .. "]", typeFont, nodeX + nodeW - 10 * editor.canvasScale, nodeY + 12 * editor.canvasScale, Color(180, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        draw.SimpleText("[" .. node.type .. "]", typeFont, nodeX + nodeW - 10 * editor.canvasScale, nodeY + 12 * editor.canvasScale, C(180, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
 
         -- 输出端口和数据端口由 DrawNodePorts 在最后层绘制
 
@@ -640,7 +474,7 @@ function INE:DrawNode(editor, node)
             local success, err = pcall(node.drawFunction, node, nodeX + 10 * editor.canvasScale, nodeY + 30 * editor.canvasScale, nodeW - 20 * editor.canvasScale, nodeH - 40 * editor.canvasScale, editor.canvasScale)
             if not success then
                 local errFont = self:GetScaledFont("SourceHan_Heavy", 12, editor.canvasScale)
-                draw.SimpleText("绘制错误", errFont, nodeX + nodeW/2, nodeY + nodeH/2, Color(255, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                draw.SimpleText(T("editor.nodedraw.draw_error"), errFont, nodeX + nodeW/2, nodeY + nodeH/2, C(255, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             end
         end
 
@@ -649,13 +483,13 @@ function INE:DrawNode(editor, node)
         -- 未注册节点显示错误提示
         local unregFont1 = self:GetScaledFont("SourceHan_Heavy", 14, editor.canvasScale)
         local unregFont2 = self:GetScaledFont("SourceHan_Heavy", 12, editor.canvasScale)
-        draw.SimpleText("未注册节点", unregFont1, nodeX + nodeW/2, nodeY + nodeH/2, Color(200, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText(node.name or "unknown", unregFont2, nodeX + nodeW/2, nodeY + nodeH/2 + 20, Color(150, 80, 80), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodedraw.unregistered_node"), unregFont1, nodeX + nodeW/2, nodeY + nodeH/2, C(200, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(node.name or "unknown", unregFont2, nodeX + nodeW/2, nodeY + nodeH/2 + 20, C(150, 80, 80), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 
     -- 绘制选中状态高亮（三层蓝色边框动画效果）
     if isSelected then
-        surface.SetDrawColor(Color(100, 150, 255, 200))
+        surface.SetDrawColor(C(100, 150, 255, 200))
         for i = 0, 2 do
             surface.DrawOutlinedRect(nodeX - 2 - i, nodeY - 2 - i, nodeW + 4 + i*2, nodeH + 4 + i*2)
         end
@@ -695,12 +529,12 @@ function INE:DrawNodePorts(editor, node)
             local portCX = nodeX
             local portCY = nodeY + nodeH / 2
             local bw = math.max(1, math.Round(2 * editor.canvasScale))
-            draw.RoundedBox(portR + bw, portCX - portR - bw, portCY - portR - bw, portR * 2 + bw * 2, portR * 2 + bw * 2, Color(150, 50, 50))
-            draw.RoundedBox(portR, portCX - portR, portCY - portR, portR * 2, portR * 2, Color(255, 100, 100))
+            draw.RoundedBox(portR + bw, portCX - portR - bw, portCY - portR - bw, portR * 2 + bw * 2, portR * 2 + bw * 2, C(150, 50, 50))
+            draw.RoundedBox(portR, portCX - portR, portCY - portR, portR * 2, portR * 2, C(255, 100, 100))
 
             -- 选中高亮（输出点被选中时）
             if isOutputSelected then
-                surface.SetDrawColor(Color(100, 255, 150, 200))
+                surface.SetDrawColor(C(100, 255, 150, 200))
                 for i = 0, 2 do
                     surface.DrawOutlinedRect(portCX - portR - 4 - i, portCY - portR - 4 - i, portR * 2 + 8 + i * 2, portR * 2 + 8 + i * 2)
                 end
@@ -720,7 +554,7 @@ function INE:DrawNodePorts(editor, node)
         local portR = 6 * editor.canvasScale
         local portX = nodeX - portR
         local portY = nodeY + nodeH / 2 - portR
-        draw.RoundedBox(portR, portX, portY, portR * 2, portR * 2, Color(100, 100, 255))
+        draw.RoundedBox(portR, portX, portY, portR * 2, portR * 2, C(100, 100, 255))
     end
 
     -- 普通节点输出端口（红色/绿色圆形）
@@ -734,19 +568,19 @@ function INE:DrawNodePorts(editor, node)
             local labelGap = 4 * editor.canvasScale
             -- 端口标签（node.outputLabels 优先：如「抉择」的双效果端口为 {"效果一","效果二"}；
             -- 缺省保持 condition / loop / event_monitor 的「满足/不满足」语义）
-            local labelTop = (node.outputLabels and node.outputLabels[1]) or "满足"
-            local labelBot = (node.outputLabels and node.outputLabels[2]) or "不满足"
+            local labelTop = (node.outputLabels and node.outputLabels[1]) or T("editor.nodedraw.satisfied")
+            local labelBot = (node.outputLabels and node.outputLabels[2]) or T("editor.nodedraw.not_satisfied")
 
             -- 满足分支（上）
-            draw.RoundedBox(portR, portX, portTopY, portR * 2, portR * 2, Color(100, 255, 100))
-            draw.SimpleText(labelTop, labelFont, portX - labelGap, portTopY + portR, Color(144, 238, 144), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+            draw.RoundedBox(portR, portX, portTopY, portR * 2, portR * 2, C(100, 255, 100))
+            draw.SimpleText(labelTop, labelFont, portX - labelGap, portTopY + portR, C(144, 238, 144), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
             -- 不满足分支（下）
-            draw.RoundedBox(portR, portX, portBotY, portR * 2, portR * 2, Color(255, 100, 100))
-            draw.SimpleText(labelBot, labelFont, portX - labelGap, portBotY + portR, Color(255, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+            draw.RoundedBox(portR, portX, portBotY, portR * 2, portR * 2, C(255, 100, 100))
+            draw.SimpleText(labelBot, labelFont, portX - labelGap, portBotY + portR, C(255, 180, 180), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
 
             -- 输出点选中高亮
             if isOutputSelected then
-                surface.SetDrawColor(Color(100, 255, 150, 200))
+                surface.SetDrawColor(C(100, 255, 150, 200))
                 for i = 0, 2 do
                     if not selectedOutputPort or selectedOutputPort == "satisfied" then
                         surface.DrawOutlinedRect(portX - 4 - i, portTopY - 4 - i, portR * 2 + 8 + i * 2, portR * 2 + 8 + i * 2)
@@ -760,11 +594,11 @@ function INE:DrawNodePorts(editor, node)
             local portR = 6 * editor.canvasScale
             local portX = nodeX + nodeW - portR
             local portY = nodeY + nodeH / 2 - portR
-            draw.RoundedBox(portR, portX, portY, portR * 2, portR * 2, Color(255, 100, 100))
+            draw.RoundedBox(portR, portX, portY, portR * 2, portR * 2, C(255, 100, 100))
 
             -- 输出点选中高亮
             if isOutputSelected then
-                surface.SetDrawColor(Color(100, 255, 150, 200))
+                surface.SetDrawColor(C(100, 255, 150, 200))
                 for i = 0, 2 do
                     surface.DrawOutlinedRect(portX - 4 - i, portY - 4 - i, portR * 2 + 8 + i * 2, portR * 2 + 8 + i * 2)
                 end
@@ -816,31 +650,18 @@ function INE:DrawConnection(editor, fromNode, toNode, fromPort)
     local toX, toY = self:WorldToScreen(editor, toNode.x, toNode.y + toNode.height / 2)
     
     -- 计算贝塞尔曲线控制点（水平方向三分之一和三分之二处）
-    local distance = toX - fromX
-    local cp1x = fromX + distance / 3
-    local cp1y = fromY
-    local cp2x = fromX + distance * 2 / 3
-    local cp2y = toY
-    
-    -- 生成贝塞尔曲线点列表
-    local steps = 40
-    local points = {}
-    for i = 0, steps do
-        local t = i / steps
-        local x = (1-t)^3 * fromX + 3*(1-t)^2*t*cp1x + 3*(1-t)*t^2*cp2x + t^3*toX
-        local y = (1-t)^3 * fromY + 3*(1-t)^2*t*cp1y + 3*(1-t)*t^2*cp2y + t^3*toY
-        table.insert(points, {x = x, y = y})
-    end
+    -- 采样由共享几何模块统一提供，命中检测与绘制使用同一组点（ADR 0006）
+    local points = KARDS.CardEditor.Geometry.BuildCurvePoints(fromX, fromY, toX, toY, "horizontal", 40)
     
     -- 使用 NodeBase 风格的粗曲线 + 节点类型颜色
     -- 连接线厚度随画布缩放变化，确保放大时加粗、缩小时变细，最小为1px
     local connThickness = math.max(1, 2 * editor.canvasScale)
     
     -- 判断连接线类型和颜色模式
-    local NORMAL_BLUE = Color(100, 200, 255)  -- 普通浅蓝色
-    local RED = Color(255, 60, 60)             -- 红色
-    local GRADIENT_BLUE = Color(80, 180, 255)  -- 渐变蓝端
-    local GRADIENT_RED = Color(255, 80, 80)    -- 渐变红端
+    local NORMAL_BLUE = C(100, 200, 255)  -- 普通浅蓝色
+    local RED = C(255, 60, 60)             -- 红色
+    local GRADIENT_BLUE = C(80, 180, 255)  -- 渐变蓝端
+    local GRADIENT_RED = C(255, 80, 80)    -- 渐变红端
     
     local isSourceSpecial = INE:IsSpecialTurnNode(fromNode)
     local isInRedChain = (not isSourceSpecial) and INE:IsInRedChain(editor, fromNode)
@@ -861,26 +682,26 @@ function INE:DrawConnection(editor, fromNode, toNode, fromPort)
         local textOffset = 8 * editor.canvasScale
         local fontSize = math.max(12, math.Round(16 * editor.canvasScale))
         local fontName = fontSize >= 14 and "SourceHan_Heavy_14" or "SourceHan_Heavy_12"
-        local shadowColor = Color(0, 0, 0, 180)
+        local shadowColor = C(0, 0, 0, 180)
         local isReversed = toX < fromX
         if curveLen > 35 * editor.canvasScale then
             local ft1, ft2, et1, et2, friendText, enemyText
             if curveLen > 200 * editor.canvasScale then
                 ft1, ft2, et1, et2 = 0.15, 0.38, 0.62, 0.85
-                friendText = isReversed and "合回方友" or "友方回合"
-                enemyText = isReversed and "合回方敌" or "敌方回合"
+                friendText = isReversed and T("editor.nodedraw.friendly_turn_reversed") or T("editor.nodedraw.friendly_turn")
+                enemyText = isReversed and T("editor.nodedraw.enemy_turn_reversed") or T("editor.nodedraw.enemy_turn")
             elseif curveLen > 120 * editor.canvasScale then
                 ft1, ft2, et1, et2 = 0.20, 0.38, 0.62, 0.80
-                friendText = isReversed and "方友" or "友方"
-                enemyText = isReversed and "方敌" or "敌方"
+                friendText = isReversed and T("editor.nodedraw.friendly_short_reversed") or T("editor.nodedraw.friendly_short")
+                enemyText = isReversed and T("editor.nodedraw.enemy_short_reversed") or T("editor.nodedraw.enemy_short")
             else
                 ft1, ft2, et1, et2 = 0.25, 0.38, 0.62, 0.75
-                friendText, enemyText = "友", "敌"
+                friendText, enemyText = T("editor.nodedraw.friendly_char"), T("editor.nodedraw.enemy_char")
             end
             INE:DrawCharsAlongCurve(points, friendText, ft1, ft2, fontName,
-                Color(100, 200, 255), shadowColor, -textOffset)
+                C(100, 200, 255), shadowColor, -textOffset)
             INE:DrawCharsAlongCurve(points, enemyText, et1, et2, fontName,
-                Color(255, 100, 100), shadowColor, -textOffset)
+                C(255, 100, 100), shadowColor, -textOffset)
         end
     elseif isInRedChain then
         -- 处于红色链中：全红
@@ -1219,22 +1040,8 @@ function INE:DrawTempConnection(editor, node, port, hovering)
     
     local fromX, fromY = self:WorldToScreen(editor, portX, fromWorldY)
     
-    -- 贝塞尔曲线终点为鼠标当前位置
-    local distance = mouseX - fromX
-    local cp1x = fromX + distance / 3
-    local cp1y = fromY
-    local cp2x = fromX + distance * 2 / 3
-    local cp2y = mouseY
-    
-    -- 生成贝塞尔曲线点列表
-    local steps = 40
-    local points = {}
-    for i = 0, steps do
-        local t = i / steps
-        local x = (1-t)^3 * fromX + 3*(1-t)^2*t*cp1x + 3*(1-t)*t^2*cp2x + t^3*mouseX
-        local y = (1-t)^3 * fromY + 3*(1-t)^2*t*cp1y + 3*(1-t)*t^2*cp2y + t^3*mouseY
-        table.insert(points, {x = x, y = y})
-    end
+    -- 贝塞尔曲线终点为鼠标当前位置，采样由共享几何模块统一提供（ADR 0006）
+    local points = KARDS.CardEditor.Geometry.BuildCurvePoints(fromX, fromY, mouseX, mouseY, "horizontal", 40)
     
     local isSourceSpecial = INE:IsSpecialTurnNode(node)
     local isSourceRed = (not isSourceSpecial) and INE:IsInRedChain(editor, node)
@@ -1243,8 +1050,8 @@ function INE:DrawTempConnection(editor, node, port, hovering)
     if isSourceSpecial then
         -- 从特殊"回合"节点拖出：蓝→红渐变（半透明）
         local alpha = hovering and 200 or 80
-        local fromColor = Color(80, 180, 255, alpha)
-        local toColor = Color(255, 80, 80, alpha)
+        local fromColor = C(80, 180, 255, alpha)
+        local toColor = C(255, 80, 80, alpha)
         local splitT = 0.4
         local gradientLen = 0.15
         INE:DrawGradientCurve(points, fromColor, toColor, hovering and 4 or 3, splitT, gradientLen)
@@ -1252,7 +1059,7 @@ function INE:DrawTempConnection(editor, node, port, hovering)
         -- 从红色链中的节点拖出：全红（半透明）
         local alpha = hovering and 200 or 80
         local thickness = hovering and 4 or 3
-        INE:DrawThickCurve(points, Color(255, 60, 60, alpha), thickness)
+        INE:DrawThickCurve(points, C(255, 60, 60, alpha), thickness)
     else
         -- 半透明浅蓝色连线：接近输入点时更亮更不透明，远离时更暗更透明
         local alpha = hovering and 200 or 80
@@ -1260,7 +1067,7 @@ function INE:DrawTempConnection(editor, node, port, hovering)
         
         -- 使用粗曲线绘制临时连接线（厚度3px，接近输入点时厚度5px）
         local thickness = hovering and 4 or 3
-        INE:DrawThickCurve(points, Color(r, g, b, alpha), thickness)
+        INE:DrawThickCurve(points, C(r, g, b, alpha), thickness)
     end
 end
 
@@ -1285,24 +1092,11 @@ function INE:DrawDataConnection(editor, fromNode, toNode, fromPortIndex, toPortI
     local toX, toY = toPortPos.x, toPortPos.y
     
     -- 计算贝塞尔曲线控制点（垂直方向偏移，额外偏移使曲线更突出）
-    local distance = toY - fromY
-    local cp1x = fromX
-    local cp1y = fromY + distance / 3 + 30
-    local cp2x = toX
-    local cp2y = toY - distance / 3 - 30
-    
-    -- 生成贝塞尔曲线点列表
-    local steps = 20
-    local points = {}
-    for i = 0, steps do
-        local t = i / steps
-        local x = (1-t)^3 * fromX + 3*(1-t)^2*t*cp1x + 3*(1-t)*t^2*cp2x + t^3*toX
-        local y = (1-t)^3 * fromY + 3*(1-t)^2*t*cp1y + 3*(1-t)*t^2*cp2y + t^3*toY
-        table.insert(points, {x = x, y = y})
-    end
+    -- 采样由共享几何模块统一提供（ADR 0006）
+    local points = KARDS.CardEditor.Geometry.BuildCurvePoints(fromX, fromY, toX, toY, "vertical", 20)
     
     -- 使用黄色绘制数据连接线（厚度随画布缩放自适应）
-    INE:DrawThickCurve(points, Color(255, 200, 0), math.max(1, 2 * editor.canvasScale))
+    INE:DrawThickCurve(points, C(255, 200, 0), math.max(1, 2 * editor.canvasScale))
 end
 
 --[[
@@ -1343,21 +1137,8 @@ function INE:DrawTempDataConnection(editor, fromPort, hoverPort)
     end
     
     -- 计算贝塞尔曲线控制点（垂直方向偏移，额外偏移使曲线更突出）
-    local distance = toY - fromY
-    local cp1x = fromX
-    local cp1y = fromY + distance / 3 + 30
-    local cp2x = toX
-    local cp2y = toY - distance / 3 - 30
-    
-    -- 生成贝塞尔曲线点列表
-    local steps = 20
-    local points = {}
-    for i = 0, steps do
-        local t = i / steps
-        local x = (1-t)^3 * fromX + 3*(1-t)^2*t*cp1x + 3*(1-t)*t^2*cp2x + t^3*toX
-        local y = (1-t)^3 * fromY + 3*(1-t)^2*t*cp1y + 3*(1-t)*t^2*cp2y + t^3*toY
-        table.insert(points, {x = x, y = y})
-    end
+    -- 采样由共享几何模块统一提供（ADR 0006）
+    local points = KARDS.CardEditor.Geometry.BuildCurvePoints(fromX, fromY, toX, toY, "vertical", 20)
     
     -- 半透明黄色连线：接近目标数据点时更亮更不透明，厚度随画布缩放自适应
     local hovering = hoverPort ~= nil
@@ -1365,7 +1146,7 @@ function INE:DrawTempDataConnection(editor, fromPort, hoverPort)
     local baseThickness = hovering and 4 or 3
     local thickness = math.max(1, baseThickness * editor.canvasScale)
     
-    INE:DrawThickCurve(points, Color(255, 200, 0, alpha), thickness)
+    INE:DrawThickCurve(points, C(255, 200, 0, alpha), thickness)
 end
 
 --[[
@@ -1399,24 +1180,13 @@ function INE:DrawSelectedOutputFeedback(editor)
         
         local fromX, fromY = self:WorldToScreen(editor, node.x + node.width, fromWorldY)
         
-        -- 贝塞尔曲线终点为鼠标当前位置
-        local distance = mouseX - fromX
-        local cp1x = fromX + distance / 3
-        local cp1y = fromY
-        local cp2x = fromX + distance * 2 / 3
-        local cp2y = mouseY
+        -- 贝塞尔曲线终点为鼠标当前位置，采样由共享几何模块统一提供（ADR 0006）
+        local points = KARDS.CardEditor.Geometry.BuildCurvePoints(fromX, fromY, mouseX, mouseY, "horizontal", 20)
         
         -- 半透明绿色绘制反馈线（区分于旧的蓝色临时连线）
-        local steps = 20
-        local prevX, prevY = fromX, fromY
-        
-        surface.SetDrawColor(Color(100, 255, 150, 150))
-        for i = 1, steps do
-            local t = i / steps
-            local x = (1-t)^3 * fromX + 3*(1-t)^2*t*cp1x + 3*(1-t)*t^2*cp2x + t^3*mouseX
-            local y = (1-t)^3 * fromY + 3*(1-t)^2*t*cp1y + 3*(1-t)*t^2*cp2y + t^3*mouseY
-            surface.DrawLine(prevX, prevY, x, y)
-            prevX, prevY = x, y
+        surface.SetDrawColor(C(100, 255, 150, 150))
+        for i = 1, #points - 1 do
+            surface.DrawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y)
         end
     end
 end
@@ -1440,10 +1210,10 @@ function INE:DrawTempNodePreview(editor, nodeName, x, y)
     local h = template.height * editor.canvasScale
     
     draw.RoundedBox(8 * editor.canvasScale, x, y, w, h, template.color)
-    draw.RoundedBox(8 * editor.canvasScale, x + 2, y + 2, w - 4, h - 4, Color(50, 50, 55))
-    draw.RoundedBox(4 * editor.canvasScale, x, y, w, 24 * editor.canvasScale, Color(70, 70, 75))
+    draw.RoundedBox(8 * editor.canvasScale, x + 2, y + 2, w - 4, h - 4, C(50, 50, 55))
+    draw.RoundedBox(4 * editor.canvasScale, x, y, w, 24 * editor.canvasScale, C(70, 70, 75))
     local previewFont = editor and INE:GetScaledFont("SourceHan_Heavy", 14, editor.canvasScale) or "SourceHan_Heavy_14"
-    draw.SimpleText(template.name, previewFont, x + 10 * editor.canvasScale, y + 12 * editor.canvasScale, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+    draw.SimpleText(template.name, previewFont, x + 10 * editor.canvasScale, y + 12 * editor.canvasScale, C(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     surface.SetAlphaMultiplier(1)
 end
 
@@ -1461,21 +1231,21 @@ function INE:DrawImportWarningDialog(editor)
     local dlgY = editor.y + editor.height/2 - dlgH/2
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()
     
-    draw.RoundedBox(8, dlgX, dlgY, dlgW, dlgH, Color(50, 50, 55))
-    draw.RoundedBox(8, dlgX + 2, dlgY + 2, dlgW - 4, dlgH - 4, Color(60, 60, 65))
-    draw.RoundedBox(4, dlgX, dlgY, dlgW, 40, Color(80, 60, 60))
+    draw.RoundedBox(8, dlgX, dlgY, dlgW, dlgH, C(50, 50, 55))
+    draw.RoundedBox(8, dlgX + 2, dlgY + 2, dlgW - 4, dlgH - 4, C(60, 60, 65))
+    draw.RoundedBox(4, dlgX, dlgY, dlgW, 40, C(80, 60, 60))
     
-    local titleText = warnings.hasUnregistered and "该节点文件异常" or "该节点文件用途可能的不正确"
-    draw.SimpleText(titleText, "SourceHan_Heavy_18", dlgX + dlgW/2, dlgY + 20, Color(255, 200, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    local titleText = warnings.hasUnregistered and T("editor.nodedraw.import_invalid_title") or T("editor.nodedraw.import_wrong_purpose_title")
+    draw.SimpleText(titleText, "SourceHan_Heavy_18", dlgX + dlgW/2, dlgY + 20, C(255, 200, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
-    local msgText = warnings.hasUnregistered and "检测到未注册的节点类型，这可能导致文件无法正常工作。" or
-                    "检测到不属于此面板的节点，该节点文件用途可能不正确。"
-    draw.SimpleText(msgText, "SourceHan_Heavy_14", dlgX + dlgW/2, dlgY + 70, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    local msgText = warnings.hasUnregistered and T("editor.nodedraw.import_unregistered_message") or
+                    T("editor.nodedraw.import_foreign_message")
+    draw.SimpleText(msgText, "SourceHan_Heavy_14", dlgX + dlgW/2, dlgY + 70, C(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     if warnings.hasUnregistered then
-        draw.SimpleText("未注册节点将以红色高亮显示且不渲染额外部分，保存时会被跳过。", "SourceHan_Heavy_12", dlgX + dlgW/2, dlgY + 100, Color(180, 150, 150), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodedraw.import_unregistered_hint"), "SourceHan_Heavy_12", dlgX + dlgW/2, dlgY + 100, C(180, 150, 150), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     else
-        draw.SimpleText("未引用的节点将以红色高亮显示，保存时不会保存这些节点。", "SourceHan_Heavy_12", dlgX + dlgW/2, dlgY + 100, Color(180, 150, 150), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodedraw.import_unreferenced_hint"), "SourceHan_Heavy_12", dlgX + dlgW/2, dlgY + 100, C(180, 150, 150), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     
     local btnW, btnH = 120, 35
@@ -1485,13 +1255,13 @@ function INE:DrawImportWarningDialog(editor)
     
     local continueHovered = mouseX >= continueBtnX and mouseX <= continueBtnX + btnW and
                            mouseY >= btnY and mouseY <= btnY + btnH
-    draw.RoundedBox(4, continueBtnX, btnY, btnW, btnH, continueHovered and Color(80, 150, 80) or Color(60, 120, 60))
-    draw.SimpleText("仍然导入", "SourceHan_Heavy_14", continueBtnX + btnW/2, btnY + btnH/2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.RoundedBox(4, continueBtnX, btnY, btnW, btnH, continueHovered and C(80, 150, 80) or C(60, 120, 60))
+    draw.SimpleText(T("editor.nodedraw.import_anyway"), "SourceHan_Heavy_14", continueBtnX + btnW/2, btnY + btnH/2, C(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     local cancelHovered = mouseX >= cancelBtnX and mouseX <= cancelBtnX + btnW and
                          mouseY >= btnY and mouseY <= btnY + btnH
-    draw.RoundedBox(4, cancelBtnX, btnY, btnW, btnH, cancelHovered and Color(150, 80, 80) or Color(120, 60, 60))
-    draw.SimpleText("取消导入", "SourceHan_Heavy_14", cancelBtnX + btnW/2, btnY + btnH/2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.RoundedBox(4, cancelBtnX, btnY, btnW, btnH, cancelHovered and C(150, 80, 80) or C(120, 60, 60))
+    draw.SimpleText(T("editor.nodedraw.cancel_import"), "SourceHan_Heavy_14", cancelBtnX + btnW/2, btnY + btnH/2, C(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     editor._importDialogButtons = {
         ["continue"] = {x = continueBtnX, y = btnY, w = btnW, h = btnH},

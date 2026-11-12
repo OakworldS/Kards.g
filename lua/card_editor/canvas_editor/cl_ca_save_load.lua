@@ -21,6 +21,10 @@
 -- 此文件内容将剪切自 cl_canvas_editor.lua 行 9146~9380
 -- 包含：DrawSaveWindow、DrawLoadWindow、DrawLoadConfirmDialog
 -- 状态数据（行 1030~1125）需一并迁移
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 绘制保存窗口
 KARDS.CardEditor.Canvas.SaveWindow = {
     visible = false,
@@ -39,7 +43,7 @@ KARDS.CardEditor.Canvas.SaveWindow = {
     buttons = {
         {
             id = "confirm",
-            text = "确定",
+            text = T("editor.saveload.confirm"),
             x = 0,
             y = 0,
             width = 100,
@@ -49,7 +53,7 @@ KARDS.CardEditor.Canvas.SaveWindow = {
         },
         {
             id = "cancel",
-            text = "取消",
+            text = T("editor.saveload.cancel"),
             x = 0,
             y = 0,
             width = 100,
@@ -76,7 +80,7 @@ KARDS.CardEditor.Canvas.LoadWindow = {
     buttons = {
         {
             id = "load",
-            text = "加载该卡牌文件",
+            text = T("editor.saveload.load_card_file"),
             x = 0,
             y = 0,
             width = 180,
@@ -86,7 +90,7 @@ KARDS.CardEditor.Canvas.LoadWindow = {
         },
         {
             id = "cancel",
-            text = "取消",
+            text = T("editor.saveload.cancel"),
             x = 0,
             y = 0,
             width = 100,
@@ -109,7 +113,7 @@ KARDS.CardEditor.Canvas.LoadConfirmDialog = {
     buttons = {
         {
             id = "continue",
-            text = "继续加载",
+            text = T("editor.saveload.continue_load"),
             x = 0,
             y = 0,
             width = 120,
@@ -118,7 +122,7 @@ KARDS.CardEditor.Canvas.LoadConfirmDialog = {
         },
         {
             id = "cancel",
-            text = "取消加载",
+            text = T("editor.saveload.cancel_load"),
             x = 0,
             y = 0,
             width = 120,
@@ -140,10 +144,10 @@ function KARDS.CardEditor.Canvas.DrawSaveWindow()
     draw.RoundedBox(8, saveWindow.x + 2, saveWindow.y + 2, saveWindow.width - 4, saveWindow.height - 4, Color(45, 45, 45))
     
     -- 绘制标题
-    draw.SimpleText("保存卡牌", "SourceHan_Heavy_24", saveWindow.x + saveWindow.width / 2, saveWindow.y + 35, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.saveload.save_title"), "SourceHan_Heavy_24", saveWindow.x + saveWindow.width / 2, saveWindow.y + 35, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     -- 绘制提示文字
-    draw.SimpleText("请输入保存到卡牌的文件名称:", "SourceHan_Heavy_16", saveWindow.x + 40, saveWindow.y + 80, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.saveload.name_prompt"), "SourceHan_Heavy_16", saveWindow.x + 40, saveWindow.y + 80, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     
     -- 创建/更新输入框（使用 Gmod 原版 DTextEntry）
     if not IsValid(saveWindow.inputPanel) then
@@ -167,7 +171,7 @@ function KARDS.CardEditor.Canvas.DrawSaveWindow()
             saveWindow.inputText = self:GetText()
             if saveWindow.inputText ~= "" and KARDS.CardEditor.SaveSystem.FileExists(saveWindow.inputText) then
                 saveWindow.isReplaceMode = true
-                saveWindow.errorMessage = "'" .. saveWindow.inputText .. "' 已经存在了，要使用这个名称，你需要替换该卡牌文件"
+                saveWindow.errorMessage = T("editor.saveload.name_exists", saveWindow.inputText)
             else
                 saveWindow.isReplaceMode = false
                 saveWindow.errorMessage = ""
@@ -212,20 +216,20 @@ function KARDS.CardEditor.Canvas.DrawSaveWindow()
             surface.DrawLine(cb.x + 4, cb.y + cb.size * 0.55, cb.x + cb.size * 0.45, cb.y + cb.size - 5)
             surface.DrawLine(cb.x + cb.size * 0.45, cb.y + cb.size - 5, cb.x + cb.size - 4, cb.y + 4)
         end
-        draw.SimpleText("设为默认卡牌", "SourceHan_Heavy_16", cb.x + cb.size + 10, cb.y + cb.size / 2, Color(235, 235, 235), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        draw.SimpleText("默认卡牌将锁定，不可修改、不可删除", "SourceHan_Heavy_12", cb.x + cb.size + 10, cb.y + cb.size + 15, Color(150, 150, 150), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.saveload.set_default"), "SourceHan_Heavy_16", cb.x + cb.size + 10, cb.y + cb.size / 2, Color(235, 235, 235), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.saveload.default_locked_hint"), "SourceHan_Heavy_12", cb.x + cb.size + 10, cb.y + cb.size + 15, Color(150, 150, 150), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 
         -- 当前编辑卡牌为默认卡牌：提示已锁定并提供解锁入口
         local isDefault = KARDS.CardEditor.Canvas.CardAppearance and KARDS.CardEditor.Canvas.CardAppearance.isDefault == true
         if isDefault then
-            draw.SimpleText("当前卡牌为默认卡牌（已锁定）", "SourceHan_Heavy_14", saveWindow.x + 40, saveWindow.y + 240, Color(230, 180, 90), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.saveload.current_is_default_locked"), "SourceHan_Heavy_14", saveWindow.x + 40, saveWindow.y + 240, Color(230, 180, 90), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
             local ub = saveWindow.unlockButton
             ub.x = saveWindow.x + saveWindow.width - 40 - ub.width
             ub.y = saveWindow.y + 225
             ub.hovered = mouseX >= ub.x and mouseX <= ub.x + ub.width and mouseY >= ub.y and mouseY <= ub.y + ub.height
             local ubColor = ub.hovered and Color(210, 160, 75) or Color(175, 125, 55)
             draw.RoundedBox(6, ub.x, ub.y, ub.width, ub.height, ubColor)
-            draw.SimpleText("解锁默认卡牌", "SourceHan_Heavy_14", ub.x + ub.width / 2, ub.y + ub.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.saveload.unlock_default"), "SourceHan_Heavy_14", ub.x + ub.width / 2, ub.y + ub.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         end
     end
 
@@ -236,12 +240,12 @@ function KARDS.CardEditor.Canvas.DrawSaveWindow()
     confirmBtn.hovered = mouseX >= confirmBtn.x and mouseX <= confirmBtn.x + confirmBtn.width and mouseY >= confirmBtn.y and mouseY <= confirmBtn.y + confirmBtn.height
     
     if saveWindow.isReplaceMode then
-        confirmBtn.text = "替换"
+        confirmBtn.text = T("editor.saveload.replace")
         local replaceColor = confirmBtn.hovered and Color(200, 80, 80) or Color(180, 60, 60)
         draw.RoundedBox(6, confirmBtn.x, confirmBtn.y, confirmBtn.width, confirmBtn.height, replaceColor)
         draw.SimpleText(confirmBtn.text, "SourceHan_Heavy_16", confirmBtn.x + confirmBtn.width / 2, confirmBtn.y + confirmBtn.height / 2, Color(255, 100, 100), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     else
-        confirmBtn.text = "确定"
+        confirmBtn.text = T("editor.saveload.confirm")
         local confirmColor = confirmBtn.hovered and Color(100, 150, 255) or Color(80, 120, 200)
         draw.RoundedBox(6, confirmBtn.x, confirmBtn.y, confirmBtn.width, confirmBtn.height, confirmColor)
         draw.SimpleText(confirmBtn.text, "SourceHan_Heavy_16", confirmBtn.x + confirmBtn.width / 2, confirmBtn.y + confirmBtn.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
@@ -272,7 +276,7 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
     draw.RoundedBox(8, loadWindow.x + 2, loadWindow.y + 2, loadWindow.width - 4, loadWindow.height - 4, Color(45, 45, 45))
     
     -- 绘制标题（根据 deleteMode 动态显示）
-    local loadTitle = loadWindow.deleteMode and "删除卡牌" or "加载卡牌"
+    local loadTitle = loadWindow.deleteMode and T("editor.saveload.delete_title") or T("editor.saveload.load_title")
     draw.SimpleText(loadTitle, "SourceHan_Heavy_24", loadWindow.x + loadWindow.width / 2, loadWindow.y + 35, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     -- 加载保存的文件列表
@@ -298,8 +302,8 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
     surface.SetDrawColor(255, 255, 255, 255)
     
     -- 绘制表头文字
-    draw.SimpleText("文件名", "SourceHan_Heavy_16", listX + 15, listY + headerH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-    draw.SimpleText("卡牌名称", "SourceHan_Heavy_16", listX + fileNameColW + 15, listY + headerH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.saveload.file_name"), "SourceHan_Heavy_16", listX + 15, listY + headerH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.saveload.card_name"), "SourceHan_Heavy_16", listX + fileNameColW + 15, listY + headerH / 2, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     
     -- 绘制表格背景
     draw.RoundedBoxEx(4, listX, listY + headerH, listW, listH - headerH, Color(50, 50, 50), false, false, true, true)
@@ -327,7 +331,7 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
         local cardInfo = KARDS.CardEditor.SaveSystem.GetCardInfo(fileName)
         local displayName = cardInfo and cardInfo.name or ""
         if displayName == "" then
-            displayName = "无名称"
+            displayName = T("editor.saveload.unnamed")
         end
         local isDefaultCard = cardInfo and cardInfo.isDefault == true
         
@@ -342,7 +346,7 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
         draw.SimpleText(displayName, "SourceHan_Heavy_14", listX + fileNameColW + 15, itemY + (rowH - 2) / 2, Color(150, 150, 150), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         -- 默认卡牌（锁定）标记
         if isDefaultCard then
-            draw.SimpleText("默认·锁定", "SourceHan_Heavy_12", listX + fileNameColW - 10, itemY + (rowH - 2) / 2, Color(230, 180, 90), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(T("editor.saveload.default_locked_tag"), "SourceHan_Heavy_12", listX + fileNameColW - 10, itemY + (rowH - 2) / 2, Color(230, 180, 90), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
         end
     end
     
@@ -366,12 +370,12 @@ function KARDS.CardEditor.Canvas.DrawLoadWindow()
     actionBtn.enabled = loadWindow.selectedFile ~= nil
     
     if loadWindow.deleteMode then
-        actionBtn.text = "删除该文件"
+        actionBtn.text = T("editor.saveload.delete_file")
         local delColor = actionBtn.enabled and (actionBtn.hovered and Color(200, 80, 80) or Color(180, 60, 60)) or Color(70, 70, 70)
         draw.RoundedBox(6, actionBtn.x, actionBtn.y, actionBtn.width, actionBtn.height, delColor)
         draw.SimpleText(actionBtn.text, "SourceHan_Heavy_16", actionBtn.x + actionBtn.width / 2, actionBtn.y + actionBtn.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     else
-        actionBtn.text = "加载该文件"
+        actionBtn.text = T("editor.saveload.load_file")
         local loadColor = actionBtn.enabled and (actionBtn.hovered and Color(100, 150, 255) or Color(80, 120, 200)) or Color(70, 70, 70)
         draw.RoundedBox(6, actionBtn.x, actionBtn.y, actionBtn.width, actionBtn.height, loadColor)
         draw.SimpleText(actionBtn.text, "SourceHan_Heavy_16", actionBtn.x + actionBtn.width / 2, actionBtn.y + actionBtn.height / 2, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
@@ -401,10 +405,10 @@ function KARDS.CardEditor.Canvas.DrawLoadConfirmDialog()
     draw.RoundedBox(8, dialog.x + 2, dialog.y + 2, dialog.width - 4, dialog.height - 4, Color(45, 45, 45))
     
     -- 绘制标题
-    draw.SimpleText("确认加载", "SourceHan_Heavy_24", dialog.x + dialog.width / 2, dialog.y + 35, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.saveload.confirm_load_title"), "SourceHan_Heavy_24", dialog.x + dialog.width / 2, dialog.y + 35, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     -- 绘制提示文字
-    draw.SimpleText("加载该卡牌将覆盖当前内容，确定继续吗？", "SourceHan_Heavy_16", dialog.x + dialog.width / 2, dialog.y + 80, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    draw.SimpleText(T("editor.saveload.overwrite_confirm"), "SourceHan_Heavy_16", dialog.x + dialog.width / 2, dialog.y + 80, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     -- 绘制按钮
     local mouseX, mouseY = gui.MouseX(), gui.MouseY()

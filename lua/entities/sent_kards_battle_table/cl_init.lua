@@ -101,11 +101,38 @@
 --    实体卡牌初始化导致帧率 <10 时在准星下方显示"正在初始化战场/卡组"，帧率恢复后淡出。
 -- 槽位区域判定复用 shared.lua 的 GetPlayerSlot（与服务器同一套判定，保证两端一致）。
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 include("shared.lua")
 
 -- 共享状态模块（2026-08-11 拆分 A1）：跨段落共享状态集中于此，见 cl_battle_state.lua；
 -- 必须在任何状态使用方之前加载（相对实体目录，与 include("shared.lua") 同路径规则）
 include("cl_battle_state.lua")
+
+-- 射线命中统一（2026-11-08）：鼠标射线、最近命中、命中阈值与业务筛选的唯一解释者，
+-- 见 docs/adr/0009-射线命中统一.md；调用点不再各自构造射线或写距离公式
+include("cl_hit_test.lua")
+
+-- 卡面视图（2026-11-08）：渲染层读取卡牌数据的唯一入口，NW 键名收在其内，
+-- 见 docs/adr/0008-卡面视图层.md；必须紧跟 cl_battle_state，其身份读取依赖
+-- KARDS.GetCardIdentity 的定向表回退链
+include("cl_card_view.lua")
+
+-- 每帧共享的 PMX 实体列表（2026-10-16 性能优化）：cl_battle_material.lua 两处、
+-- cl_battle_hud.lua 卡堆悬停、cl_deck_pile.lua 抗视差原本各自每帧调用
+-- ents.FindByClass("sent_pmx_static_imported") 做全量扫描，同帧共 4 次。此处按
+-- FrameNumber 缓存：同帧首个调用者执行一次扫描，其余复用同一结果（调用方只读遍历）。
+-- 必须在各模块 include 之前定义，供其 Think 钩子运行时调用。
+local pmxList, pmxListFrame = nil, -1
+function KARDS.GetPmxList()
+    local f = FrameNumber()
+    if pmxListFrame ~= f then
+        pmxList = ents.FindByClass("sent_pmx_static_imported")
+        pmxListFrame = f
+    end
+    return pmxList
+end
 
 -- 未实现职责占位文件（2026-08-11 拆分 A2）：各职责待开发（多为正式版标准职责），
 -- 当前为空文件，仅登记加载顺序；实现时代码写在对应文件内、挂 KARDS 命名空间
@@ -193,8 +220,8 @@ local lastSentHover = nil
 -- 结构见 StartReveal）。头像用引擎内置 AvatarImage VGUI 控件（见 KardsFirstTurnReveal* 段）
 local pendingReveal = nil
 -- 2026-08-11 已迁移至 KARDS.BattleState.reveal（cl_battle_state.lua）
--- 总部对局开始动画是否已启动（每场对局一次）：头像完全淡入后 REVEAL_HQ_DELAY
--- 秒启动（见 KardsFirstTurnRevealStart），先于序列结束；KardsTableBattleStart
+-- 总部对局开始动画是否已启动（每场对局一次）：头像与玩家名淡入完成后 REVEAL_HQ_IN_START
+-- 秒启动（见 KardsFirstTurnRevealStart），先于先手揭晓；KardsTableBattleStart
 -- 收到时重置，防止上一场残留导致本场不触发
 local hqRevealStarted = false
 -- 总部对局开始动画中的活跃 HQ 集合（re.md 重构：动画本身由 KARDS.AnimPlayer 关键帧
@@ -235,11 +262,19 @@ end
 
 -- 创建头像面板（引擎内置 AvatarImage 控件：SetPlayer 自动经 Steamworks 拿 SteamID64、
 -- 从 Steam CDN 异步下载对应分辨率头像，期间显示默认占位头像；184 = 最高分辨率）
+-- 层级（2026-10-26 用户规格「头像始终在最高层」）：创建时置极高 ZPos，且调用处每帧
+-- MoveToFront——其它 VGUI 面板（弹窗等）的 MakePopup 内部会 MoveToFront 自身，只设
+-- 初始 ZPos 不足以长期保证在其它面板之上，故两者并用。
+local AVATAR_TOP_ZPOS = 32767
+-- 2026-11-01 修复：AvatarImage 必须挂到 GetHUDPanel()（全屏、位置 0,0，子控件坐标即
+-- 屏幕坐标）。此前无父面板创建，SetPos 不生效（头像固定停在屏幕左上角），且无父面板
+-- 时 MoveToFront 无效、Think 后续淡出逻辑不再执行（头像在对局开始动画前后一直残留）。
 local function MakeAvatarPanel(playerEnt, size)
-    local av = vgui.Create("AvatarImage")
+    local av = vgui.Create("AvatarImage", GetHUDPanel())
     av:SetSize(size, size)
     av:SetMouseInputEnabled(false)
     av:SetKeyboardInputEnabled(false)
+    av:SetZPos(AVATAR_TOP_ZPOS)
     if playerEnt then
         av:SetPlayer(playerEnt, 184)
     end
@@ -737,8 +772,19 @@ concommand.Add("kards_view", function(ply, cmd, args)
 end)
 
 -- 完全接管 HUD：进入后隐藏 GMod 全部默认 HUD 元素（HUDShouldDraw 对所有元素返回 false）
+-- 2026-11-12：实测本环境里该拦截会让引擎跳过整个 HUDPaint 阶段，自绘战斗界面随之全部消失，
+-- 故在 PostDrawHUD 补跑一次 HUDPaint；帧号标志保证正常环境（引擎已执行 HUDPaint）不会重复绘制
+local hudPaintFrame = nil
+hook.Add("HUDPaint", "KardsTableHUDGuard", function()
+    hudPaintFrame = FrameNumber()
+end)
 hook.Add("HUDShouldDraw", "KardsTableHUD", function()
     if KARDS.BattleState.inTable then return false end
+end)
+hook.Add("PostDrawHUD", "KardsTableHUDFallback", function()
+    if KARDS.BattleState.inTable and hudPaintFrame ~= FrameNumber() then
+        hook.Run("HUDPaint")
+    end
 end)
 
 --[[
@@ -767,19 +813,19 @@ end)
 hook.Add("HUDPaint", "KardsTableSlotHintDraw", function()
     if KARDS.BattleState.inTable and not KARDS.BattleState.battleStarted then
         -- 已进入：提示退出 / 准备（玩家序号取自槽位编号）
-        draw.SimpleText(("kards_enter 退出牌桌（P%d）   按 F4 准备"):format(KARDS.BattleState.inTable.slot), "SourceHan_Heavy_24",
+        draw.SimpleText(T("battle.slot.exit", KARDS.BattleState.inTable.slot), "SourceHan_Heavy_24",
             ScrW() / 2, ScrH() - 80,
             Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     elseif slotHint then
         -- 未进入且处于槽位范围：提示进入（玩家序号取自槽位编号）
-        draw.SimpleText(("kards_enter 进入牌桌（P%d）"):format(slotHint.slot), "SourceHan_Heavy_24",
+        draw.SimpleText(T("battle.slot.enter", slotHint.slot), "SourceHan_Heavy_24",
             ScrW() / 2, ScrH() - 80,
             Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     elseif wideHint and IsValid(wideHint) then
         -- 未进入且处于宽面（x 侧中段）：提示切换组卡/对战模式（模式经 NW 同步）
         local mode = wideHint:GetNWString("Kards_Mode", "battle")
-        local modeText = (mode == "deck") and "组卡" or "对战"
-        draw.SimpleText(("kards_enter 切换牌桌模式（当前：%s）"):format(modeText), "SourceHan_Heavy_24",
+        local modeText = (mode == "deck") and T("battle.mode.deck") or T("battle.mode.battle")
+        draw.SimpleText(T("battle.slot.toggle_mode", modeText), "SourceHan_Heavy_24",
             ScrW() / 2, ScrH() - 80,
             Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
@@ -817,9 +863,9 @@ net.Receive("KardsTableEntered", function()
     -- （卡组槽/手牌槽实体初始化）；组卡模式 → 组卡卡牌初始化仍在进行，保持「正在
     -- 初始化卡组」检测（模式切换时已武装，此处同文字不重置）
     if ent:GetNWString("Kards_Mode", "battle") == "deck" then
-        StartInitLoading("正在初始化卡组")
+        StartInitLoading(T("battle.loading.deck"))
     else
-        StartInitLoading("正在初始化战场")
+        StartInitLoading(T("battle.loading.battle"))
     end
     -- 设置本地视角（见 cl_perspective.lua）：仅对战开始后才区分 P1/P2 槽位视角；
     -- 加入牌桌但未开始对战一律使用观察者视角（nil），对战开始后由
@@ -895,6 +941,7 @@ function KARDS.ResetBattleState()
     BS.prevMulliganLeft = false
     -- 结束回合按钮状态复位（当前回合/悬停/点击沿）
     BS.battleTurn = nil
+    BS.turnHint = nil -- 友方回合开始提示（cl_battle_hud.lua）
     BS.endTurnRect = nil
     BS.endTurnHover = 0
     KARDS.EndTurnReset()
@@ -980,8 +1027,10 @@ net.Receive("KardsTableExited", function()
 end)
 
 -- 服务端提示（如槽位被占用 / 单位操作失败原因）：转提示系统居中显示（2026-08-12）
-net.Receive("KardsTableMsg", function()
-    KARDS.BattleHint.Push(net.ReadString())
+-- 2026-11-08 改由 KARDS.TableSync 的提示通道接收，字段由描述符统一读取，见
+-- docs/adr/0007-牌桌消息收发契约.md
+KARDS.TableSync.Handler("KardsTableMsg", function(payload)
+    KARDS.BattleHint.Push(payload.text)
 end)
 
 -- 准备回执：显示已准备状态
@@ -990,7 +1039,7 @@ net.Receive("KardsTableReadyAck", function()
     local slot = net.ReadUInt(8)
     local ready = net.ReadBool()
     if KARDS.BattleState.inTable and KARDS.BattleState.inTable.ent == ent then
-        Flash(ready and ("P%d 已准备"):format(slot) or ("P%d 取消准备"):format(slot))
+        Flash(ready and T("battle.ready.ack", slot) or T("battle.ready.cancel", slot))
     end
 end)
 
@@ -1014,7 +1063,8 @@ end)
 -- 记录 KARDS.BattleState.battleTurn 驱动 HUD「结束回合」按钮友方/敌方状态（见 KardsEndTurnHUD）；
 -- 观战者（KARDS.BattleState.inTable 非本桌）不记录，按钮仅对局内玩家显示。
 -- 对方结束回合广播回本方（KARDS.BattleState.battleTurn 由对方 → 本方）时：播放「友方回合开始」音效
--- + 摄像头轻微抖动 + 复位 KARDS.BattleState.endedTurn（本方回合恢复可拿起手牌）；对局开始首次广播
+-- + 友方回合开始提示（渐变横幅 + 文字淡入缩小，屏幕震动在文字动画 2/3 处，见 cl_battle_hud.lua）
+-- + 复位 KARDS.BattleState.endedTurn（本方回合恢复可拿起手牌）；对局开始首次广播
 --（KARDS.BattleState.battleTurn 为 nil）不触发。
 net.Receive("KardsTurnUpdate", function()
     local ent = net.ReadEntity()
@@ -1026,8 +1076,9 @@ net.Receive("KardsTurnUpdate", function()
         if slot == KARDS.BattleState.inTable.slot and wasOther then
             KARDS.BattleState.endedTurn = false -- 本方回合开始：恢复可拿起手牌
             KARDS.PlayKardsSound("turnstart")
-            -- 摄像头轻微抖动（CalcView 叠加，见 cl_battle_camera.lua）
-            KARDS.BattleCamera.Shake = { start = CurTime(), endT = CurTime() + 0.35, amp = 0.6 }
+            -- 友方回合开始提示（渐变横幅 + 文字淡入缩小；屏幕震动在文字动画
+            -- 2/3 处触发，时序统一由 cl_battle_hud.lua ShowFriendlyTurnHint 驱动）
+            KARDS.ShowFriendlyTurnHint(ent)
         end
     end
 end)
@@ -1123,13 +1174,19 @@ end)
 
 -- ====================================================================
 -- 先手揭晓 UI（摄像头动画结束后，双方玩家 UI 上展示）
--- 时间轴（自摄像头动画结束起）：
+-- 时间轴（自摄像头动画结束起，2026-10-24 重排为四段：头像动画 → 总部出场 →
+-- 先手揭示 → 总部下场）：
 --   0~0.5    左侧本方头像淡入 + 从极大体积（3x）缩小到正常；右侧敌方头像同时动画
 --            （敌方缺失 → 白色矩形兜底）
 --   0.5~1.0  每个头像下方玩家名淡入（敌方缺失 → “暂无对手”）
---   1.5      随机先手（服务端随机）：先手方头像+名称 0.4s 回弹曲线放大一部分；
---            其名称下方 0.5s 淡入黄色“先手”
---   1.5+2.0  停留 2 秒后所有元素整体淡出（0.5s）
+--   1.0~1.7  双方总部出场：卡组槽顶 → 各自主角头像中点（翻面 + 45° 倾斜，z = 中槽
+--            高度），见 StartHQReveal（参战者分支）
+--   1.8      随机先手（服务端随机）：先手方头像+名称 0.4s 回弹曲线放大一部分；
+--            其名称下方 0.5s 淡入黄色“先手”；同时先手方总部 z 上升
+--            REVEAL_HQ_RISE_LIFT（0.4s）
+--   2.6~3.75 双方总部依次下场（先手方先下场，另一方延迟 REVEAL_HQ_OUT_STAGGER）
+--            滑向本方支援阵线第 3 槽落位
+--   4.1~4.6  下场全部落位后停留 REVEAL_HOLD，随后所有元素整体淡出（REVEAL_FADE）
 -- 头像用 GMod 引擎内置 AvatarImage VGUI 控件：SetPlayer 自动经 Steamworks 拿
 -- SteamID64、从 Steam CDN 异步下载对应分辨率头像（期间显示默认占位头像）；
 -- 淡入淡出/缩放由每帧 SetAlpha（0~255）+ SetSize/SetPos 驱动。
@@ -1137,17 +1194,31 @@ end)
 
 local REVEAL_AVATAR_SIZE = 256      -- 头像正常边长（px，放大为原 128 的两倍）
 local REVEAL_AVATAR_MAX_SCALE = 3   -- 入场起始“极大体积”倍率
+local REVEAL_AVATAR_CX_LEFT = 0.30  -- 头像中心 x（屏宽比例）：左 = 本方
+local REVEAL_AVATAR_CX_RIGHT = 0.70 -- 头像中心 x（屏宽比例）：右 = 敌方
+local REVEAL_AVATAR_CY = 0.50       -- 头像中心 y（屏高比例）
 local REVEAL_INTRO = 0.5            -- 头像淡入 + 缩小时长
 local REVEAL_NAME_DELAY = 0.5       -- 名称淡入延迟（头像入场完成后）
 local REVEAL_NAME_DUR = 0.5         -- 名称淡入时长
-local REVEAL_FIRST_DELAY = 1.5      -- 先手揭晓延迟（自序列开始）
+local REVEAL_FIRST_DELAY = 1.8      -- 先手揭晓时刻（自序列开始；总部出场完成后）
 local REVEAL_FIRST_BOUNCE = 0.4     -- 先手回弹放大时长
 local REVEAL_FIRST_TEXT = 0.5       -- “先手”文字淡入时长
-local REVEAL_HQ_DELAY = 1.5         -- 总部动画延迟（自头像完全淡入 REVEAL_INTRO 起，先于序列结束启动）
-local REVEAL_HQ_FLANK_LIFT = 12     -- 总部动画阶段1终点（头像外侧）z 抬升量（世界单位）：桌面顶
-                                    -- CardZ=18.43 + 12 ≈ 30.4，接近手牌高度（30.5），展示总部卡面更醒目
-local REVEAL_HOLD = 2.0             -- 揭晓后停留时长（随后整体淡出）
+
+-- 总部对局开始动画时序（2026-10-24 用户规格重排：头像动画 → 双方总部出场 →
+-- 先手揭示（先手方总部同时在揭示时 z 上升）→ 双方总部下场（先手方先下场））
+local REVEAL_HQ_IN_START = 1.0      -- 总部出场起点（自序列开始；头像与玩家名淡入完成后）
+local REVEAL_HQ_IN_DUR = 0.7        -- 出场时长（卡堆顶 → 头像中点，翻面 + 45° 倾斜）
+local REVEAL_HQ_RISE_DUR = 0.4      -- 先手方总部 z 上升时长（与头像回弹同步）
+local REVEAL_HQ_RISE_LIFT = 6       -- 先手方总部 z 上升量（世界单位）
+local REVEAL_HQ_OUT_START = 2.6     -- 下场起点（自序列开始；先手揭晓完成后）
+local REVEAL_HQ_OUT_STAGGER = 0.45  -- 后下场一方相对先下场一方的延迟（先手方先下场）
+local REVEAL_HQ_OUT_DUR = 0.7       -- 下场时长（滑向支援阵线第 3 槽落位）
+local REVEAL_HQ_OBS_LIFT = 12       -- 观战者分支出场抬升量（无头像中点环节，直接抬高后落位）
+local REVEAL_HOLD = 0.35            -- 下场全部落位后的停留时长
 local REVEAL_FADE = 0.5             -- 整体淡出时长
+-- 淡出起点（下场全部落位 + 停留）与序列结束时刻（供 Think 结束判定与绘制淡出共用）
+local REVEAL_FADE_AT = REVEAL_HQ_OUT_START + REVEAL_HQ_OUT_STAGGER + REVEAL_HQ_OUT_DUR + REVEAL_HOLD
+local REVEAL_END = REVEAL_FADE_AT + REVEAL_FADE
 
 local function RevealEaseInOut(t)
     return t * t * (3 - 2 * t)
@@ -1164,6 +1235,17 @@ local function RevealEaseOutBack(t)
     local c3 = c1 + 1
     t = t - 1
     return 1 + c3 * t * t * t + c1 * t * t
+end
+
+-- 先手回弹放大倍率（2026-10-24 用户规格「总部与头像看起来是整体缩放」）：
+-- 头像自揭晓时刻起以 easeOutBack 放大到 1.25（过冲后回落到 1.25 并保持）。
+-- 本函数为头像放大与总部 z 抬升共用的唯一曲线源——总部抬升量由该倍率反算
+--（见 StartHQReveal），两者同时刻同曲线，视觉上合为一个整体缩放。
+-- @param t number 序列时间（秒，自摄像头动画结束起）
+-- @return number 放大倍率（揭晓前恒 1）
+local function RevealBounceScale(t)
+    if t < REVEAL_FIRST_DELAY then return 1 end
+    return 1 + 0.25 * RevealEaseOutBack(math.Clamp((t - REVEAL_FIRST_DELAY) / REVEAL_FIRST_BOUNCE, 0, 1))
 end
 
 -- 摄像头动画结束后启动先手揭晓序列（由 Think 钩子 KardsFirstTurnRevealStart 触发）
@@ -1183,20 +1265,23 @@ local function StartReveal()
     KARDS.BattleState.reveal = {
         start = CurTime(),
         firstSlot = data.firstSlot,
-        enemyName = hasEnemy and enemyPly:Nick() or "暂无对手",
+        enemyName = hasEnemy and enemyPly:Nick() or T("battle.no_opponent"),
         hasEnemy = hasEnemy,
         leftAvatar = MakeAvatarPanel(ply, REVEAL_AVATAR_SIZE),
         rightAvatar = hasEnemy and MakeAvatarPanel(enemyPly, REVEAL_AVATAR_SIZE) or nil, -- 敌方缺失 → 白色矩形兜底
     }
 end
 
--- 更新头像面板：按中心点 (cx,cy) 与缩放倍率设置尺寸/位置，并设整体透明度
+-- 更新头像面板：按中心点 (cx,cy) 与缩放倍率设置尺寸/位置，并设整体透明度。
+-- 末行 MoveToFront 保证头像始终绘制在其它 VGUI 面板之上（2026-10-26 用户规格；
+-- 本函数在揭晓绘制钩子中每帧调用，正是需要持续置顶的窗口期）
 local function UpdateAvatarPanel(panel, cx, cy, scale, alpha)
     if not IsValid(panel) then return end
     local s = REVEAL_AVATAR_SIZE * scale
     panel:SetSize(s, s)
     panel:SetPos(cx - s / 2, cy - s / 2)
     panel:SetAlpha(math.Clamp(math.Round(alpha), 0, 255))
+    panel:MoveToFront()
 end
 
 -- 名称文字：居中于头像下方（随当前头像缩放浮动）。先手回弹放大时，因 GMod surface 无
@@ -1230,16 +1315,16 @@ hook.Add("Think", "KardsFirstTurnRevealStart", function()
             KARDS.BattleState.reveal.firstSnd = true
             KARDS.PlayKardsSound("first_turn") -- 确定先手音效（回弹放大 + “先手”文字）
         end
-        -- 总部对局开始动画：头像完全淡入（REVEAL_INTRO）后 REVEAL_HQ_DELAY 秒启动
-        --（每场对局一次，先于先手揭晓停留/淡出；此时相机仍为揭晓期间固定俯视，
-        --  StartHQReveal 取视线与桌面交点有效，见 StartHQReveal）
-        if not hqRevealStarted and t >= REVEAL_INTRO + REVEAL_HQ_DELAY then
+        -- 总部对局开始动画：头像与玩家名淡入完成后（REVEAL_HQ_IN_START）启动出场
+        --（每场对局一次，先于先手揭晓；此时相机仍为揭晓期间固定俯视，
+        --  StartHQReveal 取视线与中心槽高度平面交点有效，见 StartHQReveal）
+        if not hqRevealStarted and t >= REVEAL_HQ_IN_START then
             hqRevealStarted = true
             KARDS.PlayKardsSound("hq_start") -- 总部卡动画开始音效（总部离堆上场前）
             if KARDS.BattleState.inTable then StartHQReveal(KARDS.BattleState.inTable.ent, KARDS.BattleState.inTable.slot) end
         end
-        if t >= REVEAL_FIRST_DELAY + REVEAL_HOLD + REVEAL_FADE then
-            -- 序列结束：清理面板与状态（总部动画已在头像完全淡入后提前启动，
+        if t >= REVEAL_END then
+            -- 序列结束：清理面板与状态（总部动画已在头像与玩家名淡入完成后提前启动，
             -- 见上方分支，不再在此触发）
             ClearRevealPanels()
             KARDS.BattleState.reveal = nil
@@ -1280,21 +1365,21 @@ hook.Add("HUDPaint", "KardsFirstTurnRevealPaint", function()
     local avatarAlpha = 255 * iEase                                          -- 0.5s 内淡入
     local baseScale = REVEAL_AVATAR_MAX_SCALE + (1 - REVEAL_AVATAR_MAX_SCALE) * iEase -- 3x → 1x
     local nameAlpha = 255 * RevealEaseInOut(math.Clamp((t - REVEAL_NAME_DELAY) / REVEAL_NAME_DUR, 0, 1))
-    local bounce = 1 -- 先手回弹放大（1.5s 起 0.4s easeOutBack → 1.25）
-    if t >= REVEAL_FIRST_DELAY then
-        bounce = 1 + 0.25 * RevealEaseOutBack(math.Clamp((t - REVEAL_FIRST_DELAY) / REVEAL_FIRST_BOUNCE, 0, 1))
-    end
-    -- 1.5 + 2.0 停留后整体淡出
-    local fadeMul = 1 - RevealEaseInOut(math.Clamp((t - REVEAL_FIRST_DELAY - REVEAL_HOLD) / REVEAL_FADE, 0, 1))
+    -- 先手回弹放大（揭晓时刻起 0.4s easeOutBack → 1.25）：曲线与总部 z 抬升共用
+    -- RevealBounceScale（2026-10-24 用户规格「总部与头像看起来是整体缩放」）
+    local bounce = RevealBounceScale(t)
+    -- 下场全部落位 + 停留后整体淡出（REVEAL_FADE_AT 为淡出起点）
+    local fadeMul = 1 - RevealEaseInOut(math.Clamp((t - REVEAL_FADE_AT) / REVEAL_FADE, 0, 1))
     avatarAlpha = avatarAlpha * fadeMul
     nameAlpha = nameAlpha * fadeMul
     local firstAlpha = 255 * RevealEaseInOut(math.Clamp((t - REVEAL_FIRST_DELAY) / REVEAL_FIRST_TEXT, 0, 1)) * fadeMul
 
     local ply = LocalPlayer()
     local meFirst = KARDS.BattleState.inTable and KARDS.BattleState.inTable.slot == KARDS.BattleState.reveal.firstSlot or false
-    -- 头像中心：屏幕 y 一半，水平向屏幕中心收拢（原 0.24/0.76 → 0.30/0.70）
-    local lx, ly = ScrW() * 0.30, ScrH() * 0.50 -- 左侧（本方）
-    local rx, ry = ScrW() * 0.70, ScrH() * 0.50 -- 右侧（敌方）
+    -- 头像中心：屏幕 y 一半，水平向屏幕中心收拢（原 0.24/0.76 → 0.30/0.70）；
+    -- 常量与 StartHQReveal 的总部出场终点共用（总部质心落在头像中点）
+    local lx, ly = ScrW() * REVEAL_AVATAR_CX_LEFT, ScrH() * REVEAL_AVATAR_CY -- 左侧（本方）
+    local rx, ry = ScrW() * REVEAL_AVATAR_CX_RIGHT, ScrH() * REVEAL_AVATAR_CY -- 右侧（敌方）
 
     -- 头像：左侧本方 + 右侧敌方（缺失 → 白色矩形，同时动画）
     local leftScale = baseScale * (meFirst and bounce or 1)
@@ -1316,7 +1401,7 @@ hook.Add("HUDPaint", "KardsFirstTurnRevealPaint", function()
     if t >= REVEAL_FIRST_DELAY and firstAlpha > 0 then
         local fx, fy = meFirst and lx or rx, meFirst and ly or ry
         local fs = REVEAL_AVATAR_SIZE * (meFirst and leftScale or rightScale)
-        draw.SimpleText("先手", "SourceHan_Heavy_56", fx, fy + fs / 2 + 100,
+        draw.SimpleText(T("battle.first_turn"), "SourceHan_Heavy_56", fx, fy + fs / 2 + 100,
             Color(255, 220, 80, firstAlpha), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 end)
@@ -1344,6 +1429,7 @@ hook.Add("Think", "KardsTableEnterAvatarUpdate", function()
             + (enterAvatar.slideToX - enterAvatar.slideFromX) * RevealEaseOut(slideT)
     end
     panel:SetPos(enterAvatar.curX, 40) -- 右上角（分辨率自适应）
+    panel:MoveToFront() -- 头像始终在最上层（2026-10-26 用户规格，见 MakeAvatarPanel）
     local hudCvar = GetConVar("cl_drawhud")
     local hudOn = hudCvar and hudCvar:GetBool() or true
     if not hudOn then
@@ -1373,14 +1459,14 @@ net.Receive("KardsTableModeChanged", function()
     local ent = net.ReadEntity()
     local mode = net.ReadString()
     if IsValid(ent) then
-        local modeText = (mode == "deck") and "已切换组卡模式（准星浏览桌面卡牌，再次切换返回对战）" or "已切换对战模式"
+        local modeText = (mode == "deck") and T("battle.mode.changed_deck") or T("battle.mode.changed_battle")
         Flash(modeText)
         -- 初始化卡顿加载提示：切组卡 → 检测「正在初始化卡组」（铺 5×3 网格卡实体）；
         -- 切回对战 → 若已在牌桌内则恢复「正在初始化战场」检测，否则停止
         if mode == "deck" then
-            StartInitLoading("正在初始化卡组")
+            StartInitLoading(T("battle.loading.deck"))
         elseif KARDS.BattleState.inTable then
-            StartInitLoading("正在初始化战场")
+            StartInitLoading(T("battle.loading.battle"))
         else
             StopInitLoading()
         end
@@ -1406,7 +1492,8 @@ hook.Add("Think", "KardsDeckCardAim", function()
     -- 组卡卡牌 SOLID_NONE 无碰撞，射线不会命中实体——用射线落点 HitPos 的最近距离判定
     local tr = ply:GetEyeTrace()
     if not tr.HitPos then return end
-    local best, bestD = nil, 484 -- 阈值 22^2（卡牌半宽 3.6 / 半长 5.4，视野内 22 单位容差）
+    -- 中心距离阈值统一由 KARDS.HitTest.Radii 提供（22^2：卡牌半宽 3.6 / 半长 5.4，视野内 22 单位容差）
+    local best, bestD = nil, KARDS.HitTest.Radii.CardPick
     for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
         -- 翻面卡不参与浏览（卡面朝下，不展示卡头信息面板）
         if IsValid(ent) and ent:GetNWString("Kards_CardRole", "") == "deck"
@@ -1420,13 +1507,6 @@ hook.Add("Think", "KardsDeckCardAim", function()
     aimDeckCard = best
 end)
 
--- 射线到点的最近距离平方（组卡点击命中检测，阈值同准星浏览 22 单位）
-function KARDS.RayPointDistSqr(origin, dir, point)
-    local toPoint = point - origin
-    local t = math.max(toPoint:Dot(dir), 0)
-    return (origin + dir * t):DistToSqr(point)
-end
-
 -- 组卡构建：左键点击 5×3 网格非总部卡 → 复制加入卡组；点击卡组堆叠卡 → 移回销毁（瞬时）
 -- 仅 P1（槽位 1）进入牌桌后生效；相机被 CalcView 接管，点击射线取 BattleCamera 当前视图
 local prevDeckLeft = false
@@ -1439,42 +1519,36 @@ hook.Add("Think", "KardsDeckCardClick", function()
     if KARDS.BattleState.inTable.slot ~= 2 then return end -- 仅 P2（槽位 2）可构建卡组
     if KARDS.BattleState.inTable.ent:GetNWString("Kards_Mode", "battle") ~= "deck" then return end
     if gui.IsConsoleVisible() or gui.IsGameUIVisible() then return end
-    -- 相机射线：优先 BattleCamera 当前视图（cl_battle_camera.lua CalcView 记录），回退玩家眼睛
-    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-        dir = (KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-    end
-    local best, bestD = nil, 484 -- 阈值 22^2（卡牌半宽 3.6 / 半长 5.4，视野内 22 单位容差）
-    local flippedD = nil -- 最近翻面卡距离：翻面卡（达上限）作为阻挡，点击它不触发临近卡
-    for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
-        if IsValid(ent) and ent:GetNWString("Kards_CardRole", "") == "deck" then
-            local role = ent:GetNWString("Kards_DeckRole", "grid")
-            if role ~= "hq" then -- 总部卡不参与组卡点击（仅展示）
-                local d = KARDS.RayPointDistSqr(pos, dir, ent:GetPos())
-                if ent:GetNWBool("Kards_GridFlipped", false) then
-                    -- 已翻面（达携带上限）：记入阻挡，点击它时整次点击无效果
-                    if not flippedD or d < flippedD then flippedD = d end
-                elseif d < bestD then
-                    best, bestD = ent, d
-                end
-            end
-        end
-    end
-    -- 射线最近的是翻面卡（在容差内）→ 点击无效果，不选任何卡（避免误加临近卡）
-    if flippedD and flippedD <= 484 and (not IsValid(best) or flippedD <= bestD) then
+    -- 相机射线：统一走抗视差实现（KARDS.HitTest.MouseRay）
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then return end
+    -- 组卡卡牌筛选：非总部卡的卡面角色（总部卡不参与组卡点击，仅展示）
+    local DeckCardFilter = KARDS.HitTest.All(
+        KARDS.HitTest.Filters.Valid,
+        KARDS.HitTest.Filters.Role("deck"),
+        KARDS.HitTest.Filters.NotHQ)
+    local list = ents.FindByClass("sent_pmx_static_imported")
+    -- 阈值 22^2（卡牌半宽 3.6 / 半长 5.4，视野内 22 单位容差）
+    local best, bestD = KARDS.HitTest.NearestInRay(pos, dir, list,
+        KARDS.HitTest.Radii.CardPick,
+        KARDS.HitTest.All(DeckCardFilter, KARDS.HitTest.Filters.NotFlipped))
+    -- 已翻面（达携带上限）：记入阻挡，射线最近的是它时整次点击无效果，不选任何卡
+    local flippedEnt, flippedD = KARDS.HitTest.NearestInRay(pos, dir, list,
+        KARDS.HitTest.Radii.CardPick,
+        KARDS.HitTest.All(DeckCardFilter, KARDS.HitTest.Filters.IsFlipped))
+    if flippedEnt and (not IsValid(best) or flippedD <= bestD) then
         best = nil
     end
     -- "保存"按钮（原总部槽位置）：作为点击目标与卡牌竞争最近距离（阈值 15^2：
     -- 按钮文字约 2×1 单位，避免靠近的卡组堆叠/网格卡被误判为保存）
     local savePos = KARDS.BattleState.inTable.ent:LocalToWorld(Vector(24.68, -12.80, 18.43))
-    local saveD = KARDS.RayPointDistSqr(pos, dir, savePos)
+    local _, saveD = KARDS.HitTest.NearestInRay(pos, dir, { savePos }, KARDS.HitTest.Radii.Button)
     -- 最近目标优先：卡牌更近 → 卡牌操作；否则命中保存按钮（仅 P2）→ 弹输入框
-    if IsValid(best) and bestD <= saveD then
+    if IsValid(best) and saveD and bestD <= saveD then
         net.Start("KardsDeckCardClick")
             net.WriteEntity(best)
         net.SendToServer()
-    elseif KARDS.BattleState.inTable.slot == 2 and saveD <= 225 then
+    elseif KARDS.BattleState.inTable.slot == 2 and saveD then
         ShowDeckNameDialog()
     end
 end)
@@ -1498,7 +1572,7 @@ function ShowDeckNameDialog()
     local frame = vgui.Create("DFrame")
     frame:SetSize(320, 150)
     frame:Center()
-    frame:SetTitle("保存卡组")
+    frame:SetTitle(T("deck.save.title"))
     frame:SetDraggable(true)
     frame:ShowCloseButton(true) -- 右上角 X = 取消
     function frame:OnClose()
@@ -1512,20 +1586,20 @@ function ShowDeckNameDialog()
     local entry = vgui.Create("DTextEntry", frame)
     entry:SetPos(16, 40)
     entry:SetSize(288, 28)
-    entry:SetPlaceholderText("输入卡组名称…")
+    entry:SetPlaceholderText(T("deck.save.placeholder"))
     entry:RequestFocus()
     -- 回车 = 保存
     function entry:OnEnter()
         okBtn:DoClick()
     end
     local okBtn = vgui.Create("DButton", frame)
-    okBtn:SetText("保存")
+    okBtn:SetText(T("common.save"))
     okBtn:SetPos(16, 88)
     okBtn:SetSize(140, 36)
     okBtn.DoClick = function()
         local text = entry:GetValue():gsub("^%s+", ""):gsub("%s+$", "")
         if text == "" then
-            Flash("卡组名不能为空")
+            Flash(T("deck.save.empty"))
             return
         end
         net.Start("KardsDeckSave")
@@ -1534,7 +1608,7 @@ function ShowDeckNameDialog()
         frame:Close()
     end
     local cancelBtn = vgui.Create("DButton", frame)
-    cancelBtn:SetText("取消")
+    cancelBtn:SetText(T("common.cancel"))
     cancelBtn:SetPos(164, 88)
     cancelBtn:SetSize(140, 36)
     cancelBtn.DoClick = function()
@@ -1567,7 +1641,7 @@ hook.Add("PostDrawOpaqueRenderables", "KardsDeckSaveButton", function()
     local camAng = dx:AngleEx(dx:Cross(-dy))
     cam.Start3D2D(pos + ent:GetUp() * 0.08, camAng, 0.02)
         -- 顶部：当前卡牌数量（黑色描边（四向偏移）+ 白色填充；位于"保存"上方留空行）
-        local countText = "当前卡牌：" .. cardCount
+        local countText = T("deck.save.current_cards", cardCount)
         for _, off in ipairs({ { -2, 0 }, { 2, 0 }, { 0, -2 }, { 0, 2 } }) do
             draw.DrawText(countText, "SourceHan_Heavy_28", off[1], -56 + off[2],
                 Color(0, 0, 0, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
@@ -1576,13 +1650,13 @@ hook.Add("PostDrawOpaqueRenderables", "KardsDeckSaveButton", function()
             Color(255, 255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         -- 主文字"保存"（黑色描边（四向偏移）+ 白色填充）
         for _, off in ipairs({ { -2, 0 }, { 2, 0 }, { 0, -2 }, { 0, 2 } }) do
-            draw.DrawText("保存", "SourceHan_Heavy_48", off[1], off[2],
+            draw.DrawText(T("common.save"), "SourceHan_Heavy_48", off[1], off[2],
                 Color(0, 0, 0, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         end
-        draw.DrawText("保存", "SourceHan_Heavy_48", 0, 0,
+        draw.DrawText(T("common.save"), "SourceHan_Heavy_48", 0, 0,
             Color(255, 255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         -- 底部小字提示：点击保存卡组（40 张）
-        draw.DrawText("点击保存（40张）", "SourceHan_Heavy_24", 0, 40,
+        draw.DrawText(T("deck.save.hint"), "SourceHan_Heavy_24", 0, 40,
             Color(255, 220, 80, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     cam.End3D2D()
 end)
@@ -1670,7 +1744,7 @@ local function ShowDeckSearchDialog()
     local entry = vgui.Create("DTextEntry", frame)
     entry:SetPos(20, 16)
     entry:SetSize(w, h)
-    entry:SetPlaceholderText("搜索卡牌…")
+    entry:SetPlaceholderText(T("deck.search.placeholder"))
     entry:SetText(inst.text)
     entry:RequestFocus()
     function entry:OnEnter()
@@ -1709,16 +1783,13 @@ hook.Add("Think", "KardsDeckSearchClick", function()
     local tid = ent.TableID
     local inst = KARDS.Input3D2D and KARDS.Input3D2D.Instances[tid]
     if not inst or not inst.active then return end
-    -- 射线检测：投影到输入框世界位置
-    local pos = KARDS.BattleCamera.ViewPos or ply:EyePos()
-    local dir = gui.ScreenToVector(gui.MouseX(), gui.MouseY())
-    if not dir or (dir.x == 0 and dir.y == 0 and dir.z == 0) then
-        dir = (KARDS.BattleCamera.ViewAng or ply:EyeAngles()):Forward()
-    end
+    -- 射线检测：投影到输入框世界位置（统一走抗视差射线与命中阈值）
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then return end
     local worldPos = ent:LocalToWorld(inst.pos) + ent:GetUp() * 0.08
     -- 输入框世界尺寸：半宽 ≈ 7.2（180像素 × 0.02缩放 × 2），半长 ≈ 1.6（取决于朝向）
-    local d = KARDS.RayPointDistSqr(pos, dir, worldPos)
-    if d <= 225 then -- 阈值 15^2（与保存按钮容差一致）
+    -- 阈值 15^2（与保存按钮容差一致）
+    if KARDS.HitTest.NearestInRay(pos, dir, { worldPos }, KARDS.HitTest.Radii.Button) then
         ShowDeckSearchDialog()
     end
 end)
@@ -1741,7 +1812,9 @@ local function UpdateDeckCardFilter()
         if IsValid(c) and c:GetNWString("Kards_CardRole", "") == "deck"
             and c:GetNWString("Kards_DeckRole", "") == "grid" then
             local name = c:GetNWString("Kards_CardName", "")
-            local match = name:lower():find(searchText:lower(), 1, true)
+            local nameEn = c:GetNWString("Kards_CardNameEn", "")
+            local q = searchText:lower()
+            local match = name:lower():find(q, 1, true) or (nameEn ~= "" and nameEn:lower():find(q, 1, true))
             c:SetNoDraw(not match)
         end
     end
@@ -1762,13 +1835,14 @@ hook.Add("HUDPaint", "KardsDeckCardView", function()
     draw.RoundedBox(8, x, y, w, h, Color(0, 0, 0, 200))
     -- 名称条（头部）
     draw.RoundedBox(8, x + 8, y + 8, w - 16, 44, Color(60, 60, 80, 230))
-    draw.SimpleText(ent:GetNWString("Kards_CardName", ""), "SourceHan_Heavy_24",
+    draw.SimpleText(KARDS.CardEditor.Data.PickLocalized(ent:GetNWString("Kards_CardName", ""),
+        ent:GetNWString("Kards_CardNameEn", "")), "SourceHan_Heavy_24",
         x + w / 2, y + 30, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     -- 费用（左上；总部无费用，不显示）
     if not ent:GetNWBool("Kards_CardIsHeadquarter", false) then
         draw.SimpleText(tostring(ent:GetNWInt("Kards_CardCost", 0)), "SourceHan_Heavy_24",
             x + 24, y + 80, Color(120, 180, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText("费", "SourceHan_Heavy_24",
+        draw.SimpleText(T("card.cost_short"), "SourceHan_Heavy_24",
             x + 24, y + 110, Color(160, 180, 220), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     -- 攻击 / 防御（中下部）
@@ -1776,8 +1850,10 @@ hook.Add("HUDPaint", "KardsDeckCardView", function()
         x + 70, y + h - 60, Color(255, 120, 120), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     draw.SimpleText(tostring(ent:GetNWInt("Kards_CardDefense", 0)), "SourceHan_Heavy_24",
         x + 170, y + h - 60, Color(120, 255, 160), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    -- 词条文本（中下）
-    local kws = ent:GetNWString("Kards_CardKeywords", "")
+    -- 词条文本（中下；NW 串为词条 id 列表，按本机语言重建）
+    local kwStr = ent:GetNWString("Kards_CardKeywords", "")
+    local kws = kwStr ~= "" and KARDS.CardEditor.Data.BuildKeywordsText(
+        KARDS.CardEditor.Data.DeserializeKeywords(kwStr)) or ""
     if kws ~= "" then
         draw.SimpleText(kws, "SourceHan_Heavy_24",
             x + w / 2, y + h - 110, Color(255, 220, 80), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
@@ -1817,10 +1893,11 @@ end)
 -- 卡堆模型 + 1 张隐藏总部 + 抽牌临时实体」——
 --   - 每槽预生成全部 6 档卡堆实体（同时仅一档可见），可见性由服务端 SetDeckPileTier
 --     权威驱动（档位按剩余卡数 snapUp 向上取最近档），客户端本钩子不干预
---   - 总部实体初始隐藏（服务端 SetNoDraw(true)，堆叠厚度由档位模型表现）；先手揭晓
---     动画（头像展示）完成后 StartHQReveal 显式 SetNoDraw(false) 并播放总部动画：
---     本方总部 → 本方头像左侧 / 敌方总部 → 敌方头像右侧（对称），动画结束落位本方
---     支援阵线第 3 槽
+--   - 总部实体初始隐藏（服务端 SetNoDraw(true)，堆叠厚度由档位模型表现）；对局开始
+--     动画的「总部出场」段 StartHQReveal 显式 SetNoDraw(false) 并播放总部动画：
+--     本方总部 → 左侧头像中点 / 敌方总部 → 右侧头像中点（终点质心与头像中点重合、
+--     z = 中槽高度、yaw 相对面向基准 ±45°），先手方在揭晓时 z 上升且先下场，动画
+--     结束落位本方支援阵线第 3 槽
 --   - 抽牌：服务端生成一张临时卡实体（卡堆顶），客户端抽牌动画渲染卡面 + 翻面 →
 --     移动到牌桌中间面向摄像头 → 停留 0.5s → 移到手牌最右侧，同时左侧手牌向左
 --     移动部分；动画结束后卡留在手牌位
@@ -1847,14 +1924,24 @@ local battleHQLeft = setmetatable({}, { __mode = "k" })
 ]]
 
 --[[
-    总部对局开始动画：
-      参战者（KardsFirstTurnRevealStart 序列结束时调用）：双方总部卡从卡组槽顶 1 秒
-      移动到各自头像外侧（本方总部 → 本方头像左侧；敌方总部 → 敌方头像右侧，对称），
-      期间卡背朝上翻转至卡面朝上；阶段1终点 z 抬升 REVEAL_HQ_FLANK_LIFT（头像外侧
-      高处展示卡面）；随后 0.6 秒平滑滑向本方支援阵线第 3 槽落位。
-      观战者（KardsTableBattleStart 广播分支调用，mySlot=nil）：无本方头像/相机接管，
-      不经过头像外侧——直接翻转并移动到本方支援阵线第 3 槽落位（flankPos=支援阵线）。
-      屏幕头像位置 → 牌桌平面世界坐标：取当前相机视线与桌面顶平面的交点
+    总部对局开始动画（2026-10-24 用户规格重排为四段：头像动画 → 双方总部出场 →
+    先手揭示（先手方总部同时在揭示时 z 上升）→ 双方总部下场，先手方先下场）：
+      参战者（KardsFirstTurnRevealStart 在 REVEAL_HQ_IN_START 触发）：双方总部卡从
+      卡组槽顶经 REVEAL_HQ_IN_DUR 秒移到各自头像中点（本方 → 左侧头像，敌方 →
+      右侧头像），期间卡背朝上翻转至卡面朝上；终点质心与头像中点重合（取头像中点
+      屏幕点在该高度平面上的视线交点，其屏幕投影即头像中点）、z = 中槽高度
+      （CenterSlotPos.z），yaw 相对面向基准旋转 45°（本方逆时针 / 敌方顺时针，屏幕
+      观察方向）。先手方：自揭晓时刻起沿「相机 → 卡片」视线向相机靠近（与头像回弹
+      同步），透视投影下 2D 尺寸随深度反比放大，即「相对于相机 2D 平面的放大」——
+      全程只改位置，不改模型尺寸，不做空间缩放；相机垂直俯视时表现为 z 上升
+      （x/y 同步向相机轴收拢，屏幕位置不变，故与头像合成一个整体缩放）；
+      随后双方依次下场（先手方先下场，另一方延迟 REVEAL_HQ_OUT_STAGGER），下场即
+      滑向本方支援阵线第 3 槽落位（REVEAL_HQ_OUT_DUR），角度转回面向基准，下场
+      起点切短卡模型（event = "switch"）。
+      观战者（KardsTableBattleStart 广播分支调用，mySlot=nil）：无本方头像与揭晓
+      序列，不经过头像中点——直接在支援阵线第 3 槽上方抬升 REVEAL_HQ_OBS_LIFT 处
+      翻面后落位。
+      屏幕头像中点 → 牌桌世界坐标：取当前相机视线与中心槽高度平面的交点
       （揭晓期间相机为固定俯视视角，见 KardsTableBattleStart 的目标相机）。
 --]]
 -- 总部对局开始动画（定义见下方 KardsHQReveal* 段；此处必须用「赋值」而非 local function
@@ -1863,13 +1950,17 @@ local battleHQLeft = setmetatable({}, { __mode = "k" })
 StartHQReveal = function(tableEnt, mySlot)
     if not IsValid(tableEnt) then return end
     local ply = LocalPlayer()
-    -- 参战者（mySlot 非 nil）才有头像外侧环节：相机接管期间取视线与桌面交点；
+    -- 参战者（mySlot 非 nil）才有头像中点环节：相机接管期间取视线与中心槽高度平面交点；
     -- 观战者（mySlot=nil）直接落位支援阵线，不依赖相机（观战用自由视角）
     local camPos = nil
     if mySlot then
         local cam = KARDS.BattleCamera and KARDS.BattleCamera.Cameras[ply]
         camPos = cam and cam.active and cam.pos or nil
     end
+    -- 先手方槽位（揭晓状态 firstSlot）：仅该方总部在揭晓时刻 z 上升；观战者无揭晓序列 → nil
+    local firstSlot = KARDS.BattleState.reveal and KARDS.BattleState.reveal.firstSlot or nil
+    -- 总部出场高度 = 中槽高度（CenterSlotPos 由本文件后部导出，见常量区中槽定义）
+    local centerZ = (KARDS.CenterSlotPos and KARDS.CenterSlotPos.z) or 30.5
     local list = {}
     for _, ent in ipairs(ents.FindByClass("sent_pmx_static_imported")) do
         if IsValid(ent) and ent:GetNWString("Kards_DeckRole", "") == "hq" then
@@ -1880,33 +1971,46 @@ StartHQReveal = function(tableEnt, mySlot)
                 -- 用 isMine 会在 P2 视角本方总部误落 P1 行、观战者（mySlot=nil）
                 -- 两总部全部落 P2 行（2026-08-10 修复）
                 local row = (slot == 1) and 1 or -1
-                -- 头像外侧（对称）：本方 → 左方头像左侧；敌方 → 右方头像右侧
-                local sx = isMine and (ScrW() * 0.30 - REVEAL_AVATAR_SIZE)
-                                    or (ScrW() * 0.70 + REVEAL_AVATAR_SIZE)
-                local sy = ScrH() * 0.50
-                -- 屏幕 → 牌桌平面交点（桌面顶局部 z = Board2D.CardZ）
-                local world = nil
-                if camPos then
-                    local dir = gui.ScreenToVector(sx, sy)
-                    local planeZ = tableEnt:LocalToWorld(Vector(0, 0, KARDS.Animation.Board2D.CardZ)).z
-                    if dir.z < 0 then
-                        world = camPos + dir * ((planeZ - camPos.z) / dir.z)
-                    end
-                end
-                -- 兜底（相机不可用 / 视线不朝下）：直接落位本方支援阵线第 3 槽
-                local flankPos = world and tableEnt:WorldToLocal(world)
-                    or KARDS.Animation.Board2D:RelPos(3, row)
-                -- 阶段1终点（头像外侧）z 抬升（REVEAL_HQ_FLANK_LIFT）：世界交点/兜底
-                -- 均在桌面顶（z=CardZ），抬高后总部在头像外侧高处展示卡面，随后阶段2
-                -- 从高处滑落桌面落位（2026-08-10）
-                flankPos.z = flankPos.z + REVEAL_HQ_FLANK_LIFT
-                local supportPos = KARDS.Animation.Board2D:RelPos(3, row)
                 -- 落位朝向 = 本地视角朝向（基础规则：P1 视角所有牌朝 P2 / P2 视角所有牌朝
-                -- P1 / 观战按归属方；见 cl_perspective.lua FacingYaw，2026-08-10 起反向）。总部动画全程使用该
-                -- 朝向（翻转独立绕 x 轴，yaw 与之不冲突），动画结束后由 KardsFieldFacing
+                -- P1 / 观战按归属方；见 cl_perspective.lua FacingYaw，2026-08-10 起反向）。总部动画全程以该
+                -- 朝向为基准（翻转独立绕 x 轴，yaw 与之不冲突），动画结束后由 KardsFieldFacing
                 -- 驱动持续接管（角度一致无跳变）
                 local facing = KARDS.Perspective and KARDS.Perspective.FacingYaw
                     and KARDS.Perspective:FacingYaw(KARDS.Perspective.LocalView, slot) or 0
+                local supportPos = KARDS.Animation.Board2D:RelPos(3, row)
+                -- 出场终点与 Yaw（2026-10-24 用户规格）：
+                --   参战者：质心落在本方/敌方头像中点，z = 中槽高度；yaw 相对面向基准
+                --   旋转 45°（本方逆时针 / 敌方顺时针，屏幕观察方向）
+                --   观战者：无头像中点环节，在支援阵线第 3 槽上方抬升 REVEAL_HQ_OBS_LIFT
+                --   处翻面，无倾斜
+                local flankPos, flankYaw
+                if mySlot then
+                    -- 头像中点屏幕坐标（左 = 本方 / 右 = 敌方）
+                    local ax = (isMine and REVEAL_AVATAR_CX_LEFT or REVEAL_AVATAR_CX_RIGHT) * ScrW()
+                    local ay = REVEAL_AVATAR_CY * ScrH()
+                    local world = nil
+                    if camPos then
+                        local dir = gui.ScreenToVector(ax, ay)
+                        -- 取中心槽高度平面（而非桌面顶）：交点位于「头像中点」射线上，
+                        -- 其屏幕投影恰为头像中点 → 卡片质心与头像中点重合
+                        local planeZ = tableEnt:LocalToWorld(Vector(0, 0, centerZ)).z
+                        if dir and dir.z < 0 then
+                            world = camPos + dir * ((planeZ - camPos.z) / dir.z)
+                        end
+                    end
+                    -- 兜底（相机不可用 / 视线不朝下）：本方支援阵线第 3 槽高度
+                    flankPos = world and tableEnt:WorldToLocal(world)
+                        or KARDS.Animation.Board2D:RelPos(3, row)
+                    flankPos.z = centerZ
+                    -- yaw 相对面向基准 ±45°：本方（左）逆时针、敌方（右）顺时针。
+                    -- 揭晓相机 yaw 与面向基准之差对双方视角恒为 90°（P1 为 270/180、
+                    -- P2 为 90/0），故 ±45 的取法在两个视角下得到同样的屏幕倾斜方向
+                    flankYaw = facing + (isMine and 45 or -45)
+                else
+                    flankPos = KARDS.Animation.Board2D:RelPos(3, row)
+                    flankPos.z = flankPos.z + REVEAL_HQ_OBS_LIFT
+                    flankYaw = facing
+                end
                 battleHQLeft[ent] = true -- 离开卡组槽：堆叠顶层让给下一张普通卡
                 ent:SetNoDraw(false)
                 -- 通知服务端：总部已离开卡堆顶（服务端把该槽剩余卡数改为「不含总部」
@@ -1917,29 +2021,88 @@ StartHQReveal = function(tableEnt, mySlot)
                     net.WriteEntity(tableEnt)
                     net.WriteUInt(slot, 8)
                 net.SendToServer()
-                -- 3 帧关键帧动画（re.md 重构：KARDS.AnimPlayer 驱动，组名 "hqReveal"）：
-                --   帧 1 → 帧 2（dur1=1.0s）：卡堆顶 → 头像外侧（z 抬升），卡背翻转为
-                --   卡面（pitch 180→0），yaw 从卡堆角度（fromYaw，±45/-135）沿最短路径
-                --   渐变到 facing；帧 2 → 帧 3（dur2=0.6s）：从高处平滑滑落支援阵线
-                --   第 3 槽（角度保持 facing）。缓动 smooth = 原 RevealEaseInOut
+                -- 关键帧动画（KARDS.AnimPlayer 驱动，组名 "hqReveal"）：帧时刻以本动画起点
+                --（= 序列 REVEAL_HQ_IN_START，与揭晓 UI 时间轴对齐）为基准换算：
+                --   t=0 卡堆顶（卡背朝上 pitch 180）→ t=REVEAL_HQ_IN_DUR 头像中点（翻到
+                --   卡面 pitch 0 + 45° 倾斜）→ [先手方] 停住等揭晓时刻 → 上升
+                --   REVEAL_HQ_RISE_LIFT → 停住至下场起点（event "switch" 切短卡模型）→
+                --   t=+REVEAL_HQ_OUT_DUR 滑落支援阵线第 3 槽（角度转回 facing）。
+                -- 缓动 smooth = 原 RevealEaseInOut（z 上升段单独用 easeOut）
                 local fromPos = ent:GetLocalPos()
-                local fromYaw = ent:GetLocalAngles().y -- 动画起点 yaw（卡堆角度 ±45/-135，阶段1 渐变到 facing）
+                local fromYaw = ent:GetLocalAngles().y -- 动画起点 yaw（卡堆角度 ±45/-135）
+                local isFirst = (firstSlot == slot) -- 先手方（其总部在揭晓时 z 上升、先下场）
+                -- 下场起点（本动画基准）：先手方 REVEAL_HQ_OUT_START，另一方再延迟
+                -- REVEAL_HQ_OUT_STAGGER
+                local relExit = REVEAL_HQ_OUT_START - REVEAL_HQ_IN_START
+                    + (isFirst and 0 or REVEAL_HQ_OUT_STAGGER)
+                local frames
+                if mySlot then
+                    frames = {
+                        { t = 0, pos = fromPos, ang = Angle(180, fromYaw, 0) },
+                        { t = REVEAL_HQ_IN_DUR, pos = flankPos, ang = Angle(0, flankYaw, 0) },
+                    }
+                    local holdPos = flankPos
+                    if isFirst then
+                        -- 先手方：与头像回弹同时、同曲线、同幅度的「整体缩放」（2026-10-24
+                        -- 用户规格；2026-10-27 明确为纯透视放大）。
+                        -- 放大完全由「沿相机视线向相机靠近」实现，不做任何空间缩放：
+                        -- 透视投影下屏幕尺寸与相机到卡片的深度成反比，把卡片沿
+                        -- 「相机 → 卡片」射线移到深度 d / b 处，其 2D 投影尺寸恰为 b 倍，
+                        -- 且屏幕位置不变（卡片质心本就落在头像中点）。
+                        --   P' = camPos + (P - camPos) / b
+                        -- 揭晓相机垂直俯视时 P 与 P' 的 x/y 不变，退化为单纯 z 上升；
+                        -- 相机若不严格垂直，也仍沿该视线进行，不会偏离这一缩放关系。
+                        -- 全程不调用 SetPMXScale，卡面模型尺寸保持不变。
+                        -- 曲线无法用单个缓动表达（easeOutBack 含过冲后的回落），按采样点
+                        -- 插值（linear 段），与头像逐帧完全同步。
+                        local relRise = REVEAL_FIRST_DELAY - REVEAL_HQ_IN_START
+                        local flankWorld = tableEnt:LocalToWorld(flankPos)
+                        -- 由放大倍率反算位置（相机不可用时退化为沿牌桌 z 抬升常量）
+                        local function BouncePos(tAbs)
+                            local b = RevealBounceScale(tAbs)
+                            if camPos then
+                                return tableEnt:WorldToLocal(camPos + (flankWorld - camPos) / b)
+                            end
+                            return Vector(flankPos.x, flankPos.y,
+                                flankPos.z + REVEAL_HQ_RISE_LIFT * (b - 1) / 0.25)
+                        end
+                        -- 停在出场终点，等揭晓时刻（同姿关键帧，保证不提前上升）
+                        frames[#frames + 1] = { t = relRise, pos = flankPos, ang = Angle(0, flankYaw, 0) }
+                        local N = 10 -- 采样段数（0.4s 内 10 段，过冲峰值与回落均可还原）
+                        for i = 1, N do
+                            local tAbs = REVEAL_FIRST_DELAY + REVEAL_HQ_RISE_DUR * (i / N)
+                            frames[#frames + 1] = {
+                                t = relRise + REVEAL_HQ_RISE_DUR * (i / N),
+                                pos = BouncePos(tAbs),
+                                ang = Angle(0, flankYaw, 0),
+                                easing = "linear",
+                            }
+                        end
+                        holdPos = BouncePos(REVEAL_FIRST_DELAY + REVEAL_HQ_RISE_DUR)
+                    end
+                    frames[#frames + 1] = { t = relExit, pos = holdPos, ang = Angle(0, flankYaw, 0),
+                        event = "switch" }
+                    frames[#frames + 1] = { t = relExit + REVEAL_HQ_OUT_DUR, pos = supportPos,
+                        ang = Angle(0, facing, 0) }
+                else
+                    -- 观战者：无头像中点环节，翻面 + 抬升后直接落位
+                    frames = {
+                        { t = 0, pos = fromPos, ang = Angle(180, fromYaw, 0) },
+                        { t = REVEAL_HQ_IN_DUR, pos = flankPos, ang = Angle(0, flankYaw, 0), event = "switch" },
+                        { t = REVEAL_HQ_IN_DUR + REVEAL_HQ_OUT_DUR, pos = supportPos, ang = Angle(0, facing, 0) },
+                    }
+                end
                 list[#list + 1] = { ent = ent, slot = slot } -- 活跃 HQ 集合（InHQRevealAnim 遍历）
-                KARDS.AnimPlayer:Play(ent, {
-                    { t = 0, pos = fromPos, ang = Angle(180, fromYaw, 0) },
-                    { t = 1.0, pos = flankPos, ang = Angle(0, facing, 0), event = "switch" },
-                    { t = 1.6, pos = supportPos, ang = Angle(0, facing, 0) },
-                }, {
+                KARDS.AnimPlayer:Play(ent, frames, {
                     group = "hqReveal",
                     easing = "smooth", -- 原 RevealEaseInOut（翻转 / 滑落同一曲线）
-                    -- 2026-08-12：短卡切换提前到第二关键帧（到达头像外侧）与第三关键帧
-                    -- （滑落支援阵线）之间——部署单位「半程切换小模型」原理同款：到达
-                    -- 头像外侧后立即切换 basic_card_unit 模型（短卡 + UV 裁切），随后
-                    -- 短卡滑落落位。客户端本地准备 manifest + 裁切材质 + 重绑短卡尺寸
-                    -- 文字；参战者通知服务端 ApplyImportedModel 权威切换（观战者渲染
-                    -- 随服务端切换同步，本地仅准备 manifest + 文字）。服务端收到通知后
-                    -- 把权威状态置为支援阵线第 3 槽，客户端动画每帧 SetLocalPos 覆盖之，
-                    -- 不产生跳变。
+                    -- 短卡切换时机（2026-10-24 随动画重排调整）：下场起点（开始滑向支援
+                    -- 阵线第 3 槽之时）切换 basic_card_unit 模型（短卡 + UV 裁切），
+                    -- 此前在头像中点阶段展示完整卡面。部署单位「半程切换小模型」原理
+                    -- 同款：客户端本地准备 manifest + 裁切材质 + 重绑短卡尺寸文字；
+                    -- 参战者通知服务端 ApplyImportedModel 权威切换（观战者渲染随服务端
+                    -- 切换同步，本地仅准备 manifest + 文字）。服务端收到通知后把权威状态
+                    -- 置为支援阵线第 3 槽，客户端动画每帧 SetLocalPos 覆盖之，不产生跳变。
                     onKeyframe = function(target, name, t)
                         if name ~= "switch" then return end
                         local hqModelID = target:GetNWString("Kards_DeckModelID", "")
@@ -2222,14 +2385,28 @@ local CenterSlotPos     = Vector(0, 0, CenterSlotZ)
 -- index 1 = 中左 / 2 = 中 / 3 = 中右，index 2 与 CenterSlotPos 完全一致。间距与高度同中槽
 -- 常量（CenterSlotSpacing / CenterSlotZ）。左右方向随视角镜像：P1 视角左侧为 +x（与爆牌弃牌
 -- 槽 P1LP2RSlot 的判定一致，见 cl_battle_mulligan.lua L119 起），P2 视角取反，故用取值函数承载。
+-- 槽位坐标预置（2026-10-16 性能优化）：三选一悬停每帧逐卡取值，坐标恒定，改为返回
+-- 共享向量（调用方只读取坐标 / 作为动画目标，从不改写返回值）
+local PickSlotVectors = {
+    [1] = {
+        Vector(CenterSlotSpacing, 0, CenterSlotZ),
+        Vector(0, 0, CenterSlotZ),
+        Vector(-CenterSlotSpacing, 0, CenterSlotZ),
+    },
+    [2] = {
+        Vector(-CenterSlotSpacing, 0, CenterSlotZ),
+        Vector(0, 0, CenterSlotZ),
+        Vector(CenterSlotSpacing, 0, CenterSlotZ),
+    },
+}
 local function PickSlotPos(index, viewSlot)
-    local sign = (viewSlot == 2) and -1 or 1
-    return Vector(sign * (2 - index) * CenterSlotSpacing, 0, CenterSlotZ)
+    local row = PickSlotVectors[(viewSlot == 2) and 2 or 1]
+    return row[index] or row[2]
 end
 -- 三选一动画数值常量（时长秒 / 距离世界单位 / 角度度）
 local PickDealDur      = 0.5    -- 单张候选卡由卡组顶飞到槽位的时长（同 mulligan 发牌）
 local PickDealStagger  = 0.25   -- 错峰：前一张度过一半时下一张起飞
-local PickHoverLift    = 1.5    -- 悬停抬升量（z 上升）
+local PickHoverLift    = 1.5    -- 悬停抬升量（z 上升，历史导出保留：中槽各交互 2026-11-01 起统一走 KARDS.HoverLiftPos）
 local PickToHandDur    = 1.0    -- 选中卡飞入手牌扇形时长（同 mulligan 落位）
 local PickSpinDur      = 0.9    -- 未选中卡出场时长
 local PickSpinYaw      = 135    -- 未选中卡逆时针旋转角
@@ -2399,6 +2576,28 @@ local HandSlotDragVisDist = 72    -- 深度锁定回退距离：射线不穿抬�
 local HandSlotFlightDur = 0.35    -- 打出飞行动画时长（秒）
 local HandSlotReturnDur = 0.2     -- 松手回手牌渐变时长（秒）
 local HandSlotReposDur = 0.15     -- 腾位预览 / 布局复位动画时长（秒）
+-- 移动 / 撤退位移动画（2026-10-27 用户规格）：基础时长在布局复位时长上延长 1.5 倍，
+-- 且时长随位移长度等比缩放 + 线性缓动 → 匀速，距离越远耗时越长、速度不变。
+-- 基准位移取支援阵线与前线行距（移动 / 撤退的最小位移），基准时长 = 0.15 × 1.5；
+-- 行距惰性读取（cl_init.lua 加载时 Board2D 可能尚未就绪，同 FieldStepX）。
+local UnitMoveDurMul = 1.5
+local UnitMoveRefDistCache = nil
+local function UnitMoveRefDist()
+    if not UnitMoveRefDistCache then
+        local rowY = KARDS.Animation and KARDS.Animation.Board2D
+            and KARDS.Animation.Board2D.RowY
+        local span = rowY and math.abs(rowY[1] - rowY[0]) or 0
+        UnitMoveRefDistCache = (span > 0.01) and span or 12.8
+    end
+    return UnitMoveRefDistCache
+end
+
+-- 移动 / 撤退动画时长：基准时长 × 实际位移 / 基准位移（下限 0.01 秒防零时长段）
+local function UnitMoveAnimDur(fromPos, toPos)
+    local base = HandSlotReposDur * UnitMoveDurMul
+    local dist = (toPos - fromPos):Length()
+    return math.max(base * dist / UnitMoveRefDist(), 0.01)
+end
 local CounterRiseHeight = 6       -- 反制激活上浮高度（反制系统 M3：反制卡拖出松手时先上浮该值再还原，见 cl_battle_hud.lua CounterClientToggle）
 -- 部署飞行动画组（2026-08-12，阶段五 P7 组名英文化）：源卡半程飞行 + 小模型占位
 -- + 小模型后半程三段同组并发——同组调度不会被排队机制停顿（切换瞬间源卡销毁、
@@ -2612,6 +2811,45 @@ local function StartHandShift()
 end
 
 -- ====================================================================
+-- 中槽候选卡悬停抬升（2026-11-01）：中槽展示卡牌的交互（重新调度 / 三选一 / 抉择）
+-- 共用同一实现，保证三处悬停手感一致。抬升方向取「卡 → 渲染相机」视线方向
+--（抗视差，屏幕投影上呈现为向观察者浮起，而非纯世界 z 上升）；抬升与回落均按
+-- 指数缓动过渡（先快后慢）形成上升 / 回落动画。
+-- ====================================================================
+KARDS.HoverLiftAmount = 0.55   -- 悬停抬升量（世界单位，沿相机视线方向）
+KARDS.HoverLiftSpeed = 9       -- 缓动速率（越大越快到位，指数趋近）
+
+--[[
+    计算中槽候选卡悬停后的局部坐标（缓动状态按 state.hoverLift 逐帧缓存）。
+    @param  ent    卡实体
+    @param  base   基础局部坐标（相对牌桌）
+    @param  target 目标抬升量（正值抬起，0 回落）
+    @param  state  该卡的缓动状态表（读写 hoverLift 字段）
+    @param  speed  缓动速率（缺省 KARDS.HoverLiftSpeed）
+    @return Vector 应用抬升后的局部坐标
+]]
+function KARDS.HoverLiftPos(ent, base, target, state, speed)
+    local dt = FrameTime()
+    local lift = state.hoverLift or 0
+    lift = Lerp(1 - math.exp(-dt * (speed or KARDS.HoverLiftSpeed)), lift, target)
+    if math.abs(lift - target) < 0.001 then lift = target end
+    state.hoverLift = lift
+    if lift <= 0 then return base end
+    local camPos = (KARDS.BattleCamera and KARDS.BattleCamera.ViewPos) or EyePos()
+    local parent = IsValid(ent) and ent:GetParent() or nil
+    local dir
+    if IsValid(parent) then
+        local baseWorld = parent:LocalToWorld(base)
+        dir = camPos - baseWorld
+        if dir:LengthSqr() > 1e-6 then dir:Normalize() else dir = Vector(0, 0, 1) end
+        return parent:WorldToLocal(baseWorld + dir * lift)
+    end
+    dir = camPos - ent:GetPos()
+    if dir:LengthSqr() > 1e-6 then dir:Normalize() else dir = Vector(0, 0, 1) end
+    return Vector(base.x + dir.x * lift, base.y + dir.y * lift, base.z + dir.z * lift)
+end
+
+-- ====================================================================
 -- 跨文件桥接（2026-08-15 修复）：GMod include 为独立编译执行的 chunk，不共享
 -- 本文件（cl_init.lua）的词法作用域 —— 被拆出的 cl_battle_mulligan.lua /
 -- cl_battle_drag.lua 中的裸名引用会解析为全局 nil 而报错（实测
@@ -2706,6 +2944,20 @@ include("cl_battle_veteran.lua")
 -- 旧卡 z 上升翻面至侧立 / 90° 换显 / 新卡反向回落三段
 -- 已迁移至 cl_battle_convert.lua）
 include("cl_battle_convert.lua")
+-- ====================================================================
+
+-- ====================================================================
+-- 延时效果证明动画（2026-11-07 用户规格：延时效果触发时把来源卡从牌桌左边缘移入，
+-- 逆时针 + 透视放大，0.8 秒后反向；KardsDelayedProof 接收器 + 副本卡面初始化 +
+-- 三段关键帧，见 cl_battle_delayed_proof.lua）
+include("cl_battle_delayed_proof.lua")
+-- ====================================================================
+
+-- ====================================================================
+-- 收缴动画（2026-10-15 用户规格：单位阵亡移除 → 0.5 秒原地重现完整卡 →
+-- 0.5 秒飞入收缴方手牌；KardsConfiscateAnim 接收器 + 阵亡等待 / 揭示 / 停留
+-- 三段时序，已迁移至 cl_battle_confiscate.lua）
+include("cl_battle_confiscate.lua")
 -- ====================================================================
 
 -- ====================================================================
@@ -2941,7 +3193,7 @@ end)
 --   KARDS.BattleState.fieldLayouts（含总部）。拖拽中 / 先手揭晓 / 重新调度 / 动画中的卡不预览。
 --   依赖（均声明于本节之前）：HandSlotHoverRadius(L2193) / KARDS.BattleState.realHandCards(L103) /
 --   KARDS.BattleState.fieldLayouts(L137) / KARDS.BattleState.dragCard、KARDS.BattleState.pendingPlayEnt / KARDS.AnimPlayer（动画 busy 判定）/
---   hqReveals(L1973) / InHQRevealAnim(L2718) / KARDS.RayPointDistSqr(L1187) /
+--   hqReveals(L1973) / InHQRevealAnim(L2718) / KARDS.HitTest（射线与命中统一模块）/
 --   KARDS.DeckFindCardInfo(L1516) / KARDS.CardTextOverlay。
 -- ====================================================================
 local HoverPreviewDelay = 0.4      -- 悬停持续时间阈值（秒）：达到后创建复制卡
@@ -2996,6 +3248,8 @@ local function HoverPreviewCreate(src)
     -- 客户端实体 SetupDataTables 的 SERVER 分支不执行（PMXColor 缺省 Vector(0,0,0)），
     -- 需显式置白，与前置模组服务端默认一致，避免复制卡渲染变黑
     copy:SetPMXColor(Vector(1, 1, 1))
+    -- 抑制状态随源卡同步：Kards_UnitKeywords 含 neutralized 时，3D2D 描述层绘制删除线
+    copy:SetNWString("Kards_UnitKeywords", src:GetNWString("Kards_UnitKeywords", ""))
     -- 无碰撞无物理（同原卡）
     copy:SetSolid(SOLID_NONE)
     local phys = copy:GetPhysicsObject()
@@ -3021,7 +3275,7 @@ local function HoverPreviewDestroy()
     hoverPreview = nil
 end
 
--- 每帧：悬停射线检测（同卡堆悬停 KARDS.RayPointDistSqr 方法）+ 复制卡生命周期管理
+-- 每帧：悬停射线检测（统一走 KARDS.HitTest）+ 复制卡生命周期管理
 hook.Add("Think", "KardsHoverCardPreview", function()
     local now = CurTime()
     -- 仅进入牌桌且对战已开始；先手揭晓 / 重新调度 / 拖拽期间不预览
@@ -3035,29 +3289,31 @@ hook.Add("Think", "KardsHoverCardPreview", function()
         HoverPreviewDestroy()
         return
     end
-    local pos, dir = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
+    local pos, dir = KARDS.HitTest.MouseRay()
+    if not pos then
+        HoverPreviewDestroy()
+        return
+    end
     local view = KARDS.Perspective and KARDS.Perspective.LocalView
     -- 扫描候选（取最近距离）：本方手牌（仅 P1/P2 视角）+ 双方战场卡（含总部）
     local bestD, bestEnt, bestHand, bestSlot = math.huge, nil, false, nil
-    local function Consider(ent, radius, isHand, slot)
-        if not HoverPreviewCardCanShow(ent) then return end
-        local d = KARDS.RayPointDistSqr(pos, dir, ent:GetPos())
-        local r2 = radius * radius
-        if d < r2 and d < bestD then
-            bestD, bestEnt, bestHand, bestSlot = d, ent, isHand, slot
-        end
-    end
     if view == 1 or view == 2 then
         -- 手牌候选：射线命中卡面矩形才参与（2026-08-11 改，替代中心距离 12——
         -- 过宽会抢走靠近手牌的战场单位预览）；重叠扇形卡先取最先命中（t 最小）＝
         -- 视觉最上层卡（2026-08-14 修复悬停预览卡错位），再以中心距离与战场竞争
         -- 2026-08-15 C2：收敛至 KARDS.HandHitTest（skipBusy=false：预览不跳过动画中的卡，保持原行为）
         local be = KARDS.HandHitTest(pos, dir, view, false)
-        if be then Consider(be, math.huge, true, view) end
+        if be and HoverPreviewCardCanShow(be) then
+            local _, d = KARDS.HitTest.NearestInRay(pos, dir, { be }, math.huge)
+            bestD, bestEnt, bestHand, bestSlot = d, be, true, view
+        end
     end
+    -- 战场卡按槽位各取最近，再与手牌候选比较中心距离
     for slot = 1, 2 do
-        for ent in pairs(KARDS.BattleState.fieldLayouts[slot] or {}) do
-            if IsValid(ent) then Consider(ent, HoverFieldHoverRadius, false, slot) end
+        local ent, d = KARDS.HitTest.NearestInRay(pos, dir, KARDS.BattleState.fieldLayouts[slot] or {},
+            HoverFieldHoverRadius * HoverFieldHoverRadius, HoverPreviewCardCanShow)
+        if ent and d < bestD then
+            bestD, bestEnt, bestHand, bestSlot = d, ent, false, slot
         end
     end
     -- 无命中 / 命中目标切换 → 销毁旧复制（切换后重新计时）
@@ -3494,9 +3750,11 @@ net.Receive("KardsFieldLayout", function()
                         -- frontlineMove 组（2026-08-12，阶段五 P7 组名英文化）：与前线
                         -- 标识同组并发——单位移动至前线时单位与前线标识同时移动
                         -- （前线标识动画见 cl_battle_frontline_symbol.lua）
+                        -- 2026-10-27：移动 / 撤退操作的位移改为匀速——时长按位移
+                        -- 等比缩放（UnitMoveAnimDur，基准 1.5 倍），线性缓动
                         KARDS.AnimPlayer:Play(e, {
                             { t = 0 },
-                            { t = HandSlotReposDur, pos = to, easing = "cos" },
+                            { t = UnitMoveAnimDur(e:GetLocalPos(), to), pos = to, easing = "linear" },
                         }, { group = "frontlineMove" })
                     end
                 end
@@ -3535,9 +3793,18 @@ net.Receive("KardsFieldLayout", function()
                 local existing = KARDS.AnimPlayer:Get(e)
                 if not existing or not existing.toPos
                     or (existing.toPos - to):LengthSqr() > 0.01 then
+                    local dur, ease = HandSlotReposDur, "cos"
+                    -- 撤退（2026-10-27 用户规格）：旧前线布局（本卡在此次广播后仍登记）
+                    -- 中仍有本卡 → 本卡正从前线退回支援阵线。与移动至前线一致，
+                    -- 时长按位移等比缩放 + 线性缓动（匀速），基准时长 1.5 倍
+                    local oldFront = KARDS.BattleState.frontlineLayout
+                    if oldFront and oldFront[e] then
+                        dur = UnitMoveAnimDur(e:GetLocalPos(), to)
+                        ease = "linear"
+                    end
                     KARDS.AnimPlayer:Play(e, {
                         { t = 0 },
-                        { t = HandSlotReposDur, pos = to, easing = "cos" },
+                        { t = dur, pos = to, easing = ease },
                     }, { group = "fieldRepos" })
                 end
             end
@@ -3689,7 +3956,9 @@ end)
 -- （ApplyFacing / ApplyHandFacing / SetNoDraw 不改变他卡判定输入），逐实体顺序与
 -- 分段顺序等价；守卫条件分别保留（卡堆可见仅需 inTable；朝向需 Perspective）。
 hook.Add("Think", "KardsTableEntitiesThink", function()
-    local list = ents.FindByClass("sent_pmx_static_imported")
+    -- 共享每帧 PMX 列表（KARDS.GetPmxList）：与 cl_battle_material / cl_battle_hud /
+    -- cl_deck_pile 的同帧遍历合并为一次全量扫描（2026-10-16 性能优化）
+    local list = KARDS.GetPmxList()
     local inTable = KARDS.BattleState.inTable
     local persp = KARDS.Perspective
     local hasFacing = persp and persp.IsFieldCard and persp.IsHandSlotCard
@@ -3700,22 +3969,18 @@ hook.Add("Think", "KardsTableEntitiesThink", function()
     local view = hasFacing and persp.LocalView or nil
     local zOff = (view == 1 or view == 2) and 0 or -HandSlotZViewOffset
     -- 悬停检测（仅 P1/P2 视角 + 本方手牌）：相机射线到各手牌中心的最近距离判定
-    --（同卡堆悬停 KardsDeckHoverDetect 的 KARDS.RayPointDistSqr 方法）
+    --（与卡堆悬停同走 KARDS.HitTest 中心距离口径）
     local hoveredEnt = nil
     if view == 1 or view == 2 then
         local ply = LocalPlayer()
         if IsValid(ply) and not gui.IsConsoleVisible() and not gui.IsGameUIVisible() then
-            local pos, dir = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
-            local bestD = HandSlotHoverRadius * HandSlotHoverRadius
-            for _, ent in ipairs(list) do
-                if persp:IsHandSlotCard(ent)
-                    and ent:GetNWInt("Kards_DeckSlot", 0) == view then
-                    local d = KARDS.RayPointDistSqr(pos, dir, ent:GetPos())
-                    if d < bestD then
-                        bestD, hoveredEnt = d, ent
-                    end
-                end
-            end
+            local pos, dir = KARDS.HitTest.MouseRay()
+            hoveredEnt = pos and KARDS.HitTest.NearestInRay(pos, dir, list,
+                HandSlotHoverRadius * HandSlotHoverRadius,
+                function(ent)
+                    return persp:IsHandSlotCard(ent)
+                        and ent:GetNWInt("Kards_DeckSlot", 0) == view
+                end)
         end
     end
     for _, ent in ipairs(list) do
@@ -3728,8 +3993,11 @@ hook.Add("Think", "KardsTableEntitiesThink", function()
         -- 设置：其显示/朝向由抽牌动画 / 总部对局开始动画驱动接管。
         -- 2026-10-03 联机排查 NEW-2：补「任一动画在播即让位」（洗入载体动画收尾隐藏后
         -- 原会被下方兜底复活；battleDeckDrawn / battleHQLeft 两个豁免名单保留作第二层）
+        -- 2026-10-15 收缴：已创建待揭示的收缴载体（NW Kards_ConfiscateHidden）不参与兜底
+        -- 显隐，否则会在揭示前被本地 SetNoDraw(false) 提前显示（揭示由 cl_battle_confiscate.lua 负责）
         if inTable and IsValid(ent) and not battleDeckDrawn[ent] and not battleHQLeft[ent]
             and not KARDS.AnimPlayer:Active(ent)
+            and not ent:GetNWBool("Kards_ConfiscateHidden", false)
             and ent:GetNWString("Kards_CardRole", "") == "battledeck" then
             ent:SetNoDraw(false)
         end

@@ -9,13 +9,17 @@
         效果节点约束（阵营/类别）校验后返回目标实体
       - KARDS.PointingFailReason：指向失败原因（提示系统文案区分「不能指向此目标」
         /「请指向目标」/「隐蔽单位不受指令指向」）
-      - KardsPointingDraw（HUDPaint）：指向连线绘制（拖拽指向模式 + 单位操作共用，
-        见 cl_battle_ops.lua 的 unitOpSel/unitOpTarget）
+      - KardsPointingDraw（HUDPaint）：指向反馈绘制（单位操作连线 + 两模式合法目标
+        描圈；2026-10-24 起拖拽指向模式的连线/箭头由 KardsPointingArrow3D 的
+        3D2D 贴图箭头承担，见文件末尾）
 
     挂载：cl_init.lua include 本文件（KardsHandSlotFacing 段之后、文件末尾）。
     约定：全部走 KARDS 命名空间与 cl_battle_ops.lua 的 KARDS.UnitHitHalfW/L（本文件
     include 时 cl_battle_ops.lua 已先加载）；无文件级 local。
 ]]
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
 
 --[[
     读取卡牌效果节点信息（客户端指向机制判定）
@@ -112,23 +116,14 @@ function KARDS.GetPointingTarget(cardEnt, info, pos, dir)
     -- 类别约束 → 总部匹配开关（1 单位 = 排除总部；3 总部 = 仅总部）
     local catIdx = info.catIdx or 1
     local wantHQ = (catIdx == 3)
-    local bestD, hit = math.huge, nil
-    for _, field in ipairs(fields) do
-        for e in pairs(field or {}) do
-            if IsValid(e) then
-                local eSlot = e:GetNWInt("Kards_DeckSlot", 0)
-                if allowedSlots[eSlot] then
-                    local isHQ = (e:GetNWString("Kards_DeckRole", "") == "hq")
-                    if (wantHQ and isHQ) or (not wantHQ and not isHQ) then
-                        if KARDS.RayCardHit(pos, dir, e, KARDS.UnitHitHalfW, KARDS.UnitHitHalfL) then
-                            local d = KARDS.RayPointDistSqr(pos, dir, e:GetPos())
-                            if d < bestD then bestD, hit = d, e end
-                        end
-                    end
-                end
-            end
-        end
-    end
+    -- 卡面矩形命中，再按中心距离取最近；槽位、总部与有效性均由筛选谓词表达
+    local hit = KARDS.HitTest.NearestCardFace(pos, dir, fields,
+        KARDS.UnitHitHalfW, KARDS.UnitHitHalfL, nil,
+        KARDS.HitTest.All(KARDS.HitTest.Filters.Valid, function(e)
+            if not allowedSlots[e:GetNWInt("Kards_DeckSlot", 0)] then return false end
+            local isHQ = KARDS.HitTest.Filters.IsHQ(e)
+            return (wantHQ and isHQ) or (not wantHQ and not isHQ)
+        end))
     -- 隐蔽单位不可作为指令目标（readme 7.2.2 + 2026-08-13 用户规格：指令指向隐蔽
     -- 单位始终提示「隐蔽单位不受指令指向」）：最近命中为隐蔽单位 → 视为无目标
     -- （返回 nil，松手回手牌 + PointingFailReason 提示本文案；悬停提示见拖拽 Think）。
@@ -153,38 +148,88 @@ function KARDS.PointingFailReason(pos, dir)
     -- 通用「不能指向此目标」之前判定（隐蔽单位已被 GetPointingTarget 剔除候选，但
     -- 此处射线仍命中其卡面，故优先返回本文案）
     if KARDS.Stealth and KARDS.Stealth.HitStealthTarget(pos, dir) then
-        return "隐蔽单位不受指令指向"
+        return T("battle.pointing.stealth")
     end
     -- 候选场：双方支援阵线 + 前线（2026-08-15 C2 收敛至 KARDS.FieldCandidates，见 cl_init.lua）
     local fields = KARDS.FieldCandidates()
     for _, field in ipairs(fields) do
         for e in pairs(field or {}) do
             if IsValid(e) and KARDS.RayCardHit(pos, dir, e, KARDS.UnitHitHalfW, KARDS.UnitHitHalfL) then
-                return "不能指向此目标"
+                return T("battle.pointing.invalid")
             end
         end
     end
-    return "请指向目标"
+    return T("battle.pointing.none")
 end
 
--- 指向连线绘制（2026-08-12 阶段 B）：拖拽中的指向模式卡 → 卡牌原点与鼠标之间直线
--- + 鼠标端箭头；指向合法目标时绿线 + 目标描圈，否则灰白线（可指向性反馈）。
--- 2026-08-12 扩展：单位操作（按下在场单位，cl_battle_ops.lua）同样走指向样式——
--- 起点 = 选中的本方单位实体，合法性 = BS.unitOpTarget（engage/hq/move），样式一致。
+-- 指向连线颜色（合法目标 / 普通），常量复用免每帧构造 Color（2026-10-16 性能优化）
+local POINT_LINE_VALID = Color(80, 255, 120, 230)
+local POINT_LINE_IDLE  = Color(230, 230, 230, 140)
+
+-- 指向箭头贴图（2026-10-24 用户规格）：黑体白描边箭头图片（略向左弯、底部不描边、
+-- 尾部自带透明度渐变，箭头朝 +x、尖端贴右缘垂直中点），3D2D 绘制时整张贴图映射到
+-- 「卡牌 → 鼠标」矩形，经缩放使箭头头部落在鼠标处。
+-- 染色（2026-10-24 二次规格）：SetDrawColor 乘法染色只作用于白色描边（黑色箭身不变），
+-- 仅指向有效目标时染淡红，其余保持原色；整体 90% 不透明度（alpha 230）与尾部渐变相乘。
+local arrowMat = Material("materials/kards/ui/pointing_arrow.png", "mips smooth")
+local ARROW_TEX_W, ARROW_TEX_H = 256, 128
+local ARROW_TINT_VALID = Color(255, 140, 140, 230) -- 淡红（指向有效目标）
+local ARROW_TINT_IDLE  = Color(255, 255, 255, 230) -- 原色（其余）
+
+-- 拖拽指向 3D2D 箭头（2026-10-24）：在牌桌板平面（KARDS.Animation.Board2D.CardZ 对应的
+-- 世界高度）绘制贴图箭头——起点 = 拖拽卡原点投影到平面，终点 = 鼠标射线 ∩ 平面（该点
+-- 在鼠标射线上，屏幕投影恰为鼠标位置，即「箭头头部在鼠标处」）；箭头长度 = 两点距离
+--（贴图整幅映射，头部尖端贴矩形右缘中点 = 终点），宽度按贴图纵横比随长度缩放；
+-- ignoreZ（OverrideDepthEnable）绘制保证不被卡牌/模型遮挡（与原 HUD 连线同级可见性）。
+-- 仅拖拽指向模式（dragCard.pointing）；单位操作（cl_battle_ops.lua）仍走原 HUD 连线样式。
+hook.Add("PostDrawTranslucentRenderables", "KardsPointingArrow3D", function(_, bSkybox)
+    if bSkybox then return end
+    local dragCard = KARDS.BattleState.dragCard
+    if not dragCard or not dragCard.pointing then return end
+    local ent = dragCard.ent
+    local inTable = KARDS.BattleState.inTable
+    if not IsValid(ent) or not inTable or not IsValid(inTable.ent) then return end
+    local tableEnt = inTable.ent
+    local planeZ = tableEnt:LocalToWorld(Vector(0, 0, KARDS.Animation.Board2D.CardZ)).z
+    local cardPos = ent:GetPos()
+    local startW = Vector(cardPos.x, cardPos.y, planeZ)
+    -- 鼠标射线 ∩ 板平面（射线朝向桌面之外时无解，跳过本帧）
+    local vp, vd = KARDS.MouseRay(gui.MouseX(), gui.MouseY())
+    if not vd or vd.z == 0 then return end
+    local t = (planeZ - vp.z) / vd.z
+    if t <= 0 then return end
+    local endW = vp + vd * t
+    local dir = Vector(endW.x - startW.x, endW.y - startW.y, 0)
+    local len = dir:Length()
+    if len < 4 then return end -- 鼠标压在卡上，箭头过短不绘制
+    local yaw = math.deg(math.atan2(dir.y, dir.x))
+    local valid = dragCard.validTarget and IsValid(dragCard.validTarget)
+    local h = len * ARROW_TEX_H / ARROW_TEX_W
+    render.OverrideDepthEnable(true, false) -- 无深度测试（恒可见，同原 HUD 连线）
+    cam.Start3D2D(startW, Angle(0, yaw, 0), 1)
+        surface.SetMaterial(arrowMat)
+        surface.SetDrawColor(valid and ARROW_TINT_VALID or ARROW_TINT_IDLE)
+        surface.DrawTexturedRect(0, -h / 2, len, h)
+    cam.End3D2D()
+    render.OverrideDepthEnable(false, false)
+end)
+
+-- 指向反馈绘制（2026-08-12 阶段 B，2026-10-24 改版）：
+--   拖拽指向模式：连线与鼠标端箭头改为 3D2D 贴图箭头（KardsPointingArrow3D，头部缩放
+--     到鼠标处、颜色随可指向性染色），本 HUD 钩子仅保留合法目标描圈；
+--   单位操作（按下在场单位，cl_battle_ops.lua）：维持原样式——起点 = 选中的本方单位
+--     实体，合法性 = BS.unitOpTarget（engage/hq/move），直线 + 鼠标端箭头角 + 目标描圈。
+-- 指向时的目标文字提示已取消（2026-10-24 用户规格，见 cl_battle_drag.lua 指向段注释），
+-- 指向反馈统一为箭头染色 + 目标描圈；松手失败原因提示（PointingFailReason）不变。
 hook.Add("HUDPaint", "KardsPointingDraw", function()
     local dragCard = KARDS.BattleState.dragCard
     local opSel = KARDS.BattleState.unitOpSel
-    local pointing = (dragCard and dragCard.pointing) or (opSel and IsValid(opSel))
+    local isPointing = dragCard and dragCard.pointing
+    local pointing = isPointing or (opSel and IsValid(opSel))
     if not pointing then return end
-    -- 起点实体：指向模式 = 拖拽卡；单位操作 = 选中的本方单位
-    local ent = (dragCard and dragCard.pointing and dragCard.ent) or opSel
-    if not IsValid(ent) then return end
-    -- 卡牌原点 3D → 屏幕 2D 投影
-    local sp = ent:GetPos():ToScreen()
-    local mx, my = gui.MouseX(), gui.MouseY()
     -- 合法目标判定：指向模式 → dragCard.validTarget；单位操作 → unitOpTarget
     local valid, validEnt = false, nil
-    if dragCard and dragCard.pointing then
+    if isPointing then
         valid = dragCard.validTarget and IsValid(dragCard.validTarget)
         if valid then validEnt = dragCard.validTarget end
     else
@@ -192,17 +237,21 @@ hook.Add("HUDPaint", "KardsPointingDraw", function()
         valid = t ~= nil
         if valid and t.ent then validEnt = t.ent end
     end
-    -- 直线：起点 → 鼠标
-    surface.SetDrawColor(valid and Color(80, 255, 120, 230) or Color(230, 230, 230, 140))
-    surface.DrawLine(sp.x, sp.y, mx, my)
-    -- 鼠标端箭头（两条短线成箭头角）
-    local ang = math.atan2(my - sp.y, mx - sp.x)
-    local alen = 12
-    local a1, a2 = ang + math.pi * 0.75, ang - math.pi * 0.75
-    surface.DrawLine(mx, my, mx + math.cos(a1) * alen, my + math.sin(a1) * alen)
-    surface.DrawLine(mx, my, mx + math.cos(a2) * alen, my + math.sin(a2) * alen)
+    -- 单位操作连线：起点实体 3D → 屏幕 2D 投影 → 鼠标直线 + 鼠标端箭头角
+    if not isPointing then
+        local sp = opSel:GetPos():ToScreen()
+        local mx, my = gui.MouseX(), gui.MouseY()
+        surface.SetDrawColor(valid and POINT_LINE_VALID or POINT_LINE_IDLE)
+        surface.DrawLine(sp.x, sp.y, mx, my)
+        local ang = math.atan2(my - sp.y, mx - sp.x)
+        local alen = 12
+        local a1, a2 = ang + math.pi * 0.75, ang - math.pi * 0.75
+        surface.DrawLine(mx, my, mx + math.cos(a1) * alen, my + math.sin(a1) * alen)
+        surface.DrawLine(mx, my, mx + math.cos(a2) * alen, my + math.sin(a2) * alen)
+    end
     -- 合法目标描圈（圆环，16 段短线近似；示意可指向的目标；移动无实体目标不描圈）
     if validEnt then
+        surface.SetDrawColor(valid and POINT_LINE_VALID or POINT_LINE_IDLE)
         local tsp = validEnt:GetPos():ToScreen()
         local r, segs = 14, 16
         for i = 1, segs do

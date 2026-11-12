@@ -114,6 +114,8 @@ KARDS.RulesVocabulary.Registry = {
             { id = "exile",        label = { ["zh-CN"] = "流亡",   ["en"] = "Exile" } },
             { id = "veteran_elite",label = { ["zh-CN"] = "老兵(精英)", ["en"] = "Veteran(Elite)" } },
             { id = "navy",         label = { ["zh-CN"] = "海军",   ["en"] = "Navy" } },
+            { id = "confiscate",   label = { ["zh-CN"] = "收缴",   ["en"] = "Confiscate" } },
+            { id = "confiscated",  label = { ["zh-CN"] = "被收缴", ["en"] = "Confiscated" } },
         },
         allowCustom = true,
         category = "keyword",

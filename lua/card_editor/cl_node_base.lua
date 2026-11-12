@@ -16,6 +16,9 @@ NodeBase 旧节点编辑器系统
 KARDS.CardEditor.Canvas.NodeBase = {}
 NodeBase = KARDS.CardEditor.Canvas.NodeBase
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- 节点编辑器配置（为独立化做准备）
 NodeBase.Config = {
     selectorWidth = 180,
@@ -29,37 +32,37 @@ NodeBase.Config = {
 NodeBase.DataTypes = {
     NUMBER = {
         id = "n",
-        name = "数字",
+        name = T("editor.nodebase.data_number"),
         color = Color(255, 165, 0),
         shape = "circle"
     },
     BOOLEAN = {
         id = "p",
-        name = "布尔值",
+        name = T("editor.nodebase.data_boolean"),
         color = Color(135, 206, 250),
         shape = "triangle"
     },
     STRING = {
         id = "t",
-        name = "字符串",
+        name = T("editor.nodebase.data_string"),
         color = Color(144, 238, 144),
         shape = "hollow_circle"
     },
     ARRAY = {
         id = "g",
-        name = "数组",
+        name = T("editor.nodebase.data_array"),
         color = Color(255, 255, 0),
         shape = "hollow_square"
     },
     CARD = {
         id = "e",
-        name = "卡牌对象",
+        name = T("editor.nodebase.data_card"),
         color = Color(255, 127, 127),
         shape = "square"
     },
     FUNCTION = {
         id = "f",
-        name = "节点函数",
+        name = T("editor.nodebase.data_function"),
         color = Color(200, 150, 255),
         shape = "diamond"
     }
@@ -350,7 +353,7 @@ function NodeBase.DrawPorts(node, mouseX, mouseY)
         surface.DrawOutlinedRect(inputPortX - 2, inputPortY - 2, portRadius * 2 + 4, portRadius * 2 + 4)
         draw.RoundedBox(portRadius, inputPortX, inputPortY, portRadius * 2, portRadius * 2, Color(100, 100, 255))
         
-        draw.SimpleText("输入", "SourceHan_Heavy_14", nodeX + 9, portY, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodebase.input"), "SourceHan_Heavy_14", nodeX + 9, portY, Color(200, 200, 200), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
     end
     
     if node.hasOutput and not NodeBase.IsSpecialNode(node) then
@@ -362,7 +365,7 @@ function NodeBase.DrawPorts(node, mouseX, mouseY)
         surface.DrawOutlinedRect(outputPortX - 2, outputPortY - 2, portRadius * 2 + 4, portRadius * 2 + 4)
         draw.RoundedBox(portRadius, outputPortX, outputPortY, portRadius * 2, portRadius * 2, Color(255, 100, 100))
         
-        draw.SimpleText("输出", "SourceHan_Heavy_14", nodeX + node.width - 15, portY, Color(200, 200, 200), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(T("editor.nodebase.output"), "SourceHan_Heavy_14", nodeX + node.width - 15, portY, Color(200, 200, 200), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
     end
 end
 
@@ -399,16 +402,9 @@ function NodeBase.GetPortPosition(node, portType, portIndex)
 end
 
 -- 贝塞尔曲线计算
+-- 采样实现已迁至共享几何模块（ADR 0006），此处保留签名供既有调用方使用
 function NodeBase.BezierCurve(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y, steps)
-    steps = steps or 20
-    local points = {}
-    for i = 0, steps do
-        local t = i / steps
-        local x = math.pow(1 - t, 3) * p1x + 3 * math.pow(1 - t, 2) * t * p2x + 3 * (1 - t) * math.pow(t, 2) * p3x + math.pow(t, 3) * p4x
-        local y = math.pow(1 - t, 3) * p1y + 3 * math.pow(1 - t, 2) * t * p2y + 3 * (1 - t) * math.pow(t, 2) * p3y + math.pow(t, 3) * p4y
-        table.insert(points, {x = x, y = y})
-    end
-    return points
+    return KARDS.CardEditor.Geometry.SampleCubic(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y, steps or 20)
 end
 
 -- 计算曲线法线
@@ -627,25 +623,25 @@ end
 -- 检查连接是否有效
 function NodeBase.ValidateConnection(fromNode, toNode, editorMode)
     if fromNode.id == toNode.id then
-        return false, "同一个节点上不能连接两点！"
+        return false, T("editor.nodebase.cannot_connect_same_node")
     end
     
     if toNode.type == "event_monitor" then
         if not fromNode.isStartNode then
-            return false, "事件监测节点只能连接到开始点！"
+            return false, T("editor.nodebase.event_monitor_only_start")
         end
         
         if editorMode == "unit" then
             if fromNode.title ~= "在场" then
-                return false, "单位模式下，事件监测节点只能连接到「在场」开始点！"
+                return false, T("editor.nodebase.event_monitor_unit_mode")
             end
         elseif editorMode == "command" then
             if fromNode.title ~= "打出" then
-                return false, "指令模式下，事件监测节点只能连接到「打出」开始点！"
+                return false, T("editor.nodebase.event_monitor_command_mode")
             end
         elseif editorMode == "counter_command" then
             if fromNode.title ~= "激活时" then
-                return false, "反制指令模式下，事件监测节点只能连接到「激活时」开始点！"
+                return false, T("editor.nodebase.event_monitor_counter_mode")
             end
         end
     end

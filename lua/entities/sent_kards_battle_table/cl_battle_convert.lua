@@ -65,17 +65,18 @@ net.Receive("KardsUnitConvert", function()
         -- 闪卡判定：由新卡身份取外观模板，供文字层配色（2026-10-04，见 EntryIsFlash）
         local newApp = (KARDS.DeckFindCardInfo and KARDS.GetCardIdentity)
             and KARDS.DeckFindCardInfo(KARDS.GetCardIdentity(newEnt)) or nil
+        local view = KARDS.CardView.Read(newEnt)
         KARDS.CardTextOverlay:AddLocal(newEnt, {
             cost = 0,
-            actionCost = newEnt:GetNWInt("Kards_CardActionCost", 0),
-            attack = newEnt:GetNWInt("Kards_CardAttack", 0),
-            defense = newEnt:GetNWInt("Kards_CardDefense", 0),
+            actionCost = view.actionCost,
+            attack = view.attack,
+            defense = view.defense,
             cardTemplate = (newApp and newApp.cardTemplate) or "",
             _unitMode = true, -- DrawOverlay 据此跳过 cost/keywords/desc
             ownerSlot = newEnt:GetNWInt("Kards_DeckSlot", 1),
         }, 7.2, 8.528, 209, 290, false)
-        KARDS.CardTextOverlay:SetBaseStat(newEnt, "attack", newEnt:GetNWInt("Kards_CardAttack", 0))
-        KARDS.CardTextOverlay:SetBaseStat(newEnt, "defense", newEnt:GetNWInt("Kards_CardDefense", 0))
+        KARDS.CardTextOverlay:SetBaseStat(newEnt, "attack", view.attack)
+        KARDS.CardTextOverlay:SetBaseStat(newEnt, "defense", view.defense)
     end
     local cur = oldEnt:GetLocalPos()
     local ang = oldEnt:GetLocalAngles()

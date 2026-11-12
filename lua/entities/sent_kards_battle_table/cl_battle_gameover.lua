@@ -31,6 +31,9 @@ if not CLIENT then return end
 
 KARDS = KARDS or {}
 
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 -- ====================================================================
 -- 常量（readme 7.1 结算时间轴；2026-08-13 全部时长 ×3）
 -- ====================================================================
@@ -148,15 +151,22 @@ do
     end
 end
 
--- 取最接近目标字号的可用字体标识符（如 "SourceHan_Heavy_160"）
+-- 取最接近目标字号的可用字体标识符（如 "SourceHan_Heavy_160"）。
+-- 结果按目标字号做记忆化（2026-10-16 性能优化）：缩放入场动画每帧传入不同的
+-- 整数尺寸，重复尺寸直接复用字体名，免去每次线性查找 + 字符串拼接
+local bannerFontCache = {}
 local function BannerFont(size)
+    local cached = bannerFontCache[size]
+    if cached then return cached end
     local best = BannerSizes[1]
     local minDiff = math.abs(best - size)
     for _, s in ipairs(BannerSizes) do
         local d = math.abs(s - size)
         if d < minDiff then minDiff, best = d, s end
     end
-    return "SourceHan_Heavy_" .. best
+    cached = "SourceHan_Heavy_" .. best
+    bannerFontCache[size] = cached
+    return cached
 end
 
 --[[
@@ -374,17 +384,17 @@ hook.Add("HUDPaint", "KardsGameOverHUD", function()
         else
             local text, color
             if go.spectator then
-                text = ("P%d 胜利"):format(go.winner)
+                text = T("battle.gameover.win_slot", go.winner)
                 color = Color(255, 215, 90)
             else
-                text = go.won and "胜利" or "失败"
+                text = go.won and T("battle.gameover.win") or T("battle.gameover.lose")
                 color = go.won and Color(255, 215, 90) or Color(235, 110, 110)
             end
             draw.SimpleTextOutlined(text, BannerFont(size), cx, cy, color,
                 TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 3, Color(20, 20, 20, 220))
             -- 观战者补一行失败方提示
             if go.spectator then
-                draw.SimpleTextOutlined(("P%d 失败"):format(go.loser), "SourceHan_Heavy_28", cx, cy + 56,
+                draw.SimpleTextOutlined(T("battle.gameover.lose_slot", go.loser), "SourceHan_Heavy_28", cx, cy + 56,
                     Color(210, 130, 130), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER, 2, Color(20, 20, 20, 200))
             end
         end
@@ -393,7 +403,7 @@ hook.Add("HUDPaint", "KardsGameOverHUD", function()
     -- 屏幕底部「继续」（显示后轻微呼吸提示可点击）
     if go.continueAt and go.blackPhase == "none" then
         local pulse = 200 + math.floor(55 * (math.sin(now * 4) * 0.5 + 0.5))
-        draw.SimpleText("继续", "SourceHan_Heavy_28", ScrW() / 2, ScrH() - 120,
+        draw.SimpleText(T("battle.gameover.continue"), "SourceHan_Heavy_28", ScrW() / 2, ScrH() - 120,
             Color(255, 255, 255, pulse), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
 

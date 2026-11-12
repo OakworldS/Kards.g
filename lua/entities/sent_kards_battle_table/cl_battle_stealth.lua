@@ -20,6 +20,10 @@
 if not CLIENT then return end
 
 KARDS = KARDS or {}
+
+-- 多语言查表（2026-10-17）：文案 key → 当前语言文本
+local T = KARDS.Lang.T
+
 KARDS.Stealth = KARDS.Stealth or {}
 local BS = KARDS.BattleState
 
@@ -70,18 +74,9 @@ end
 function KARDS.Stealth.HitStealthTarget(pos, dir)
     if not BS.inTable or not IsValid(BS.inTable.ent) then return nil end
     -- 候选场：双方支援阵线 + 前线（2026-08-15 C2 收敛至 KARDS.FieldCandidates，见 cl_init.lua）
-    local fields = KARDS.FieldCandidates()
-    local bestD, hit = math.huge, nil
-    for _, field in ipairs(fields) do
-        for e in pairs(field or {}) do
-            if KARDS.Stealth.IsStealthEnt(e)
-                and KARDS.RayCardHit(pos, dir, e, KARDS.UnitHitHalfW, KARDS.UnitHitHalfL) then
-                local d = KARDS.RayPointDistSqr(pos, dir, e:GetPos())
-                if d < bestD then bestD, hit = d, e end
-            end
-        end
-    end
-    return hit
+    return KARDS.HitTest.NearestCardFace(pos, dir, KARDS.FieldCandidates(),
+        KARDS.UnitHitHalfW, KARDS.UnitHitHalfL, nil,
+        KARDS.HitTest.All(KARDS.HitTest.Filters.Valid, KARDS.Stealth.IsStealthEnt))
 end
 
 --[[
@@ -98,7 +93,7 @@ function KARDS.Stealth.HintIfPointing(pos, dir)
     local now = CurTime()
     if now - lastHintT >= HintThrottle then
         lastHintT = now
-        KARDS.BattleHint.Push("隐蔽单位不受指令指向")
+        KARDS.BattleHint.Push(T("battle.pointing.stealth"))
     end
 end
 
