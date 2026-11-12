@@ -13,7 +13,7 @@ KARDS 以创新的“前线”区分支援线与战区。玩家需消耗指挥�
 
 版本 Alpha 5：造卡达到 Beta 要求。组卡达到 Alpha 要求。
 
-> \[!WARNING]
+> [!WARNING]
 > 当前战斗系统仍然处于早期阶段，尚未达到 Alpha 要求，极不稳定且体验差。因此造成了造卡目前暂时成为了本插件的主要玩法。
 
 ## 动机
@@ -36,7 +36,7 @@ Kards 本身已是完整玩法，值得作为一个独立的游戏模式存在�
 
 Kards 的玩法并不强制依赖游戏模式。造卡、组卡与牌桌对局在 Sandbox 等模式下同样工作，游戏模式把同一玩法改为可开服形态。
 
-> \[!CAUTION]
+> [!CAUTION]
 > Kards .g 只有版本号带有 Server 段时才能被正常地用于开服。当前 Kards .g 关于服务器玩法部分（上传与审查卡牌、权限）仍然在开发，**未达到 Alpha 标准**且处于低优先级。如果您确实使用 Kards .g 作为您的服务器玩法，务必联系我！
 
 ## 前置与安装
@@ -45,10 +45,10 @@ Kards 的玩法并不强制依赖游戏模式。造卡、组卡与牌桌对局�
 
 从 [Steam](https://steamcommunity.com/sharedfiles/filedetails/?id=3720439560)的创意工坊订阅本插件，或将本仓库克隆至`D:\…\garrysmod\addons`内则安装成功。
 
-> \[!CAUTION]
+> [!CAUTION]
 > 本仓库设立目的为提供注释版本的项目，因此未将`\sounds`写入仓库，这个举措很大缩减了仓库的体积，但会导致大量 lua 错误（`sound_PlayFile`等所指向的音频不存在）。如果您仅是要游玩Kards.g，务必选择Steam创意工坊订阅！
 
-> \[!WARNING]
+> [!WARNING]
 > 当前项目无任何默认卡牌存档，这意味着你须造卡（至少3张普通品质卡和一张限定品质卡）并组成卡组后方能应用于战斗或等待开发补全默认卡牌。
 
 ## 操作
@@ -63,7 +63,7 @@ Kards 的玩法并不强制依赖游戏模式。造卡、组卡与牌桌对局�
 
 在每个书签页配置完成你的卡牌。注意有一部分设置还不稳定或者没作用。
 
-> \[!NOTE]
+> [!NOTE]
 > **预报**尚未开发完成
 
 <img title="" src="docs/images/卡牌外貌属性编辑器.jpg" alt="卡牌外貌属性编辑器" width="715" data-align="inline">
@@ -92,7 +92,7 @@ Kards 的玩法并不强制依赖游戏模式。造卡、组卡与牌桌对局�
 
 #### 战斗时手牌
 
-> \[!NOTE]
+> [!NOTE]
 > 根据 Kards 手牌分布反向推导的手牌分布算法，不一定是 Kards 用的算法
 
 让手牌沿圆弧分布，底部均指向圆心。
@@ -217,8 +217,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_fakeuser`
 
-> \[!WARNING]
-> 未经内部测试的命令
+**注意：未经内部测试的命令**
 
 - 语法：`kards_fakeuser [0|1]`
 - 端：服务端
@@ -229,8 +228,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_fakeuser_hand`
 
-> \[!WARNING]
-> 未经内部测试的命令
+**注意：未经内部测试的命令**
 
 - 语法：`kards_fakeuser_hand`
 - 端：服务端
@@ -238,8 +236,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_fakeuser_play`
 
-> \[!WARNING]
-> 未经内部测试的命令
+**注意：未经内部测试的命令**
 
 - 语法：`kards_fakeuser_play <手牌序数>`
 - 端：服务端
@@ -248,8 +245,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_fakeuser_x`
 
-> \[!WARNING]
-> 未经内部测试的命令
+**注意：未经内部测试的命令**
 
 - 语法：`kards_fakeuser_x <数字>`
 - 端：服务端
@@ -261,8 +257,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_fakeuser_endturn`
 
-> \[!WARNING]
-> 未经内部测试的命令
+**注意：未经内部测试的命令**
 
 - 语法：`kards_fakeuser_endturn`
 - 端：服务端
@@ -270,8 +265,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `x`
 
-> \[!WARNING]
-> 未经内部测试的命令。这是全局短名，与其他模组撞名可能性较高。
+**注意：未经内部测试的命令**。这是全局短名，与其他模组撞名可能性较高。
 
 - 语法：`x <数字>`
 - 端：服务端
@@ -303,8 +297,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_battle_table`
 
-> \[!NOTE]
-> 已弃用的命令
+**已弃用的命令**
 
 - 语法：`kards_battle_table [scale] [modelID]`
 - 端：服务端
@@ -323,8 +316,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_battle_demo`
 
-> \[!NOTE]
-> 已弃用的命令
+**已弃用的命令**
 
 - 语法：`kards_battle_demo [cardScale] [tableScale]`
 - 端：服务端
@@ -334,8 +326,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_anim_diag`
 
-> \[!NOTE]
-> 本项目已停用待机动画，因此指令等同于无效
+**说明：本项目已停用待机动画，因此指令等同于无效**
 
 - 语法：`kards_anim_diag`
 - 端：客户端
@@ -344,8 +335,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_start_editor_anim`
 
-> \[!NOTE]
-> 本项目已停用待机动画，因此指令无效
+**说明：本项目已停用待机动画，因此指令无效**
 
 - 语法：`kards_start_editor_anim`
 - 端：服务端
@@ -354,8 +344,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_stop_editor_anim`
 
-> \[!NOTE]
-> 本项目已停用待机动画，因此指令无效
+**说明：本项目已停用待机动画，因此指令无效**
 
 - 语法：`kards_stop_editor_anim`
 - 端：服务端
@@ -364,8 +353,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_close_editor_keep_anim`
 
-> \[!NOTE]
-> 本项目已停用待机动画，因此指令仅关闭编辑器界面
+**说明：本项目已停用待机动画，因此指令仅关闭编辑器界面**
 
 - 语法：`kards_close_editor_keep_anim`
 - 端：服务端
@@ -383,8 +371,7 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_reload_templates`
 
-> \[!TIP]
-> 每次更改节点模板 DSL 后，执行此命令即可立刻看到修改后节点列表
+**提示：每次更改节点模板 DSL 后，执行此命令即可立刻看到修改后节点列表**
 
 - 语法：`kards_reload_templates`
 - 端：客户端
@@ -393,10 +380,9 @@ Kards .g 使用 INE 技术表达卡牌效果，使用于卡牌效果编辑器
 
 #### `kards_test`
 
-> \[!NOTE]
-> 使用 test 系指令可快速测试节点解析到战斗，战斗操作效果是否达到预期
->
-> ![tset](docs\images\test命令输出.jpg)
+**说明：使用 test 系指令可快速测试节点解析到战斗，战斗操作效果是否达到预期**
+
+![tset](docs/images/test命令输出.jpg)
 
 - 语法：`kards_test`
 - 端：仅服务端注册
