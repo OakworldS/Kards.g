@@ -102,6 +102,21 @@ KARDS.CardEditor.VersionHistory = {
             T("editor.version.alpha5_note3")
         },
         milestone = "国庆"
+    },
+    {
+        -- 首次发布刻度：版本号沿用 Alpha 5，id 加 -publish 只为与上一刻度区分，不代表新版本
+        id        = "0.5.0-alpha-publish",
+        stage     = "Alpha",
+        display   = "Alpha 5",
+        short     = T("editor.version.release_short"),
+        date      = "2026-11-12",
+        title     = T("editor.version.release_title"),
+        notes     = {
+            T("editor.version.release_note1"),
+            T("editor.version.release_note2"),
+            T("editor.version.release_note3")
+        },
+        milestone = "首次发布"
     }
 }
 
